@@ -1,0 +1,36 @@
+# Secrets — never commit. Conventions are decided in issue #5 (public-repo hygiene).
+.env
+.env.*
+!.env.example
+secrets/
+*.token
+*.key
+
+# Local homelab config (IPs, hostnames, emails) stays out of the public repo
+local/
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Wayfinder research scratch — findings are committed, raw dumps are not
+.wayfinder/research/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# State
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# OS
+.DS_Store
+Thumbs.db
