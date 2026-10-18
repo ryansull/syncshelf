@@ -19,9 +19,11 @@ The MCP mount is the SDK's resource server: every ``/mcp`` request needs a beare
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
 protected-resource metadata otherwise (§3.2.1). That metadata is served before the mount, by
 :func:`syncshelf.auth.oauth.protected_resource_route`, because the SDK's own can't advertise
-the scopes (§3.2.2). The verifier reads the token store, and tools reach the database and the
-clock through :func:`syncshelf.tools.services`, so the lifespan binds both to the database
-once it is open.
+the scopes (§3.2.2). The verifier reads the token store, and tools reach the database, the
+clock and the refresh-grace cache through :func:`syncshelf.tools.services`, so the lifespan
+binds both to the database once it is open. ``/token`` and the tools share one
+:class:`syncshelf.auth.tokens.RefreshGrace`, so a revoked connection's held refresh pairs go
+with it.
 
 Importing a tool module registers its tools on :data:`syncshelf.tools.REGISTRY`, so the
 production tool modules are imported here, where the registry is served.
@@ -57,7 +59,7 @@ from syncshelf import __version__
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
-from syncshelf.auth.tokens import TokenVerifier
+from syncshelf.auth.tokens import RefreshGrace, TokenVerifier
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
@@ -129,6 +131,8 @@ def create_app(
     if data_dir is None:
         data_dir = default_data_dir()
     verifier = TokenVerifier(config, clock=clock)
+    # In memory only, so a new app (a restart) starts with none held (§3.2.4).
+    grace = RefreshGrace()
     oauth = config.server.oauth
     clients = ClientDocuments(clock=clock, transport=http_transport)
     access = (
@@ -173,8 +177,9 @@ def create_app(
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
+            app.state.grace = grace
             verifier.bind(db)
-            mcp.bind(Services(db, clock))
+            mcp.bind(Services(db, clock, grace))
             async with AsyncExitStack() as stack:
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
@@ -186,10 +191,13 @@ def create_app(
             verifier.bind(None)
             await db.close()
 
+    authorization_server = (
+        oauth_routes(config, clients, access, grace, clock=clock) if access is not None else []
+    )
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            *(oauth_routes(config, clients, access, clock=clock) if access is not None else []),
+            *authorization_server,
             protected_resource_route(config.server),
             Mount("/", app=mcp_app),
         ],
