@@ -107,7 +107,9 @@ async def revoke_connection(target: GrantId | Literal["all_others", "all"]) -> l
             f"There is no open connection {target} on this SyncShelf profile. "
             "Call my_connections to see the connections that can be revoked."
         )
-    # #68 adds the refresh grace cache (§3.2.4); per §3.2.7 these grants' entries go too.
+    # Their held refresh pairs go too (§3.2.7). /token checks the grant before serving one,
+    # so this only ends the raw tokens' time in memory.
+    bound.grace.drop_grants({grant.id for grant in revoked})
     for grant in revoked:
         log.info(
             "revoked grant %d at the user's request",
