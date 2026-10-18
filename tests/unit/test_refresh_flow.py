@@ -18,7 +18,7 @@ import pytest
 from starlette.applications import Starlette
 
 from syncshelf.app import create_app
-from syncshelf.auth.cimd import CLAUDE_APPS
+from syncshelf.auth.cimd import CLAUDE_APPS, HOSTED_CALLBACK
 from syncshelf.auth.tokens import GRACE_PERIOD, REFRESH_WINDOW, RefreshGrace, hash_token
 from syncshelf.db import Database
 from syncshelf.logging import scrub
@@ -26,7 +26,14 @@ from syncshelf.logging import scrub
 from access_jwt import FakeAccess, routed
 from cimd_docs import FakeClaude
 from clock import FakeClock
-from oauth_flow import authorization_code, sign_in, token_form, token_json, token_request
+from oauth_flow import (
+    authorization_code,
+    authorization_params,
+    sign_in,
+    token_form,
+    token_json,
+    token_request,
+)
 from serving import BASE_URL, CLAUDE_CODE, MCP_URL, TEAM_DOMAIN, make_config, mcp_client, running
 
 pytestmark = pytest.mark.anyio
@@ -292,6 +299,24 @@ async def test_reuse_after_the_window_revokes_the_connection(
         assert await mcp_status(client, rotated["access_token"]) == 401
     assert await refresh(client, rotated["refresh_token"], 400) == {"error": "invalid_grant"}
     assert len(grace(app)) == 0
+
+
+async def test_a_reuse_from_another_client_revokes_and_logs_the_grants_own_client(
+    app: Starlette,
+    client: httpx2.AsyncClient,
+    access: FakeAccess,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hosted = await sign_in(client, access, authorization_params(CLAUDE_APPS, HOSTED_CALLBACK))
+    await refresh(client, hosted["refresh_token"], client_id=CLAUDE_APPS)
+    clock.advance(GRACE_PERIOD)
+    with caplog.at_level(logging.INFO):
+        await refresh(client, hosted["refresh_token"], 400)  # sent as Claude Code
+    [revoked] = [r for r in caplog.records if getattr(r, "event", None) == "grant_revoked"]
+    assert revoked.__dict__["client_label"] == "claude.ai"
+    [(_, _, _, reason)] = await store(app).read(_grants)
+    assert reason == "refresh_reuse"
 
 
 async def test_a_retry_after_a_restart_inside_the_window_is_refused_without_revoking(

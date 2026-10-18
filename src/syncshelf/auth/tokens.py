@@ -337,6 +337,8 @@ class ExchangeRefused:
     error: str
     reason: str
     revoked_grant: int | None = None
+    revoked_label: str | None = None
+    """The revoked grant's ``client_label``, which may not be the presenting client's."""
 
 
 def exchange_code(
@@ -434,10 +436,12 @@ class RefreshGrace:
     every entry, and a retry after one is refused without revoking.
 
     The raw tokens held are registered with :func:`syncshelf.logging.add_secret` for as long
-    as they are held (§2.7). Expired entries are swept on every call, so none outlives its
-    window by more than the time to the next refresh. Safe to use from any thread: rotation
-    reads and fills it on the database's writer thread, and revocation empties it from the
-    event loop.
+    as they are held (§2.7). Once dropped, the process no longer has them at all, as with the
+    tokens a code exchange hands out, so they are discarded from the scrubber too rather than
+    kept in it for the rest of their life. Expired entries are swept whenever an entry is held
+    or looked up, so one can outlive its window until the next refresh, but is never served
+    past it. Safe to use from any thread: rotation reads and fills it on the database's writer
+    thread, and revocation empties it from the event loop.
     """
 
     def __init__(self) -> None:
@@ -448,6 +452,8 @@ class RefreshGrace:
         """Hold ``successor`` for a retry with the token hashed to ``old_hash``."""
         with self._lock:
             self._sweep(now)
+            if old_hash in self._entries:  # left by a rotation whose COMMIT failed
+                self._forget(old_hash)
             self._entries[old_hash] = successor
             add_secret(successor.access_token)
             add_secret(successor.refresh_token)
@@ -539,7 +545,12 @@ def refresh_tokens(
     if rotated_at is not None and now >= rotated_at + GRACE_PERIOD:
         # Like a replayed code, a reuse revokes whatever client presents it.
         revoke_grant(conn, grant.id, "refresh_reuse", now)
-        return ExchangeRefused("invalid_grant", "refresh_reuse", revoked_grant=grant.id)
+        return ExchangeRefused(
+            "invalid_grant",
+            "refresh_reuse",
+            revoked_grant=grant.id,
+            revoked_label=grant.client_label,
+        )
     if refresh.client_id != grant.client_id:
         return ExchangeRefused("invalid_grant", "client_mismatch")
     if refresh.resource is not None and refresh.resource != grant.resource:

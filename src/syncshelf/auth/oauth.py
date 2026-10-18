@@ -412,7 +412,8 @@ def oauth_routes(
         outcome = await db.write(refresh_tokens, rotation, grace, int(clock()))
         if isinstance(outcome, ExchangeRefused):
             if outcome.revoked_grant is not None:
-                _revoked(outcome.revoked_grant, "refresh_reuse", label, grace)
+                revoked_label = outcome.revoked_label or label
+                _revoked(outcome.revoked_grant, "refresh_reuse", revoked_label, grace)
             return _token_refused(outcome.error, outcome.reason, label)
         event = "refresh_retried" if outcome.retried else "refresh_rotated"
         log.info(
