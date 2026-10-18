@@ -14,9 +14,11 @@
 # phase 1 on, so leave a secret commented out until its variable or file exists.
 
 server:
-  # The issuer URL, with no trailing slash: the public name Claude connects to, behind the
-  # reverse proxy. Only oauth mode serves a host other than localhost or 127.0.0.1. Log lines
-  # show its host as public, and the team_domain host below as access.
+  # The issuer URL: the public name Claude connects to, behind the reverse proxy. Just the
+  # scheme, a lowercase host and any port other than the scheme's default, with no path, not
+  # even a trailing slash. Only oauth mode serves a host other than localhost or 127.0.0.1,
+  # and it must be https. Log lines show its host as public, and the team_domain host below
+  # as access.
   public_url: https://shelf.example.com
   # oauth | dev. Every /mcp request needs a bearer token, and with this key absent none is
   # accepted. oauth is how Claude connects: SyncShelf is its own OAuth server, and Cloudflare
@@ -32,10 +34,12 @@ server:
   # Only read when auth_mode: dev. For a local instance, set auth_mode: dev and public_url:
   # http://localhost:8000 (dev mode refuses any other host), uncomment this section, and
   # comment out aud and consent_hmac_key above. A secret that is present is expanded in any
-  # mode, so each mode keeps only its own secrets uncommented.
+  # mode, so each mode keeps only its own secrets uncommented. The token is the only thing
+  # guarding /mcp, so keep the instance off the network: publish the port on loopback only
+  # (e.g. -p 127.0.0.1:8000:8000), or set listen below to 127.0.0.1:8000.
   # dev:
-  #   # Any long random string, e.g. from: openssl rand -hex 32. Clients send it as
-  #   # "Authorization: Bearer <token>".
+  #   # A random string of at least 32 characters, e.g. from: openssl rand -hex 32. Clients
+  #   # send it as "Authorization: Bearer <token>".
   #   token: ${SYNCSHELF_DEV_TOKEN}
   #   profile: alice                        # the profile the token acts as
   # Addresses or networks (comma-separated) trusted to set X-Forwarded-* headers: the Traefik
