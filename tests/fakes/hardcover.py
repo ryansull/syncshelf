@@ -62,6 +62,8 @@ class FakeHardcover:
         library query's. Shelving a book adds it."""
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
+        self.writes: list[tuple[str, int, dict[str, Any]]] = []
+        """Each applied mutation: its name, the user_book id and the fields it set."""
         self.callers: list[int] = []
         """The user id whose token sent each request, in the same order."""
         self.daily_remaining = 5000
@@ -263,6 +265,9 @@ class FakeHardcover:
             "ListsMore": lambda uid, v: {"lists": self._lists_page(uid, v)},
             "ListBooksMore": self._list_books_more,
             "Book": self._book,
+            "UserBook": lambda uid, v: {"user_books": self._user_book(uid, v)},
+            "InsertUserBook": self._insert_user_book,
+            "UpdateUserBook": self._update_user_book,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
             "Search": self._search,
@@ -326,6 +331,35 @@ class FakeHardcover:
         assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
         rows = [r for r in self.user_books[user_id] if r["book_id"] == variables["book_id"]]
         return [{k: v for k, v in r.items() if k != "book"} for r in rows]
+
+    # --- writes ---------------------------------------------------------------------------
+
+    def _user_book(self, user_id: int, variables: dict[str, Any]) -> list[dict[str, Any]]:
+        assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
+        return [r for r in self.user_books[user_id] if r["book_id"] == variables["book_id"]]
+
+    def _insert_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        obj = dict(variables["object"])
+        if error := _rating_error(obj):
+            return {"insert_user_book": {"id": None, "error": error}}
+        book_id = obj.pop("book_id")
+        existing = self._user_book(user_id, {"user_id": user_id, "book_id": book_id})
+        # Hardcover upserts on (user, book): the same row, with the new fields applied.
+        row = existing[0] if existing else self.add_user_book(user_id, book_id)
+        if not existing:
+            row["privacy_setting_id"] = obj.pop("privacy_setting_id", 1)
+        _apply_fields(row, obj)
+        self.writes.append(("insert_user_book", row["id"], obj))
+        return {"insert_user_book": {"id": row["id"], "error": None}}
+
+    def _update_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        obj = dict(variables["object"])
+        if error := _rating_error(obj):
+            return {"update_user_book": {"id": None, "error": error}}
+        row = next(r for r in self.user_books[user_id] if r["id"] == variables["id"])
+        _apply_fields(row, obj)
+        self.writes.append(("update_user_book", row["id"], obj))
+        return {"update_user_book": {"id": row["id"], "error": None}}
 
     def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         book = self.catalog.get(variables["book_id"])
@@ -436,6 +470,25 @@ def _search_results() -> dict[str, Any]:
     """The recorded ``results`` envelope, without its hits."""
     results = _recorded_search()["data"]["search"]["results"]
     return {k: v for k, v in results.items() if k != "hits"}
+
+
+def _rating_error(obj: dict[str, Any]) -> str | None:
+    """Hardcover refuses a rating off the half-star grid with a 200 and leaves the row as it
+    was (§3.3.1)."""
+    rating = obj.get("rating")
+    if rating is not None and not (0.5 <= rating <= 5 and (rating * 2).is_integer()):
+        return "Rating must be between 0.5 and 5 in 0.5 increments"
+    return None
+
+
+def _apply_fields(row: dict[str, Any], obj: dict[str, Any]) -> None:
+    """Apply a user_book write the way Hardcover stores it."""
+    for key, value in obj.items():
+        if key == "review_markdown":
+            row["review_raw"] = value
+            row["has_review"] = bool(value)
+        else:
+            row[key] = value
 
 
 def book_extras() -> dict[str, Any]:

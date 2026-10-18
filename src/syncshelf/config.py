@@ -210,6 +210,9 @@ class ProfileConfig:
     """Whether this profile appears in the other profile's answers. Opt in (§2.8)."""
     hardcover_token: str = field(default="", repr=False)
     """The profile's Hardcover PAT, without ``Bearer ``. Required from phase 3."""
+    hardcover_privacy: int = 3
+    """Hardcover's ``privacy_setting_id`` for books SyncShelf adds to this profile's shelves:
+    1 public, 2 followers, 3 private (the default). Applies to inserts only (§3.3.6)."""
     timezone: str | None = None
     """An IANA zone name (``Europe/London``), or ``None`` for the container's own zone. Dates
     the user says ("last 30 days", "yesterday") are read in it."""
@@ -702,6 +705,9 @@ def _profiles(
             name=name,
             hardcover_token=_hardcover_token(secrets.get(f"{prefix}.hardcover_token"), prefix),
             timezone=_timezone(body.get("timezone"), f"{prefix}.timezone"),
+            hardcover_privacy=_privacy(
+                body.get("hardcover_privacy"), f"{prefix}.hardcover_privacy"
+            ),
             email=email,
             permissions=_permissions(body.get("permissions"), f"{prefix}.permissions"),
             household_visible=_household_visible(
@@ -719,6 +725,18 @@ def _hardcover_token(token: str | None, prefix: str) -> str:
     if token[:7].lower() == "bearer ":
         raise ConfigError(f"{key}: give the token without the leading 'Bearer '")
     return token
+
+
+PRIVACY = {"public": 1, "followers": 2, "private": 3}
+"""``hardcover_privacy`` values and Hardcover's ``privacy_setting_id`` for each."""
+
+
+def _privacy(value: Any, key: str) -> int:
+    if value is None:
+        return PRIVACY["private"]
+    if value not in PRIVACY:
+        raise ConfigError(f"{key}: must be one of {', '.join(PRIVACY)}")
+    return PRIVACY[value]
 
 
 def _timezone(value: Any, key: str) -> str | None:

@@ -36,6 +36,7 @@ from syncshelf.auth.tokens import RefreshGrace
 from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import HOUSEHOLD, ME, PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
+from syncshelf.sync.apply import Applier
 from syncshelf.sync.limiter import interactive
 from syncshelf.sync.mirror import Mirror
 
@@ -122,6 +123,8 @@ class Services:
     """The configured profiles, for resolving a read tool's ``profile`` argument (§2.8)."""
     hardcover: Mapping[str, HardcoverClient]
     """Each profile's Hardcover client, for the live calls a tool makes (§3.3.7)."""
+    applier: Applier
+    """The write procedure every edit goes through (§3.3.6)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)
