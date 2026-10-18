@@ -25,6 +25,17 @@ Discovery (§3.2.1, §3.2.2):
    signed blob (:func:`sign_consent`) for ``POST /authorize`` to verify
    (:func:`verify_consent`).
 
+``POST /authorize`` (§3.2.3) is the **Allow** button. A blob that doesn't verify gets an
+error page, since nothing in it can be trusted. Past that, the request must come from the
+consent page (``Origin`` is the issuer) and from the person it was shown to (a fresh Access
+JWT for the signed email), or it is refused with a redirect. It then stores a code bound to
+the signed request and redirects with ``code``, ``state`` and ``iss``.
+
+``POST /token`` (§3.2.4) redeems a code for a grant and its tokens
+(:func:`syncshelf.auth.tokens.exchange_code`). It takes form-encoded bodies only, never
+fetches a client document (the client is bound on the code), and marks every response
+uncacheable. Its errors are :func:`token_error` responses.
+
 :func:`oauth_routes` are the authorization server's own routes, served only when
 ``server.auth_mode`` is ``oauth``. :func:`protected_resource_route` belongs to the resource
 server, which runs in every mode, as the SDK's did. Both documents are plain JSON built from
@@ -48,7 +59,7 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 from string import Template
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from mcp.server.auth.routes import cors_middleware
 from starlette.datastructures import QueryParams
@@ -57,9 +68,24 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from syncshelf.auth.access import ACCESS_HEADER, AccessRefused, AccessVerifier
-from syncshelf.auth.cimd import ClientDocuments, ClientRefused, check_client
-from syncshelf.auth.tokens import SCOPE
+from syncshelf.auth.cimd import (
+    CLIENT_LABELS,
+    ClientDocuments,
+    ClientRefused,
+    check_client,
+    client_allowed,
+)
+from syncshelf.auth.tokens import (
+    ACCESS_TOKEN_TTL,
+    OFFLINE_ACCESS,
+    SCOPE,
+    CodeExchange,
+    ExchangeRefused,
+    exchange_code,
+    insert_code,
+)
 from syncshelf.config import Config, ServerConfig
+from syncshelf.db import Database
 
 __all__ = [
     "AUTHORIZE_PATH",
@@ -75,6 +101,7 @@ __all__ = [
     "ConsentInvalid",
     "ConsentRequest",
     "access_email",
+    "form_params",
     "authorization_server_metadata",
     "canonical_resource",
     "check_request",
@@ -82,6 +109,7 @@ __all__ = [
     "error_page",
     "granted_scopes",
     "redirect_error",
+    "token_error",
     "sign_consent",
     "verify_consent",
     "oauth_routes",
@@ -103,9 +131,6 @@ AUTHORIZE_PATH = "/authorize"
 TOKEN_PATH = "/token"
 """The token endpoint (§3.2.4)."""
 
-OFFLINE_ACCESS = "offline_access"
-"""The scope a client asks for to get a refresh token (§3.2.2)."""
-
 SCOPES_SUPPORTED = (SCOPE, OFFLINE_ACCESS)
 """The scopes both metadata documents advertise, in §3.2.2's order."""
 
@@ -118,6 +143,9 @@ CONSENT_TTL = 600
 _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")  # a base64url SHA-256, unpadded (RFC 7636)
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})  # the redirect policy's (§3.2.3)
 _B64URL = re.compile(r"[A-Za-z0-9_-]+")  # unpadded base64url, the consent blob's two parts
+_VERIFIER = re.compile(r"[A-Za-z0-9._~-]{43,128}")  # RFC 7636 §4.1's code_verifier
+_FORM = "application/x-www-form-urlencoded"
+_TOKEN_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}  # every /token answer
 
 _WELL_KNOWN_METHODS = ["GET", "OPTIONS"]
 _WELL_KNOWN_HEADERS = {"Cache-Control": "public, max-age=3600"}  # as the SDK's handlers send
@@ -143,6 +171,8 @@ _ERROR_PAGE = """<!doctype html>
 _CONSENT_PAGE = Template(
     files("syncshelf.auth").joinpath("templates", "consent.html").read_text(encoding="utf-8")
 )
+
+_START_AGAIN = "This sign-in page has expired or isn't valid. Start connecting again from Claude."
 
 _LOOPBACK_WARNING = (
     "<p><strong>Code will be sent to a program on this computer ({where}).</strong> "
@@ -240,14 +270,144 @@ def oauth_routes(
         return consent_page(consent, sign_consent(consent, consent_key, int(clock())))
 
     async def approve(request: Request) -> Response:
-        # A placeholder until the consent POST is built (#67): it issues nothing.
-        return error_page("Allowing a connection isn't available yet.", status_code=501)
+        params = form_params(request.headers.get("content-type"), await request.body())
+        blobs = (params or {}).get(CONSENT_FIELD, [])
+        if len(blobs) != 1:
+            _log_refused("consent_missing")
+            return error_page(_START_AGAIN)
+        try:
+            consent = verify_consent(blobs[0], consent_key, int(clock()))
+        except ConsentInvalid as invalid:
+            _log_refused(f"consent_{invalid.reason}")
+            return error_page(_START_AGAIN)
+        # Signed by this server, so the client and redirect are the ones GET trusted, unless a
+        # new release dropped the client from the allowlist since.
+        label = CLIENT_LABELS.get(consent.client_id)
+        if label is None:
+            _log_refused("client_not_allowed")
+            return error_page(_START_AGAIN)
+        try:
+            # CSRF: only the consent page, served from the issuer, may post here (§3.2.3; #114
+            # asks whether browsers send it under the page's no-referrer policy).
+            if request.headers.get("origin") != server.public_url:
+                raise AuthorizeError("access_denied", "origin_mismatch")
+            email = await access_email(request, access)
+            if email != consent.email:
+                raise AuthorizeError("access_denied", "email_mismatch")
+        except AuthorizeError as refused:
+            _log_refused(refused.reason, label)
+            return redirect_error(
+                consent.redirect_uri, refused.error, consent.state, server.public_url
+            )
+        profile = profiles.get(email)
+        if profile is None:  # GET found it, so only a restart with a new config gets here
+            _log_refused("no_profile", label)
+            return error_page(f"There is no SyncShelf profile for {email}.", status_code=403)
+        # The code row has no column for refresh_allowed, so a client whose document doesn't
+        # allow refresh tokens is bound to scopes without offline_access (#115).
+        scopes = tuple(
+            scope for scope in consent.scopes if consent.refresh_allowed or scope != OFFLINE_ACCESS
+        )
+        now = int(clock())
+        db: Database = request.app.state.db
+        code = await db.write(
+            lambda conn: insert_code(
+                conn,
+                client_id=consent.client_id,
+                redirect_uri=consent.redirect_uri,
+                code_challenge=consent.code_challenge,
+                resource=consent.resource,
+                scopes=scopes,
+                profile=profile,
+                email=email,
+                now=now,
+            )
+        )
+        log.info(
+            "issued an authorization code to %s",
+            label,
+            extra={"event": "code_issued", "client_label": label, "profile": profile},
+        )
+        query = {"code": code, **({"state": consent.state} if consent.state is not None else {})}
+        return _redirect(consent.redirect_uri, {**query, "iss": server.public_url})
+
+    async def token(request: Request) -> Response:
+        params = form_params(request.headers.get("content-type"), await request.body())
+        if params is None:
+            return _token_refused("invalid_request", "not_form_encoded")
+        if any(len(values) > 1 for values in params.values()):
+            return _token_refused("invalid_request", "repeated_parameter")
+        args = {name: values[0] for name, values in params.items()}
+        grant_type = args.get("grant_type")
+        if grant_type is None:
+            return _token_refused("invalid_request", "grant_type_missing")
+        if grant_type != "authorization_code":
+            # The refresh_token grant arrives with refresh rotation (#68); until then it is
+            # refused like any other grant type.
+            return _token_refused("unsupported_grant_type", "grant_type_unsupported")
+        # The gate only: /token never fetches a client document (§3.2.4).
+        client_id = args.get("client_id")
+        if client_id is None or not client_allowed(client_id):
+            return _token_refused("invalid_client", "client_not_allowed", status_code=401)
+        code, redirect_uri, verifier = (
+            args.get("code"),
+            args.get("redirect_uri"),
+            args.get("code_verifier"),
+        )
+        if code is None or redirect_uri is None or verifier is None:
+            return _token_refused("invalid_request", "parameter_missing")
+        if not _VERIFIER.fullmatch(verifier):
+            return _token_refused("invalid_request", "bad_code_verifier")
+        resource = args.get("resource")
+        exchange = CodeExchange(
+            code=code,
+            client_id=client_id,
+            client_label=CLIENT_LABELS[client_id],
+            redirect_uri=redirect_uri,
+            code_verifier=verifier,
+            resource=None if resource is None else canonical_resource(resource) or resource,
+        )
+        db: Database = request.app.state.db
+        outcome = await db.write(exchange_code, exchange, int(clock()))
+        if isinstance(outcome, ExchangeRefused):
+            if outcome.revoked_grant is not None:
+                log.warning(
+                    "revoked grant %d: its code was replayed",
+                    outcome.revoked_grant,
+                    extra={
+                        "event": "grant_revoked",
+                        "grant_id": outcome.revoked_grant,
+                        "client_label": exchange.client_label,
+                        "reason": "code_replay",
+                    },
+                )
+            return _token_refused(outcome.error, outcome.reason, exchange.client_label)
+        log.info(
+            "created grant %d for %s",
+            outcome.grant_id,
+            outcome.client_label,
+            extra={
+                "event": "grant_created",
+                "grant_id": outcome.grant_id,
+                "client_label": outcome.client_label,
+            },
+        )
+        body: dict[str, Any] = {
+            "access_token": outcome.access_token,
+            "token_type": "Bearer",
+            "expires_in": ACCESS_TOKEN_TTL,
+        }
+        if outcome.refresh_token is not None:
+            body["refresh_token"] = outcome.refresh_token
+        body["scope"] = " ".join(outcome.scopes)
+        return JSONResponse(body, headers=_TOKEN_HEADERS)
 
     return [
         _well_known(METADATA_PATH, authorization_server_metadata(server)),
         # No CORS: neither Claude's backend nor Claude Code needs it (§3.2.4).
         Route(AUTHORIZE_PATH, endpoint=authorize, methods=["GET"]),
         Route(AUTHORIZE_PATH, endpoint=approve, methods=["POST"]),
+        Route(TOKEN_PATH, endpoint=token, methods=["POST"]),
     ]
 
 
@@ -329,12 +489,49 @@ def redirect_error(redirect_uri: str, error: str, state: str | None, issuer: str
     """A 302 to the trusted ``redirect_uri`` carrying ``error``, ``state`` (when the request
     sent exactly one) and ``iss`` (RFC 9207), for a refusal once the redirect is trusted."""
     query = {"error": error, **({"state": state} if state is not None else {}), "iss": issuer}
+    return _redirect(redirect_uri, query)
+
+
+def _redirect(redirect_uri: str, query: dict[str, str]) -> Response:
     separator = "&" if urlsplit(redirect_uri).query else "?"
     return RedirectResponse(
         redirect_uri + separator + urlencode(query),
         status_code=302,
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
+
+
+def form_params(content_type: str | None, body: bytes) -> dict[str, list[str]] | None:
+    """A form-encoded body's parameters, each name with every value it was sent with, or
+    ``None`` when the body isn't one: another content type (JSON or multipart, say) or text
+    that isn't UTF-8."""
+    if (content_type or "").partition(";")[0].strip().lower() != _FORM:
+        return None
+    try:
+        pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True, errors="strict")
+    except UnicodeDecodeError:
+        return None
+    params: dict[str, list[str]] = {}
+    for name, value in pairs:
+        params.setdefault(name, []).append(value)
+    return params
+
+
+def token_error(error: str, *, status_code: int = 400) -> JSONResponse:
+    """A ``/token`` error response (RFC 6749 §5.2): ``{"error": error}``, uncacheable like
+    every ``/token`` response. Only the code is sent, so nothing from the request is echoed."""
+    return JSONResponse({"error": error}, status_code=status_code, headers=_TOKEN_HEADERS)
+
+
+def _token_refused(
+    error: str, reason: str, client_label: str | None = None, *, status_code: int = 400
+) -> JSONResponse:
+    log.info(
+        "refused a token request: %s",
+        reason,
+        extra={"event": "token_request_refused", "reason": reason, "client_label": client_label},
+    )
+    return token_error(error, status_code=status_code)
 
 
 async def access_email(request: Request, access: AccessVerifier) -> str:
