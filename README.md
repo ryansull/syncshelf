@@ -60,7 +60,9 @@ Every `/mcp` request needs a bearer token; without one it gets 401. With
 `SYNCSHELF_DEV_TOKEN`) as the profile `server.dev.profile`, so Claude Code or MCP Inspector
 can connect to a local instance by sending `Authorization: Bearer <token>`. Dev mode refuses
 to start unless `server.public_url` is on `localhost` or `127.0.0.1`, and logs a warning at
-every start. OAuth sign-in for Claude is not built yet, and with `server.auth_mode` absent no
+every start. OAuth sign-in for Claude is being built: `server.auth_mode: oauth` needs
+`server.access.team_domain`, `server.access.aud` (`ACCESS_AUD`) and `server.consent_hmac_key`
+(`CONSENT_HMAC_KEY`), and with `server.auth_mode` absent no
 token is accepted. The full deployment guide is `docs/runbook.md`, which arrives in
 phase 7. Until then, this section carries the deployment notes.
 

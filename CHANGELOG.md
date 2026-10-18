@@ -59,7 +59,28 @@ All notable changes to SyncShelf are recorded here. The format follows
   `fetch_failed` warning is logged. The `redirect_uri` must be one the document registers
   (a loopback one on any port) and one SyncShelf allows. A request that fails any check gets
   an HTML error page, never a redirect, and logs an `authorize_refused` line with the
-  reason. Sign-in itself isn't built yet, so a request that passes gets a 501 page.
+  reason.
+- With `server.auth_mode: oauth`, a `GET /authorize` whose client and redirect pass then has
+  the rest of the request checked (no repeated parameter, `response_type=code`, PKCE `S256`
+  with a 43-character challenge, and `resource` equal to `<public_url>/mcp` once its scheme
+  and host are lowercased and one trailing slash dropped), then the Cloudflare Access login:
+  the `Cf-Access-Jwt-Assertion` JWT must be RS256-signed by a key from
+  `<team_domain>/cdn-cgi/access/certs` (cached, and fetched again for an unknown key id),
+  with `iss` the team domain, `aud` containing the AUD tag, `exp` and `iat` within 30
+  seconds, `type` `app` and an `email`. A refusal redirects back to Claude with `error`,
+  `state` and `iss` (`invalid_request`, `unsupported_response_type`, `invalid_target`,
+  `access_denied`, or `temporarily_unavailable` when the Access keys can't be fetched) and
+  logs an `authorize_refused` line with the reason. An email that matches no profile gets a
+  "no SyncShelf profile" page, and nothing is issued. Otherwise the person sees a consent page,
+  "Connect claude.ai to SyncShelf as <email>?", with a warning when the code goes to a
+  program on their computer (Claude Code). Allowing isn't built yet: the Allow button gets a
+  501 page and nothing is issued.
+- New config keys, required with `server.auth_mode: oauth`: `server.access.aud` (a secret,
+  e.g. `${ACCESS_AUD}`: the AUD tag of the Access app guarding `/authorize`) and
+  `server.consent_hmac_key` (a secret, e.g. `${CONSENT_HMAC_KEY}`: signs the consent form,
+  whose request is valid for 10 minutes). `server.access.team_domain` is required in oauth
+  mode too, and must be just `https://` and a host. Startup names a missing key, never a
+  value.
 
 ### Changed
 

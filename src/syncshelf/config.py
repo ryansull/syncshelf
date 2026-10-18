@@ -102,6 +102,20 @@ class DevConfig:
 
 
 @dataclass(frozen=True)
+class OAuthConfig:
+    """What ``/authorize`` needs in ``oauth`` mode (§3.2.3): the Cloudflare Access app that
+    guards it, and the key that signs the consent form."""
+
+    access_team_domain: str
+    """The Access team domain, an ``https`` URL: the Access JWT's ``iss``, and where its
+    signing keys are published."""
+    access_aud: str = field(repr=False)
+    """The ``/authorize`` Access app's AUD tag, which the JWT's ``aud`` must contain."""
+    consent_hmac_key: str = field(repr=False)
+    """Signs the consent form's blob (HMAC-SHA256)."""
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """The ``server`` section keys read so far."""
 
@@ -115,6 +129,8 @@ class ServerConfig:
     (#73)."""
     dev: DevConfig | None = None
     """``server.dev``, read only in dev mode and ``None`` otherwise."""
+    oauth: OAuthConfig | None = None
+    """The ``oauth``-mode keys, read only in ``oauth`` mode and ``None`` otherwise."""
     access_team_domain: str | None = None
     listen_host: str = DEFAULT_LISTEN_HOST
     """The address uvicorn binds, from ``server.listen``. An IPv6 address has no brackets."""
@@ -255,6 +271,8 @@ def load_config(
     server = _server(server_raw)
     if server.auth_mode == "dev":
         server = replace(server, dev=_dev(secrets, server_raw.get("dev"), profiles))
+    elif server.auth_mode == "oauth":
+        server = replace(server, oauth=_oauth(server, secrets))
 
     return Config(
         server=server,
@@ -464,6 +482,24 @@ def _dev(secrets: Mapping[str, str], raw: Any, profiles: Mapping[str, ProfileCon
         # Not echoed: like every profile name, it may be someone's real name.
         raise ConfigError("server.dev.profile: must name a profile in the profiles section")
     return DevConfig(token=token, profile=profile)
+
+
+def _oauth(server: ServerConfig, secrets: Mapping[str, str]) -> OAuthConfig:
+    """The keys ``oauth`` mode requires. Each is named when missing, never its value."""
+    if server.access_team_domain is None:
+        raise ConfigError("server.access.team_domain: required when server.auth_mode is oauth")
+    if server.access_team_domain != f"https://{urlsplit(server.access_team_domain).hostname}":
+        # It is compared with the JWT's iss exactly, and the key URL is built under it, so
+        # no path, trailing slash, port, userinfo or uppercase.
+        raise ConfigError(
+            "server.access.team_domain: must be just https:// and the host, in lowercase"
+        )
+    keys = ("server.access.aud", "server.consent_hmac_key")
+    for key in keys:
+        if key not in secrets:
+            raise ConfigError(f"{key}: required when server.auth_mode is oauth")
+    aud, hmac_key = (secrets[key] for key in keys)
+    return OAuthConfig(server.access_team_domain, aud, hmac_key)
 
 
 def _listen(value: Any) -> tuple[str, int]:
