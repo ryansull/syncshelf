@@ -20,6 +20,7 @@ from syncshelf.clients.hardcover import (
     GOALS,
     LIBRARY,
     ME,
+    SEARCH,
     SERIES,
     SHELF,
     SIMILAR,
@@ -147,3 +148,11 @@ async def test_series_matches_the_recording(fake: FakeHardcover) -> None:
     client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     result = await client.execute(SERIES, {"ids": [9]})
     assert_same_shape(shape({"data": result.data}), recorded("series"))
+
+
+async def test_search_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.add_search_doc(7, "Dune", author_names=["Frank Herbert"], genres=["SF"], rating=4.3)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    variables = {"q": "dune", "filter": None, "sort": None, "per": 3, "page": 1}
+    result = await client.execute(SEARCH, variables)
+    assert_same_shape(shape({"data": result.data}), recorded("search"))

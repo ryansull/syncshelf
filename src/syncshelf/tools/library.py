@@ -29,6 +29,8 @@ from pydantic import Field
 from syncshelf.clients.hardcover import (
     BOOK,
     GOALS,
+    SEARCH,
+    SEARCH_PAGE,
     SERIES,
     SERIES_BY_NAME,
     SHELF,
@@ -49,6 +51,7 @@ __all__ = [
     "BookRecord",
     "Stats",
     "get_book",
+    "search_books",
     "series_progress",
     "get_my_library",
     "reading_stats",
@@ -1360,3 +1363,204 @@ def _entry(
     else:
         entry["statuses"] = status
     return entry
+
+
+# --- search_books -------------------------------------------------------------------------
+
+SearchSort = Literal["relevance", "popular", "rating", "newest"]
+SEARCH_SORTS: dict[str, str | None] = {
+    "relevance": None,
+    "popular": "users_count:desc",
+    "rating": "rating:desc",
+    "newest": "release_year:desc",
+}
+"""Each ``sort`` value and the Typesense sort it sends [assembly choice]."""
+SEARCH_PAGES = 4
+"""Pages of 25 fetched at most to fill a page when shelved books are left out."""
+DESCRIPTION_CHARS = 280
+
+
+class SearchHit(TypedDict):
+    """One book found, compactly, with whether the user has it shelved."""
+
+    book_id: int
+    title: str
+    subtitle: str | None
+    author: str | None
+    release_year: int | None
+    series: Series | None
+    community_rating: float | None
+    pages: int | None
+    has_audiobook: bool
+    has_ebook: bool
+    genres: list[str]
+    description: str | None
+    """The start of Hardcover's description, cut at about 280 characters."""
+    status: NotRequired[str | None]
+    statuses: NotRequired[dict[str, str | None]]
+
+
+class SearchPage(TypedDict):
+    """``search_books``' answer, with what was left out."""
+
+    books: list[SearchHit]
+    found: int
+    """Books Hardcover matched, before any were left out."""
+    excluded_shelved: int
+    """Matches left out because they're already shelved (among those looked at)."""
+    incomplete: NotRequired[bool]
+    """True when Hardcover failed partway through looking past shelved books."""
+    as_of: str
+    stale: bool
+    stale_reason: NotRequired[str]
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def search_books(
+    query: str | None = None,
+    author: str | None = None,
+    genre: str | None = None,
+    sort: SearchSort = "relevance",
+    exclude_shelved: bool = True,
+    limit: Annotated[int, Field(ge=1, le=SEARCH_PAGE)] = 10,
+    profile: str = ME,
+) -> SearchPage:
+    """Search all of Hardcover's books, live, and say which are already on the user's shelves.
+
+    Use this to discover books ("what should I read next in fantasy?", "popular books by
+    Ursula K. Le Guin") or to find a book's id for get_book. To check a list of specific
+    titles you have in mind, use check_books instead: it resolves each one carefully and never
+    substitutes a different book.
+
+    Arguments (at least one of query, author, genre):
+    - query: words to look for in titles, authors and series.
+    - author: an author's exact full name, as Hardcover writes it (e.g. Frank Herbert).
+    - genre: a Hardcover genre, exactly (e.g. Fantasy, Science Fiction).
+    - sort: relevance (the default), popular (most Hardcover readers), rating (highest
+      community rating) or newest (latest release year).
+    - exclude_shelved: true (the default) leaves out every book the user has shelved, in any
+      status, did-not-finish and ignored included, so suggestions are new to them. Set false
+      to see shelved books too, each with its status.
+    - limit: books to return, 1 to 25 (default 10).
+    - profile: "me" (the default), another profile's name, or "household"; with household,
+      a book on anyone's shelf is left out.
+
+    Each book has book_id, title, subtitle, author, release_year, series (name and position),
+    community_rating (Hardcover's average), pages, has_audiobook and has_ebook (whether
+    Hardcover lists those editions), genres (top 3) and a short description, plus status
+    (statuses per profile on household answers). found is Hardcover's total match count.
+    incomplete is true when Hardcover failed while looking past shelved books; the books
+    found so far are still returned.
+    """
+    # Backticks quote Typesense filter values, so they can't be part of one.
+    author = _text(author.replace("`", "")) if author else None
+    genre = _text(genre.replace("`", "")) if genre else None
+    query = _text(query)
+    if not (query or author or genre):
+        raise ToolError("Give at least one of query, author or genre to search for.")
+    caller = current_profile()
+    bound = services()
+    names = resolve_profiles(profile, caller, bound.profiles)
+    freshness = await _refresh(bound.mirror, names, caller)
+    variables: dict[str, Any] = {
+        "q": query or "*",
+        "filter": _search_filter(author, genre),
+        "sort": SEARCH_SORTS[sort],
+        # Only a search that leaves books out may need more than the hits asked for.
+        "per": SEARCH_PAGE if exclude_shelved else limit,
+        "page": 1,
+    }
+    client = bound.hardcover[names[0]]
+    books: list[SearchHit] = []
+    found = excluded = 0
+    incomplete = False
+    for page in range(1, SEARCH_PAGES + 1):
+        variables["page"] = page
+        try:
+            result = await client.execute(SEARCH, variables)
+        except HardcoverError:
+            if page == 1:
+                raise
+            incomplete = True  # keep what earlier pages found
+            break
+        results = (result.data.get("search") or {}).get("results") or {}
+        found = int(results.get("found") or 0)
+        docs = [h.get("document") or {} for h in results.get("hits") or []]
+        page_ids = tuple(i for d in docs if (i := _doc_id(d)) is not None)
+        shelves = {name: await bound.db.read(_statuses, name, page_ids) for name in names}
+        for doc in docs:
+            book_id = _doc_id(doc)
+            if book_id is None:
+                continue
+            if exclude_shelved and any(book_id in shelves[n] for n in names):
+                excluded += 1
+                continue
+            books.append(_search_hit(doc, book_id, names, shelves))
+            if len(books) == limit:
+                break
+        if len(books) == limit or len(docs) < variables["per"] or not exclude_shelved:
+            break
+    answer = SearchPage(
+        books=books, found=found, excluded_shelved=excluded, **_freshness(freshness)
+    )
+    if incomplete:
+        answer["incomplete"] = True
+    return answer
+
+
+def _text(value: str | None) -> str | None:
+    """A text argument, trimmed, or ``None`` when absent or blank."""
+    trimmed = value.strip() if value is not None else ""
+    return trimmed or None
+
+
+def _search_filter(author: str | None, genre: str | None) -> str | None:
+    """Typesense ``filter_by`` for exact author and genre (backticks quote, so none inside)."""
+    parts = []
+    if author:
+        parts.append(f"author_names:=[`{author.replace('`', '')}`]")
+    if genre:
+        parts.append(f"genres:=[`{genre.replace('`', '')}`]")
+    return " && ".join(parts) or None
+
+
+def _doc_id(doc: dict[str, Any]) -> int | None:
+    """A Typesense document's book id (sent as a string), or ``None`` when unusable."""
+    try:
+        return int(doc["id"])
+    except KeyError, TypeError, ValueError:
+        return None
+
+
+def _search_hit(
+    doc: dict[str, Any], book_id: int, names: tuple[str, ...], shelves: dict[str, dict[int, str]]
+) -> SearchHit:
+    """A compact row from a Typesense document, with each profile's shelf status."""
+    featured = doc.get("featured_series") or {}
+    series = featured.get("series") or {}
+    description = doc.get("description") or None
+    if description:
+        description = " ".join(description.split())  # newlines and runs of spaces
+        if len(description) > DESCRIPTION_CHARS:
+            description = description[:DESCRIPTION_CHARS].rsplit(None, 1)[0] + "…"
+    hit = SearchHit(
+        book_id=book_id,
+        title=doc.get("title") or "",
+        subtitle=doc.get("subtitle") or None,
+        author=(doc.get("author_names") or [None])[0],
+        release_year=doc.get("release_year") or None,  # 0 means unknown
+        series=Series(name=series["name"], position=featured.get("position"))
+        if series.get("name")
+        else None,
+        community_rating=_rounded(doc.get("rating") or None),
+        pages=doc.get("pages") or None,
+        has_audiobook=bool(doc.get("has_audiobook")),
+        has_ebook=bool(doc.get("has_ebook")),
+        genres=list(doc.get("genres") or [])[:TOP_GENRES],
+        description=description,
+    )
+    if len(names) == 1:
+        hit["status"] = shelves[names[0]].get(book_id)
+    else:
+        hit["statuses"] = {n: shelves[n].get(book_id) for n in names}
+    return hit

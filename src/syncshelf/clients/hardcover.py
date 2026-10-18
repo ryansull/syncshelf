@@ -39,6 +39,8 @@ __all__ = [
     "Library",
     "RateLimit",
     "Result",
+    "SEARCH",
+    "SEARCH_PAGE",
     "SERIES",
     "SERIES_BY_NAME",
     "SHELF",
@@ -169,6 +171,19 @@ query SeriesByName($name: String!) {{
 }}
 """
 """Series with exactly this name, for one the profile hasn't started (cost 1)."""
+
+SEARCH = """
+query Search($q: String!, $filter: String, $sort: String, $per: Int!, $page: Int!) {
+  search(query: $q, query_type: "Book", per_page: $per, page: $page, filter_by: $filter,
+         sort: $sort) { ids results }
+}
+"""
+"""Hardcover's Typesense book search (cost 1; ``per_page`` capped at 25): ``search_books``
+and ``check_books`` (§3.3.1). ``results.hits[].document`` holds each book; its ``id`` is a
+string."""
+
+SEARCH_PAGE = 25
+"""Typesense's largest page."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {

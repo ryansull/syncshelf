@@ -1,0 +1,2281 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "search": {
+        "ids": [
+          0,
+          0,
+          0
+        ],
+        "results": {
+          "facet_counts": [],
+          "found": 0,
+          "hits": [
+            {
+              "document": {
+                "activities_count": 0,
+                "alternative_titles": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "author_names": [
+                  "Frank Herbert"
+                ],
+                "book_category_id": 0,
+                "compilation": false,
+                "content_warnings": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "contribution_specializations": [],
+                "contribution_types": [
+                  "scrubbed"
+                ],
+                "contributions": [
+                  {
+                    "author": {
+                      "id": 171873,
+                      "image": {
+                        "color": "scrubbed",
+                        "color_name": "scrubbed",
+                        "height": 0,
+                        "id": 0,
+                        "url": "https://example.com/",
+                        "width": 0
+                      },
+                      "name": "Frank Herbert",
+                      "slug": "scrubbed"
+                    },
+                    "contribution": "scrubbed",
+                    "contributor_role_blurb": "scrubbed",
+                    "contributor_role_id": 0,
+                    "contributor_role_name": "scrubbed",
+                    "primary": false
+                  }
+                ],
+                "cover_color": "scrubbed",
+                "description": "scrubbed",
+                "featured_series": {
+                  "collection": false,
+                  "details": "scrubbed",
+                  "featured": false,
+                  "id": 0,
+                  "position": 0.0,
+                  "series": {
+                    "books_count": 0,
+                    "id": 0,
+                    "name": "Dune",
+                    "primary_books_count": 0,
+                    "slug": "scrubbed"
+                  },
+                  "unreleased": false
+                },
+                "featured_series_position": 0.0,
+                "genres": [
+                  "scrubbed"
+                ],
+                "has_audiobook": false,
+                "has_ebook": false,
+                "id": "scrubbed",
+                "image": {
+                  "color": "scrubbed",
+                  "color_name": "scrubbed",
+                  "height": 0,
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "width": 0
+                },
+                "isbns": [
+                  "8886845529",
+                  "9788886845526",
+                  "0593549236",
+                  "9780593549230",
+                  "0425103811",
+                  "9780425103814",
+                  "1440631298",
+                  "9781440631290",
+                  "2221252055",
+                  "9782221252055",
+                  "0575104414",
+                  "9780575104419",
+                  "8251406048",
+                  "9788251406048",
+                  "3453317173",
+                  "9783453317178",
+                  "147323395X",
+                  "9781473233959",
+                  "9759970112",
+                  "9789759970116",
+                  "2266320483",
+                  "9782266320481",
+                  "1427201439",
+                  "9781427201430",
+                  "9897830758",
+                  "9788576571018",
+                  "5170103565",
+                  "9785170103560",
+                  "8466363408",
+                  "9788466363402",
+                  "345330523X",
+                  "9783453305236",
+                  "1419759477",
+                  "9781419759475",
+                  "0143111582",
+                  "9780143111580",
+                  "0575081503",
+                  "9780575081505",
+                  "1435140745",
+                  "9781435140745",
+                  "1101658053",
+                  "9781101658055",
+                  "8834733797",
+                  "9788834733790",
+                  "6046933307",
+                  "9786046933304",
+                  "8381887534",
+                  "9788381887533",
+                  "1399611178",
+                  "9781399611176",
+                  "6586064961",
+                  "9786586064964",
+                  "8576574896",
+                  "9788576574897",
+                  "2266008552",
+                  "9782266008556",
+                  "1427201447",
+                  "9781427201447",
+                  "9897732721",
+                  "9789897732720",
+                  "0593640330",
+                  "9780593640333",
+                  "8834747690",
+                  "9788834747698",
+                  "057512279X",
+                  "9780575122796",
+                  "5171342725",
+                  "9785171342722",
+                  "8834744292",
+                  "9788834744291",
+                  "3453321227",
+                  "9783453321229",
+                  "8834747364",
+                  "9788834747360",
+                  "1436233313",
+                  "9781436233316",
+                  "8520904882",
+                  "9788520904886",
+                  "0450042308",
+                  "9780450042300",
+                  "0881036366",
+                  "9780881036367",
+                  "0340839937",
+                  "9780340839935",
+                  "8381880572",
+                  "9788381880572",
+                  "8401469317",
+                  "9788401469312",
+                  "3453274466",
+                  "9783453274464",
+                  "8385432167",
+                  "9788385432166",
+                  "5170969449",
+                  "9785170969449",
+                  "2266307304",
+                  "9782266307307",
+                  "057501864X",
+                  "9780575018648",
+                  "3641173086",
+                  "9783641173081",
+                  "6043684969",
+                  "9786043684964",
+                  "8072149415",
+                  "9788072149414",
+                  "9178934753",
+                  "9789178934751",
+                  "044100590X",
+                  "9780441005901",
+                  "9897831177",
+                  "9789897831171",
+                  "1436233283",
+                  "9781436233286",
+                  "807214183X",
+                  "9788072141838",
+                  "902140768X",
+                  "9789021407685",
+                  "8466353771",
+                  "9788466353779",
+                  "1473696216",
+                  "9781473696211",
+                  "849759682X",
+                  "9788497596824",
+                  "1436233291",
+                  "9781436233293",
+                  "0450000893",
+                  "9780450000898",
+                  "9510484202",
+                  "9789510484203",
+                  "8381884101",
+                  "9788381884105",
+                  "8834718453",
+                  "9788834718452",
+                  "9896379467",
+                  "9789896379469",
+                  "2266233203",
+                  "9782266233200",
+                  "0450031462",
+                  "9780450031465",
+                  "808159647X",
+                  "9788081596476",
+                  "0425266540",
+                  "9780425266540",
+                  "3453186834",
+                  "9783453186835",
+                  "0441172660",
+                  "9780441172665",
+                  "222112748X",
+                  "9782221127483",
+                  "3453185676",
+                  "9783453185678",
+                  "2221249482",
+                  "9782221249482",
+                  "9896379459",
+                  "9789896379452",
+                  "9603063959",
+                  "9789603063957",
+                  "8834739671",
+                  "9788834739679",
+                  "3641139570",
+                  "9783641139575",
+                  "9512340844",
+                  "9789512340842",
+                  "0441014054",
+                  "9780441014057",
+                  "9921730746",
+                  "9789921730746",
+                  "9756557273",
+                  "9789756557273",
+                  "658606497X",
+                  "9786586064971",
+                  "8576572370",
+                  "9788576572374",
+                  "857657313X",
+                  "9788576573135",
+                  "6094274571",
+                  "9786094274572",
+                  "6231340066",
+                  "9786231340061",
+                  "1399601784",
+                  "9781399601788",
+                  "042507160X",
+                  "9780425071601",
+                  "0399128964",
+                  "9780399128967",
+                  "0801950775",
+                  "9780801950773",
+                  "0425043762",
+                  "9780425043769",
+                  "9029002573",
+                  "9789029002578",
+                  "0812417240",
+                  "9780812417241",
+                  "9178934761",
+                  "9789178934768",
+                  "0606031111",
+                  "9780606031110",
+                  "6067580640",
+                  "9786067580648",
+                  "042505313X",
+                  "9780425053133",
+                  "0425054713",
+                  "9780425054710",
+                  "0450011844",
+                  "9780450011849",
+                  "7539967366",
+                  "9787539967363",
+                  "951011376X",
+                  "9789510113769",
+                  "8373017232",
+                  "9788373017238",
+                  "3453323130",
+                  "9783453323131",
+                  "605375479X",
+                  "9786053754794",
+                  "0425027066",
+                  "9780425027066",
+                  "1856958965",
+                  "9781856958967",
+                  "8466356959",
+                  "9788466356954",
+                  "0441013597",
+                  "9780441013593",
+                  "2266320548",
+                  "9782266320542",
+                  "9780441172717",
+                  "0593640349",
+                  "9780593640340",
+                  "9780441000000",
+                  "0441172717",
+                  "9780441172719",
+                  "059333471X",
+                  "9780593334713",
+                  "6064304839",
+                  "9786064304834",
+                  "1736928481",
+                  "9781736928486",
+                  "059320011X",
+                  "9780593200117",
+                  "1529394430",
+                  "9781529394436",
+                  "8484504085",
+                  "9788484504085",
+                  "0575073349",
+                  "9780575073340",
+                  "8466342664",
+                  "9788466342667",
+                  "6258487599",
+                  "9786258487596",
+                  "1402523807",
+                  "9781402523809",
+                  "9896372489",
+                  "9789896372484",
+                  "8026922115",
+                  "9788026922117",
+                  "6171286087",
+                  "9786171286085",
+                  "5171189331",
+                  "9785171189334",
+                  "9934553465",
+                  "9789934553462",
+                  "8741847040",
+                  "9788741847047",
+                  "9612745811",
+                  "9789612745813",
+                  "9531318344",
+                  "9789531318341",
+                  "9510115754",
+                  "9789510115756",
+                  "9634069037",
+                  "9789634069034",
+                  "8251406021",
+                  "9788251406024",
+                  "9021407671",
+                  "9789021407678",
+                  "6001822832",
+                  "9786001822834",
+                  "2266026658",
+                  "9782266026659",
+                  "9798217192205",
+                  "2266008560",
+                  "9782266008563",
+                  "0593438361",
+                  "9780593438367",
+                  "1427218366",
+                  "9781427218360",
+                  "8378180239",
+                  "9788378180234",
+                  "1529347858",
+                  "9781529347852",
+                  "5170231342",
+                  "9785170897810",
+                  "2266114034",
+                  "9782266114035",
+                  "8381881382",
+                  "9788381881388",
+                  "059309932X",
+                  "9780593099322",
+                  "0575035404",
+                  "9780575035409",
+                  "0450054659",
+                  "9780450054655",
+                  "8490180148",
+                  "9788490180143",
+                  "1439501661",
+                  "9781439501665",
+                  "8466363572",
+                  "9788466363570",
+                  "0593200101",
+                  "9780593200100",
+                  "8842903051",
+                  "9788842903055",
+                  "8417347623",
+                  "9788417347628",
+                  "1529347866",
+                  "9781529347869",
+                  "0425064344",
+                  "9780425064344",
+                  "059343837X",
+                  "9780593438374",
+                  "0425046877",
+                  "9780425046876",
+                  "9635663498",
+                  "9789635663491",
+                  "1444738208",
+                  "9781444738209",
+                  "0792748662",
+                  "9780792748663",
+                  "1101385456",
+                  "9781101385456",
+                  "8470021818",
+                  "9788470021817",
+                  "0450051722",
+                  "9780450051722",
+                  "073663763X",
+                  "9780736637633",
+                  "0441010628",
+                  "9780441010622",
+                  "0425036987",
+                  "9780425036983",
+                  "5171172056",
+                  "9785171172053",
+                  "9735697483",
+                  "9789735697488",
+                  "0450035697",
+                  "9780450035692",
+                  "0340960191",
+                  "9780340960196",
+                  "0425080021",
+                  "6171232386",
+                  "9786171276895",
+                  "0425038912",
+                  "9780425038918",
+                  "8834721284",
+                  "9788834721285",
+                  "8371504160",
+                  "9788371504167",
+                  "6073194641",
+                  "9786073194648",
+                  "6064312610",
+                  "9786064312617",
+                  "3958394507",
+                  "9783958394506",
+                  "1556909330",
+                  "9781556909337",
+                  "9612746567",
+                  "9789612746568",
+                  "3785752156",
+                  "9783785752159",
+                  "5237030777",
+                  "9785237030778"
+                ],
+                "lists_count": 0,
+                "moods": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "pages": 0,
+                "prompts_count": 0,
+                "rating": 0.0,
+                "ratings_count": 0,
+                "release_date": "2000-01-01",
+                "release_year": 0,
+                "reviews_count": 0,
+                "series_ids": [
+                  0,
+                  0,
+                  0
+                ],
+                "series_names": [
+                  "Dune",
+                  "Dune Universe (Publication Order)",
+                  "Dune Universe (Chronological)"
+                ],
+                "slug": "scrubbed",
+                "subtitle": "Teacher's Book",
+                "tags": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "title": "Dune",
+                "users_count": 0,
+                "users_read_count": 0
+              },
+              "highlight": {
+                "alternative_titles": [
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  }
+                ],
+                "series_names": [
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark>"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Publication Order)"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Chronological)"
+                  }
+                ],
+                "title": {
+                  "matched_tokens": [
+                    "Dune"
+                  ],
+                  "snippet": "<mark>Dune</mark>"
+                }
+              },
+              "highlights": [
+                {
+                  "field": "scrubbed",
+                  "matched_tokens": [
+                    "scrubbed"
+                  ],
+                  "snippet": "scrubbed"
+                },
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                },
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                }
+              ],
+              "text_match": 0,
+              "text_match_info": {
+                "best_field_score": "scrubbed",
+                "best_field_weight": 0,
+                "fields_matched": 0,
+                "num_tokens_dropped": 0,
+                "score": "scrubbed",
+                "tokens_matched": 0,
+                "typo_prefix_score": 0
+              }
+            },
+            {
+              "document": {
+                "activities_count": 0,
+                "alternative_titles": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "author_names": [
+                  "Frank Herbert"
+                ],
+                "book_category_id": 0,
+                "compilation": false,
+                "content_warnings": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "contribution_specializations": [],
+                "contribution_types": [
+                  "scrubbed"
+                ],
+                "contributions": [
+                  {
+                    "author": {
+                      "id": 171873,
+                      "image": {
+                        "color": "scrubbed",
+                        "color_name": "scrubbed",
+                        "height": 0,
+                        "id": 0,
+                        "url": "https://example.com/",
+                        "width": 0
+                      },
+                      "name": "Frank Herbert",
+                      "slug": "scrubbed"
+                    },
+                    "contribution": "scrubbed",
+                    "contributor_role_blurb": "scrubbed",
+                    "contributor_role_id": 0,
+                    "contributor_role_name": "scrubbed",
+                    "primary": false
+                  }
+                ],
+                "cover_color": "scrubbed",
+                "description": "scrubbed",
+                "featured_series": {
+                  "collection": false,
+                  "details": "scrubbed",
+                  "featured": false,
+                  "id": 0,
+                  "position": 0.0,
+                  "series": {
+                    "books_count": 0,
+                    "id": 0,
+                    "name": "Dune",
+                    "primary_books_count": 0,
+                    "slug": "scrubbed"
+                  },
+                  "unreleased": false
+                },
+                "featured_series_position": 0.0,
+                "genres": [
+                  "scrubbed"
+                ],
+                "has_audiobook": false,
+                "has_ebook": false,
+                "id": "scrubbed",
+                "image": {
+                  "color": "scrubbed",
+                  "color_name": "scrubbed",
+                  "height": 0,
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "width": 0
+                },
+                "isbns": [
+                  "9021461781",
+                  "9789021461786",
+                  "8466356967",
+                  "9788466356961",
+                  "5171037450",
+                  "9785171037451",
+                  "9603064238",
+                  "9789603064237",
+                  "0575006684",
+                  "9780575006683",
+                  "0425074986",
+                  "9780425074985",
+                  "9606232190",
+                  "9789606232190",
+                  "9897835431",
+                  "9789897835438",
+                  "8381882036",
+                  "9788381882033",
+                  "0450012298",
+                  "9780450012297",
+                  "8576573822",
+                  "9788576573821",
+                  "8576571161",
+                  "9788576571162",
+                  "8576575248",
+                  "9788576575245",
+                  "0425039307",
+                  "9780425039304",
+                  "0425043460",
+                  "9780425043462",
+                  "6586064929",
+                  "9786586064926",
+                  "6171249645",
+                  "9786171249646",
+                  "0425043797",
+                  "9780425043790",
+                  "8470022008",
+                  "9788470022005",
+                  "3641228247",
+                  "9783641228248",
+                  "3453319540",
+                  "9783453319547",
+                  "0441172695",
+                  "9780441172696",
+                  "3453074270",
+                  "9783453074279",
+                  "0593098234",
+                  "9780593098233",
+                  "9510371572",
+                  "9789510371572",
+                  "2266027255",
+                  "9782266027250",
+                  "9531319979",
+                  "9789531319973",
+                  "8373017259",
+                  "9788373017252",
+                  "9651315245",
+                  "9789651315244",
+                  "1399622919",
+                  "9781399622912",
+                  "9029008857",
+                  "9789029008853",
+                  "8401469325",
+                  "9788401469329",
+                  "8834721292",
+                  "9788834721292",
+                  "838188411X",
+                  "9788381884112",
+                  "0450041565",
+                  "9780450041563",
+                  "1427218374",
+                  "9781427218377",
+                  "6094275292",
+                  "9786094275296",
+                  "8381880823",
+                  "9788381880824",
+                  "9545700351",
+                  "9789545700354",
+                  "8498006813",
+                  "9788498006810",
+                  "9739144896",
+                  "9789739144896",
+                  "0575035412",
+                  "9780575035416",
+                  "2266320491",
+                  "9782266320498",
+                  "8026922107",
+                  "9788026922100",
+                  "8886845537",
+                  "9788886845533",
+                  "517099480X",
+                  "9785170994809",
+                  "8466372016",
+                  "9788466372015",
+                  "8834728424",
+                  "9788834728420",
+                  "8466342672",
+                  "9788466342674",
+                  "2266235818",
+                  "9782266235815",
+                  "1427202362",
+                  "9781427202369",
+                  "6231340260",
+                  "9786231340269",
+                  "6231341666",
+                  "9786231341662",
+                  "0425064360",
+                  "9780425064368",
+                  "0736640185",
+                  "9780736640183",
+                  "0808520733",
+                  "9780808520733",
+                  "0425053148",
+                  "9780425053140",
+                  "1473655323",
+                  "9781473655324",
+                  "0425079015",
+                  "9780425079010",
+                  "1690319852",
+                  "9781690319856",
+                  "9639344850",
+                  "9789639344853",
+                  "0425071804",
+                  "9780425071809",
+                  "8842903094",
+                  "9788842903093",
+                  "8381884535",
+                  "9788381884532",
+                  "0441015611",
+                  "9780441015610",
+                  "9780425043460",
+                  "9780593100000",
+                  "0593201736",
+                  "9780593201732",
+                  "0425029522",
+                  "9780425029527",
+                  "0593548442",
+                  "9780593548448",
+                  "1399622617",
+                  "9781399622615",
+                  "1427202370",
+                  "9781427202376",
+                  "3453186842",
+                  "9783453186842",
+                  "8497596676",
+                  "9788497596671",
+                  "6053755311",
+                  "9786053755319",
+                  "6258487661",
+                  "9786258487664",
+                  "2221255720",
+                  "9782221255728",
+                  "6064304847",
+                  "9786064304841",
+                  "8576572389",
+                  "9788576572381",
+                  "9788026907",
+                  "9789788026907",
+                  "9545859040",
+                  "9789545859045",
+                  "6001823243",
+                  "9786001823244",
+                  "7539981148",
+                  "9787539981147",
+                  "9612740909",
+                  "9789612740900",
+                  "8834747569",
+                  "9788834747568",
+                  "9532031987",
+                  "9789532031980",
+                  "0575104422",
+                  "9780575104426",
+                  "2266114042",
+                  "9782266114042",
+                  "1101157879",
+                  "9781101157879",
+                  "8081597891",
+                  "9788081597893",
+                  "8473863542",
+                  "9788473863544",
+                  "8381887542",
+                  "9788381887540",
+                  "0399102264",
+                  "9780399102264",
+                  "9934553538",
+                  "9789934553530",
+                  "8072143441",
+                  "9788072143443",
+                  "2221252306",
+                  "9782221252307",
+                  "0450022854",
+                  "9780450022852",
+                  "8520912745",
+                  "9789897831393",
+                  "0425035859",
+                  "9780425035856",
+                  "902906739X",
+                  "9789029067393",
+                  "226600865X",
+                  "9782266008655",
+                  "1101357762",
+                  "9781101357767",
+                  "226617326X",
+                  "9782266173261",
+                  "0425018474",
+                  "9780425018477",
+                  "9896373736",
+                  "9789896373733"
+                ],
+                "lists_count": 0,
+                "moods": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "pages": 0,
+                "prompts_count": 0,
+                "rating": 0.0,
+                "ratings_count": 0,
+                "release_date": "2000-01-01",
+                "release_year": 0,
+                "reviews_count": 0,
+                "series_ids": [
+                  0,
+                  0,
+                  0
+                ],
+                "series_names": [
+                  "Dune",
+                  "Dune Universe (Publication Order)",
+                  "Dune Universe (Chronological)"
+                ],
+                "slug": "scrubbed",
+                "tags": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "title": "Dune Messiah",
+                "users_count": 0,
+                "users_read_count": 0
+              },
+              "highlight": {
+                "alternative_titles": [
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  }
+                ],
+                "series_names": [
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark>"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Publication Order)"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Chronological)"
+                  }
+                ],
+                "title": {
+                  "matched_tokens": [
+                    "Dune"
+                  ],
+                  "snippet": "<mark>Dune</mark> Messiah"
+                }
+              },
+              "highlights": [
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                },
+                {
+                  "field": "scrubbed",
+                  "matched_tokens": [
+                    "scrubbed"
+                  ],
+                  "snippet": "scrubbed"
+                },
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                }
+              ],
+              "text_match": 0,
+              "text_match_info": {
+                "best_field_score": "scrubbed",
+                "best_field_weight": 0,
+                "fields_matched": 0,
+                "num_tokens_dropped": 0,
+                "score": "scrubbed",
+                "tokens_matched": 0,
+                "typo_prefix_score": 0
+              }
+            },
+            {
+              "document": {
+                "activities_count": 0,
+                "alternative_titles": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "author_names": [
+                  "Frank Herbert"
+                ],
+                "book_category_id": 0,
+                "compilation": false,
+                "content_warnings": [],
+                "contribution_specializations": [],
+                "contribution_types": [
+                  "scrubbed"
+                ],
+                "contributions": [
+                  {
+                    "author": {
+                      "id": 171873,
+                      "image": {
+                        "color": "scrubbed",
+                        "color_name": "scrubbed",
+                        "height": 0,
+                        "id": 0,
+                        "url": "https://example.com/",
+                        "width": 0
+                      },
+                      "name": "Frank Herbert",
+                      "slug": "scrubbed"
+                    },
+                    "contribution": "scrubbed",
+                    "contributor_role_blurb": "scrubbed",
+                    "contributor_role_id": 0,
+                    "contributor_role_name": "scrubbed",
+                    "primary": false
+                  }
+                ],
+                "cover_color": "scrubbed",
+                "description": "scrubbed",
+                "featured_series": {
+                  "collection": false,
+                  "details": "scrubbed",
+                  "featured": false,
+                  "id": 0,
+                  "position": 0.0,
+                  "series": {
+                    "books_count": 0,
+                    "id": 0,
+                    "name": "Dune",
+                    "primary_books_count": 0,
+                    "slug": "scrubbed"
+                  },
+                  "unreleased": false
+                },
+                "featured_series_position": 0.0,
+                "genres": [
+                  "scrubbed"
+                ],
+                "has_audiobook": false,
+                "has_ebook": false,
+                "id": "scrubbed",
+                "image": {
+                  "color": "scrubbed",
+                  "color_name": "scrubbed",
+                  "height": 0,
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "width": 0
+                },
+                "isbns": [
+                  "8466342680",
+                  "9788466342681",
+                  "8401469333",
+                  "9788401469336",
+                  "0792753194",
+                  "9780792753193",
+                  "9994737503",
+                  "9789994737505",
+                  "5171003254",
+                  "9785171003258",
+                  "8373017267",
+                  "9788373017269",
+                  "9606232204",
+                  "9789606232206",
+                  "0425074994",
+                  "9780425074992",
+                  "2221127501",
+                  "9782221127506",
+                  "8576572397",
+                  "9788576572398",
+                  "0425079023",
+                  "9780425079027",
+                  "1427202923",
+                  "9781427202925",
+                  "0450050750",
+                  "9780450050756",
+                  "0425039315",
+                  "9780425039311",
+                  "6586064937",
+                  "9786586064933",
+                  "8381884748",
+                  "9788381884747",
+                  "9897832556",
+                  "9789897832550",
+                  "6064305258",
+                  "9786064305251",
+                  "9029067403",
+                  "9789029067409",
+                  "8886845545",
+                  "9788886845540",
+                  "993455383X",
+                  "9789934553837",
+                  "0425071790",
+                  "9780425071793",
+                  "0593201744",
+                  "9780593201749",
+                  "9867001729",
+                  "9789867001726",
+                  "975655829X",
+                  "9789756557297",
+                  "6257737613",
+                  "9786257737616",
+                  "3453186850",
+                  "9783453186859",
+                  "8834735390",
+                  "9788834735398",
+                  "8470022334",
+                  "9788470022333",
+                  "6171276650",
+                  "9786171276659",
+                  "0575074906",
+                  "9780575074903",
+                  "857657165X",
+                  "9788576571650",
+                  "8381880475",
+                  "9788381880473",
+                  "0425053156",
+                  "9780425053157",
+                  "0425040755",
+                  "9780425040751",
+                  "8381880947",
+                  "9788381880947",
+                  "0593548450",
+                  "9780593548455",
+                  "9612745749",
+                  "9789612745745",
+                  "7559411177",
+                  "9787559411174",
+                  "1436221188",
+                  "9781436221184",
+                  "8466372024",
+                  "9788466372022",
+                  "3453319559",
+                  "9783453319554",
+                  "8834728602",
+                  "9788834728604",
+                  "8834721306",
+                  "9788834721308",
+                  "2221259939",
+                  "9782221259931",
+                  "0425054721",
+                  "9780425054727",
+                  "0593098242",
+                  "9780593098240",
+                  "0425043835",
+                  "9780425043837",
+                  "0441015905",
+                  "9780441015900",
+                  "0399116974",
+                  "9780399116971",
+                  "147323378X",
+                  "9781473233782",
+                  "0441104029",
+                  "9780441104024",
+                  "8576573148",
+                  "9788576573142",
+                  "2266027220",
+                  "9782266027229",
+                  "0441104126",
+                  "9780441104123",
+                  "3453305248",
+                  "9783453305243",
+                  "0736640193",
+                  "9780736640190",
+                  "1440630518",
+                  "9781440630514",
+                  "0450034275",
+                  "9780450034275",
+                  "057502190X",
+                  "9780575021907",
+                  "1399629409",
+                  "9781399629409",
+                  "9532032398",
+                  "9789532032390",
+                  "6001828296",
+                  "9786001828294",
+                  "8497594320",
+                  "9788497594325",
+                  "2266152521",
+                  "9782266152525",
+                  "8520912834",
+                  "9788520912836",
+                  "9639441309",
+                  "9789639441309",
+                  "0425061744",
+                  "9780425061749",
+                  "2266013033",
+                  "9782266013031",
+                  "0425064352",
+                  "9780425064351",
+                  "0425033104",
+                  "9780425033104",
+                  "0808520946",
+                  "9780808520948",
+                  "902146179X",
+                  "9789021461793",
+                  "8842903248",
+                  "9788842903246",
+                  "0441104118",
+                  "9780441104116",
+                  "1536201944",
+                  "9781536201949",
+                  "0575104406",
+                  "9780575104402",
+                  "0575035420",
+                  "9780575035423",
+                  "3641233585",
+                  "9783641233587",
+                  "8466357009",
+                  "9788466357005",
+                  "8381884128",
+                  "9788381884129",
+                  "9603064246",
+                  "9789603064244",
+                  "9531320713",
+                  "9789531320719",
+                  "973569753X",
+                  "9789735697532",
+                  "1427228493",
+                  "9781427228499",
+                  "1427202915",
+                  "9781427202918"
+                ],
+                "lists_count": 0,
+                "moods": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "pages": 0,
+                "prompts_count": 0,
+                "rating": 0.0,
+                "ratings_count": 0,
+                "release_date": "2000-01-01",
+                "release_year": 0,
+                "reviews_count": 0,
+                "series_ids": [
+                  0,
+                  0,
+                  0
+                ],
+                "series_names": [
+                  "Dune",
+                  "Dune Universe (Publication Order)",
+                  "Dune Universe (Chronological)"
+                ],
+                "slug": "scrubbed",
+                "subtitle": "Book Three in the Dune Chronicles",
+                "tags": [
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed",
+                  "scrubbed"
+                ],
+                "title": "Children of Dune",
+                "users_count": 0,
+                "users_read_count": 0
+              },
+              "highlight": {
+                "alternative_titles": [
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  }
+                ],
+                "series_names": [
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark>"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Publication Order)"
+                  },
+                  {
+                    "matched_tokens": [
+                      "Dune"
+                    ],
+                    "snippet": "<mark>Dune</mark> Universe (Chronological)"
+                  }
+                ],
+                "title": {
+                  "matched_tokens": [
+                    "Dune"
+                  ],
+                  "snippet": "Children of <mark>Dune</mark>"
+                }
+              },
+              "highlights": [
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                },
+                {
+                  "field": "scrubbed",
+                  "matched_tokens": [
+                    "scrubbed"
+                  ],
+                  "snippet": "scrubbed"
+                },
+                {
+                  "field": "scrubbed",
+                  "indices": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "matched_tokens": [
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ],
+                    [
+                      "scrubbed"
+                    ]
+                  ],
+                  "snippets": [
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed",
+                    "scrubbed"
+                  ]
+                }
+              ],
+              "text_match": 0,
+              "text_match_info": {
+                "best_field_score": "scrubbed",
+                "best_field_weight": 0,
+                "fields_matched": 0,
+                "num_tokens_dropped": 0,
+                "score": "scrubbed",
+                "tokens_matched": 0,
+                "typo_prefix_score": 0
+              }
+            }
+          ],
+          "out_of": 0,
+          "page": 0,
+          "request_params": {
+            "collection_name": "scrubbed",
+            "first_q": "scrubbed",
+            "per_page": 0,
+            "q": "scrubbed"
+          },
+          "search_cutoff": false,
+          "search_time_ms": 0
+        }
+      }
+    }
+  }
+}
