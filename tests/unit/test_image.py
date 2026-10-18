@@ -26,7 +26,7 @@ from image.check_logs import LogCheckError, check_logs, main
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "Dockerfile"
-CI_CONFIG = ROOT / "tests" / "image" / "profiles.yaml"
+CI_CONFIG = ROOT / "tests" / "image" / "config.yaml"
 HEALTH_URL = "http://127.0.0.1:8000/healthz"
 
 

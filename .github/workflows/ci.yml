@@ -88,7 +88,7 @@ jobs:
           docker volume create syncshelf-data
           docker run -d --name syncshelf \
             -v syncshelf-data:/data \
-            -v "$PWD/tests/image/profiles.yaml:/config/profiles.yaml:ro" \
+            -v "$PWD/tests/image/config.yaml:/config/profiles.yaml:ro" \
             "$IMAGE"
       - name: Wait for healthy
         run: |
