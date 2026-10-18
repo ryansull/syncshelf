@@ -1,0 +1,76 @@
+# SyncShelf configuration (SPEC §2.3)
+#
+# Copy to profiles.yaml (git-ignored) and point SYNCSHELF_CONFIG at it; the container default
+# is /config/profiles.yaml. Secrets never go in this file. Write each one as a reference:
+#
+#   key: ${ENV_VAR}           expanded from SyncShelf's own environment
+#   key_file: /run/secrets/x  read from a file
+#
+# Only secret keys expand ${VAR}; every other value is taken literally. A missing variable or
+# file stops startup with a message naming the key.
+#
+# Every key phase 1 reads or validates is set below. Lines commented out are keys that later
+# phases read; SPEC §2.3 shows the full shape. A secret key that is present is expanded from
+# phase 1 on, so leave a secret commented out until its variable or file exists.
+
+server:
+  # The issuer URL, with no trailing slash. Phase 1 has no auth, so startup refuses any host
+  # other than localhost or 127.0.0.1. From phase 2 this is the public URL, for example
+  # https://shelf.example.com
+  public_url: http://localhost
+  # oauth | dev. Phase 1 only logs it.
+  auth_mode: dev
+  # dev:                                    # only read when auth_mode: dev
+  #   token: ${SYNCSHELF_DEV_TOKEN}
+  #   profile: alice
+  access:                                   # Cloudflare Access app guarding /authorize
+    team_domain: https://example.cloudflareaccess.com   # an https URL
+    # aud: ${ACCESS_AUD}
+  # consent_hmac_key: ${CONSENT_HMAC_KEY}   # signs the consent form blob
+  # Addresses or networks (comma-separated) trusted to set X-Forwarded-* headers: the Traefik
+  # network in production, or 127.0.0.1 when running locally without a proxy.
+  forwarded_allow_ips: 192.0.2.0/24
+  # DEBUG | INFO | WARNING | ERROR (default INFO)
+  log_level: INFO
+
+services:
+  # Each URL is optional, and must have a host when present. Log lines show its host as the
+  # service's alias (hardcover, abs, chaptarr, browser).
+  hardcover_url: https://api.hardcover.app/v1/graphql
+  abs_url: https://abs.home.arpa            # HTTPS form; http 302s
+  chaptarr_url: http://chaptarr.home.arpa
+  # chaptarr_api_key: ${CHAPTARR_API_KEY}
+  browser_ws: ws://browser:3000/            # playwright run-server sidecar (4b); absent = 4b disabled
+
+cadence:                                    # all optional; defaults shown, written <n>m or <n>h
+  rss_interval: 60m
+  abs_interval: 15m
+  chaptarr_pending_interval: 2m
+  mirror_ttl: 10m
+  # csv_interval_days: 5
+  # csv_window: "02:00-05:00"               # in each profile's timezone
+  # hardcover_daily_reserve: 1000
+
+profiles:
+  # Profile names match ^[a-z][a-z0-9_]{0,31}$. Emails are lowercased and must be unique.
+  alice:
+    email: alice@example.com
+    # timezone: Etc/UTC
+    # permissions: [chaptarr]
+    # household_visible: false
+    # hardcover_token: ${HARDCOVER_TOKEN_ALICE}
+    # hardcover_privacy: private
+    # ingest_secret: ${INGEST_SECRET_ALICE}
+    # goodreads:
+    #   user_id: "00000000"
+    #   rss_key_file: /run/secrets/gr_rss_key_alice
+    #   email: ${GOODREADS_EMAIL_ALICE}
+    #   password_file: /run/secrets/gr_password_alice
+    #   shelf_map:
+    #     read: 3
+    #     currently-reading: 2
+    #     to-read: 1
+    # abs:
+    #   token: ${ABS_TOKEN_ALICE}
+  bob:
+    email: bob@example.com
