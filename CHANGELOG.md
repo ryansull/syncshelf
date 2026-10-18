@@ -27,3 +27,12 @@ All notable changes to SyncShelf are recorded here. The format follows
 - The database layer: one writer thread, per-thread read connections, and a forward-only
   migration runner that writes a `pre-migration-NNNN.db` snapshot before migrating. Ships
   migration `0001_meta` (the `meta` table).
+- `python -m syncshelf` serves the app with one uvicorn worker, proxy headers trusted from
+  `server.forwarded_allow_ips`, and uvicorn's lines as JSON with query strings dropped from
+  the access log. It listens on uvicorn's default `127.0.0.1:8000` for now.
+- Startup checks that `/data` and `/data/goodreads/` are writable (creating `goodreads/`),
+  opens and migrates `/data/syncshelf.db`, and logs the version, the SQLite version and the
+  auth mode.
+- An MCP endpoint at `/mcp` with no tools yet: stateless Streamable HTTP that answers 421 to
+  any Host other than the public host or loopback. `/register` is 404.
+- `GET /healthz`: 200 `{"status":"ok","version":…}` while the database answers, 503 otherwise.
