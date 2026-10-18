@@ -251,19 +251,26 @@ class ScrubFilter(logging.Filter):
 
 
 class AccessQueryFilter(logging.Filter):
-    """Drops the query string from uvicorn's access lines (§2.7), since it can carry a token.
+    """Drops the client address and the query string from uvicorn's access lines (§2.7).
 
-    uvicorn logs ``'%s - "%s %s HTTP/%s" %d'`` with the path and query as the third argument,
-    so only that argument is cut at ``?``. Any other record passes unchanged. It sits on the
-    ``uvicorn.access`` logger, which is where uvicorn logs those lines.
+    The query string can carry a token. The client address is left out because Traefik and
+    Cloudflare already log callers (issue #46), so a pasted line names nobody. uvicorn logs
+    ``'%s - "%s %s HTTP/%s" %d'`` with the arguments ``(client, method, path_with_query,
+    http_version, status)``, so the record is rewritten to ``'"%s %s HTTP/%s" %d'`` without
+    the client and with the path cut at ``?``. Any other record passes unchanged. It sits on
+    the ``uvicorn.access`` logger, which is where uvicorn logs those lines.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
         if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
-            record.args = (args[0], args[1], args[2].split("?", 1)[0], args[3], args[4])
+            # args[0] is the client address, which is dropped.
+            record.msg = _ACCESS_FORMAT
+            record.args = (args[1], args[2].split("?", 1)[0], args[3], args[4])
         return True
 
+
+_ACCESS_FORMAT = '"%s %s HTTP/%s" %d'
 
 ACCESS_LOGGER = "uvicorn.access"
 
@@ -306,7 +313,7 @@ def configure(
     host_aliases: Mapping[str, str] | None = None,
 ) -> None:
     """Send all logging to stdout as scrubbed JSON lines at ``level`` (``server.log_level``),
-    with query strings dropped from uvicorn's access lines.
+    with client addresses and query strings dropped from uvicorn's access lines.
 
     Replaces root's handlers. ``__main__`` calls it before :func:`syncshelf.app.create_app`
     builds the MCP server, and that order is safe: ``MCPServer`` calls ``logging.basicConfig``

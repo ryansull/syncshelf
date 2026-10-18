@@ -427,6 +427,7 @@ def test_host_aliases_map_configured_service_hosts(tmp_path: Path) -> None:
         ),
     )
     assert config.host_aliases() == {
+        "localhost": "public",
         "api.hardcover.app": "hardcover",
         "abs.home.arpa": "abs",
         "chaptarr.home.arpa": "chaptarr",
@@ -434,16 +435,25 @@ def test_host_aliases_map_configured_service_hosts(tmp_path: Path) -> None:
     }
 
 
-def test_host_aliases_are_empty_without_services(tmp_path: Path) -> None:
-    assert load(tmp_path, MINIMAL).host_aliases() == {}
+def test_host_aliases_without_services_alias_only_the_public_host(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).host_aliases() == {"localhost": "public"}
 
 
-def test_other_configured_hosts(tmp_path: Path) -> None:
+def test_host_aliases_include_the_public_and_access_hosts(tmp_path: Path) -> None:
     config = load(
         tmp_path,
-        MINIMAL + "  access:\n    team_domain: https://example.cloudflareaccess.com\n",
+        MINIMAL.replace("http://localhost", "http://127.0.0.1:8000")
+        + "  access:\n    team_domain: https://Example.cloudflareaccess.com\n",
     )
-    assert config.other_hosts() == frozenset({"localhost", "example.cloudflareaccess.com"})
+    assert config.host_aliases() == {
+        "127.0.0.1": "public",
+        "example.cloudflareaccess.com": "access",
+    }
+
+
+def test_a_service_alias_wins_over_the_public_alias_on_a_shared_host(tmp_path: Path) -> None:
+    config = load(tmp_path, MINIMAL + "services:\n  browser_ws: ws://localhost:3000/\n")
+    assert config.host_aliases() == {"localhost": "browser"}
 
 
 @pytest.mark.parametrize("key", ["hardcover_url", "abs_url", "chaptarr_url", "browser_ws"])
