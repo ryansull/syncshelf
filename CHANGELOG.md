@@ -95,8 +95,19 @@ All notable changes to SyncShelf are recorded here. The format follows
   logs an `authorize_refused` line with the reason. An email that matches no profile gets a
   "no SyncShelf profile" page, and nothing is issued. Otherwise the person sees a consent page,
   "Connect claude.ai to SyncShelf as <email>?", with a warning when the code goes to a
-  program on their computer (Claude Code). Allowing isn't built yet: the Allow button gets a
-  501 page and nothing is issued.
+  program on their computer (Claude Code).
+- With `server.auth_mode: oauth`, Claude can finish signing in. **Allow** (`POST /authorize`)
+  checks the signed consent form (an expired or altered one gets an error page), that the
+  post came from the consent page (`Origin` is `server.public_url`), and a fresh Access login
+  for the same email; a refusal redirects back to Claude with `access_denied`. It then issues
+  a single-use code, valid for 120 seconds, and redirects with `code`, `state` and `iss`.
+  `POST /token` exchanges the code (form-encoded bodies only, PKCE S256, the same client,
+  redirect and resource) for an hour-long access token and, when Claude asked for
+  `offline_access`, a refresh token, which creates the connection `my_connections` lists.
+  Every `/token` response carries `Cache-Control: no-store` and `Pragma: no-cache`. A code
+  used twice is refused and the connection it created is revoked (`code_replay`). Refreshing
+  isn't built yet: `grant_type=refresh_token` gets `unsupported_grant_type`. New log events:
+  `code_issued`, `grant_created`, `token_request_refused`, and `grant_revoked` for a replay.
 - New config keys, required with `server.auth_mode: oauth`: `server.access.aud` (a secret,
   e.g. `${ACCESS_AUD}`: the AUD tag of the Access app guarding `/authorize`) and
   `server.consent_hmac_key` (a secret, e.g. `${CONSENT_HMAC_KEY}`: signs the consent form,
