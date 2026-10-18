@@ -986,7 +986,7 @@ Verified live on 2026-10-17 unless marked *(docs only)*.
   - **429** carries `Retry-After` and `Ratelimit-Reset`, and doesn't decrement the daily count.
   - *(docs only)* Each **top-level field** costs one token. More than 10 top-level fields gives **403 `request_exceeds_capacity`**. The limit is **per Hardcover user**, shared across all of that user's tokens and apps.
 - **Other limits:**
-  - **Rows:** every list field is **silently capped at 1000 rows**, so page with `limit`/`offset` and a stable `order_by: {id: asc}`.
+  - **Rows:** every list field is **silently capped at 1000 rows**, so page past it by keyset: `order_by: {id: asc}`, `limit: 1000`, and `id: {_gt: <last id>}` for the next page. Offset paging can skip or repeat a row when the data changes between pages. Decided in [Hardcover library paging: offset under concurrent edits, and lists over the 1000-row cap](https://github.com/ryansull/syncshelf/issues/103).
   - **Depth:** *(docs only)* a **depth cap of 3** is announced for 2026. It isn't enforced today, but keep every query at depth ≤ 3.
   - **Operators:** `_like`, `_ilike`, `_regex` and the `_similar` variants are **403** ("ilike and related operations are not permitted"). Title matching uses `_eq` or `search`.
   - **Timeouts:** *(docs only)* 30 s query timeout (408), 2 s for `search`. A 503 is safe to retry.
@@ -1004,7 +1004,7 @@ Verified live on 2026-10-17 unless marked *(docs only)*.
 - **Rating:** `numeric`, **0.5–5 in 0.5 steps**. `null` clears it. Anything else returns 200 with `error` "Rating must be between 0.5 and 5 in 0.5 increments" and leaves the row unchanged.
 - **Review:** write `review_markdown` + `review_has_spoilers`. That sets `review_raw`, `has_review` and `reviewed_at`.
 - **Privacy:** `privacy_setting_id` is 1 Public, 2 Followers, 3 Private. Public rows may post to followers' feeds *(not tested)*.
-- **Reading formats:** `reading_format_id` is 1 Read (physical), 2 Listened, 3 Both, 4 Ebook. `edition_format` is free text and often null, so use `reading_format_id`.
+- **Reading formats:** `reading_format_id` is 1 Read (physical), 2 Listened, 3 Both, 4 Ebook. `edition_format` is free text and often null, so use `reading_format_id`. In SyncShelf's format buckets (`audio | ebook | print | unknown`), a **Both** read counts as **both `audio` and `print`**: it matches either filter, and `reading_stats` counts its pages and its hours, so a format grouping can add up to more books than were read. Decided in [Reading format 3 ("Both"): which format bucket does it count in?](https://github.com/ryansull/syncshelf/issues/108).
 - **Mutations** (introspected; all exercised live):
   ```
   insert_user_book(object: UserBookCreateInput!): {id, error, user_book}
@@ -1054,7 +1054,7 @@ query Search($q: String!, $filter: String, $sort: String, $per: Int!, $page: Int
 #                  rating users_count has_audiobook has_ebook pages audio_seconds genres description …
 ```
 
-**The library query.** This is the mirror refresh and each acting sync's fetch. It has two top-level fields, so it costs **2** requests; page `user_books` past 1000 rows.
+**The library query.** This is the mirror refresh and each acting sync's fetch. It has two top-level fields, so it costs **2** requests. `user_books` is paged past 1000 rows by keyset, and so are `lists` and each list's `list_books` ([#103](https://github.com/ryansull/syncshelf/issues/103)).
 
 ```graphql
 query Library($user_id: Int!, $limit: Int = 1000, $offset: Int = 0) {
@@ -1131,7 +1131,7 @@ From [Read-side strategy: live Hardcover queries or a local mirror?](https://git
 - **Full replace per profile:** `DELETE … WHERE profile = ?` plus inserts, in one transaction. A user_book deleted in Hardcover disappears from the mirror; there are no tombstones. A replace never touches links or baselines; the mirror has no FKs in or out.
 - **Mirror lock per profile:** a read-triggered refresh and a sync's fetch never run at once. A reader that finds a refresh in progress waits for it.
 - **Write-through:** after any SyncShelf write, re-fetch just that user_book (1 request) and upsert it. Writes are Claude edits, `resolve_match` and sync pushes.
-- **Household:** a `household` or `"<name>"` query refreshes **the other profile's** mirror with **that profile's own** token, under the same TTL. The `household_visible` gate applies before any refresh.
+- **Household:** a `household` or `"<name>"` query refreshes **the other profile's** mirror with **that profile's own** token, under the same TTL. The `household_visible` gate applies before any refresh. A `household` answer where some profile has **no mirror yet** answers from the profiles that have one, flagged `stale: true` with that profile named in `stale_reason`. It refuses only when no profile asked about has a mirror. Decided in [Household reads when one opted-in profile has no mirror copy yet](https://github.com/ryansull/syncshelf/issues/116).
 - **Merges (from 4a):** a mirror refresh counts as a Hardcover fetch for identity purposes. Seeing a linked book with `canonical_id` set rewrites links and source rows (§3.4a.4). Phase 3 just stores what it sees.
 - **What the mirror holds** (no review text, no private notes):
 
@@ -1227,10 +1227,10 @@ All six take `profile = "me" | "<name>" | "household"` (§2.8), are `readOnlyHin
 |---|---|---|
 | `get_my_library(status?, query?, author?, genre?, series?, format?, min_rating?, finished_from?, finished_to?, sort?, limit=25, cursor?, profile="me")` | mirror | Compact **library rows** (below). `status` is a slug (`want-to-read` …). `format` is `audio\|ebook\|print\|unknown`. `finished_*` are ISO dates over reads' `finished_on`. `sort` is `date_added\|last_finished\|rating\|title\|author`, default `date_added` desc [assembly choice for the sort keys]. `limit` defaults to 25, max 100. Every response carries `total` and `next_cursor`. When `total` exceeds the page, it also carries **counts by status for the whole filtered set**, so counting questions never need paging. "Highest rated last year" = a date range + `sort=rating`. |
 | `get_book(book: int, profile="me")` | **live**, then written back to the mirror | The full record, keyed by Hardcover `book_id` (resolve titles with `search_books` / `check_books` first) [assembly choice: id only]. It includes: shelf state; every read with its `id`, dates and format; review + spoiler flag (**own profile only**); all series with positions (`book_series`); contributors with roles, plus narrators from the audio edition; tags (top 5 each of Genre / Mood / Tag); every content warning (≤ 10); lists the book is on (from the mirror); the top 10 similar books as compact rows. About 2 requests (the book or user_book, plus a hydrate of the similar ids). |
-| `series_progress(series?, profile="me")` | mirror for started series, then **one live batched request** `series(where: {id: {_in: …}})` with `book_series(order_by: {position: asc}) { position book_id }`, depth ≤ 3 | Without `series`: the series started but not finished, each with the **next unread entry** (the lowest position not Read). With `series` (an id or name): the full reading order with per-entry status. Series lists are not cached. |
+| `series_progress(series?, profile="me")` | mirror for started series, then **one live batched request** `series(where: {id: {_in: …}})` with `book_series(order_by: {position: asc}) { position book_id }`, depth ≤ 3 | Without `series`: the series started but not finished, each with the **next unread entry** (the lowest position not Read). With `series` (an id or name): the full reading order with per-entry status. Series lists are not cached. A series' `book_series` also holds translations and editions at the same position, box sets and unpositioned rows, so: box sets (`book.compilation`) and rows with no position are left out; each position is shown as its most-read book (`users_count`); a position is Read when **any** book at it is; and "next" and "finished" use **whole-number** positions only, so novellas (x.5) are listed but never block. A series read only through a box set shows as unread (accepted). Decided in [series_progress: one book per position, and do novellas count?](https://github.com/ryansull/syncshelf/issues/128). |
 | `reading_stats(period, group_by?, profile="me")` | mirror (+ live `me { goals }`, 1 request, omitted on failure) | Books, pages and hours, grouped by `month \| format \| genre \| author \| rating`, plus goal progress. **Aggregates only, never a book list.** Computed locally. `period` is `YYYY`, `YYYY-MM`, `last_30_days`, `last_12_months`, `all` or `YYYY-MM-DD..YYYY-MM-DD` [assembly choice for the period forms]. A read counts in the period by its `finished_on`. Pages come from print/ebook reads, hours from audio reads' `audio_seconds` [assembly choice]. |
 | `search_books(query?, author?, genre?, sort?, exclude_shelved=true, limit=10, profile="me")` | live Typesense; mirror for the annotation | Each hit is a compact row plus a short description, annotated with shelf status. `limit` defaults to 10, max 25. With `exclude_shelved`, every shelved book is dropped (including DNF and Ignored). Author and genre map to `filter_by`, and a filter with no query uses `query: "*"`. `sort` is `relevance\|popular\|rating\|newest` [assembly choice]. This is the general search tool that `resolve_match` relies on. |
-| `check_books(candidates, profile="me")` | live resolve (search); mirror for shelf status | `candidates` is up to **20** items of `{title, author?}` or `{book_id}`. Each comes back as one compact row with rating, length, series position, **audio/ebook availability on Hardcover** (`has_audiobook` / `has_ebook`), shelf status (the other profile's too with `household`), and `match: exact \| likely \| not_found`. **It never guesses**: an unclear candidate is `not_found`, with no closest hit substituted. `exact` = a `book_id` was given, or the top hit passes the matcher's fuzzy auto-accept rule (title ≥ 95, author ≥ 90, margin ≥ 10). `likely` = title ≥ 85 and author ≥ 80 with margin ≥ 10. Anything else is `not_found` [assembly choice for the `likely` band; calibrate with the matcher in 4a]. |
+| `check_books(candidates, profile="me")` | live resolve (search); mirror for shelf status | `candidates` is up to **20** items of `{title, author?}` or `{book_id}`. Each comes back as one compact row with rating, length, series position, **audio/ebook availability on Hardcover** (`has_audiobook` / `has_ebook`), shelf status (the other profile's too with `household`), and `match: exact \| likely \| not_found`. **It never guesses**: an unclear candidate is `not_found`, with no closest hit substituted. `exact` = a `book_id` was given, or the top hit passes the matcher's fuzzy auto-accept rule (title ≥ 95, author ≥ 90, margin ≥ 10). `likely` = title ≥ 85 and author ≥ 80 with margin ≥ 10. Anything else is `not_found` [assembly choice for the `likely` band; calibrate with the matcher in 4a]. A candidate with **no author** has its author score ignored: a clear title match can be `likely`, never `exact` ([check_books: can a title with no author match?](https://github.com/ryansull/syncshelf/issues/142)). |
 
 #### 3.3.8 Response shape and size
 
@@ -1502,15 +1502,18 @@ This contradicts the originating prompt's ISBN-first order. The Goodreads mappin
   - hydrate the ids with one `books(where: {id: {_in: …}})`.
 - **Scoring** (`rapidfuzz`):
   - **title** = `max(token_sort_ratio(full), token_sort_ratio(title before ':'))`;
+  - **ties with adaptations:** when the top hit's **full** title scores 100, the margin is checked on **full-title** scores, so a runner-up that only reaches the threshold through the part before `:` (`… : A Graphic Novel`) doesn't make it ambiguous. Decided in [Matcher: the before-':' title score ties a book with its adaptations](https://github.com/ryansull/syncshelf/issues/138);
   - **author** = the best `token_sort_ratio` of the source's primary author against each candidate `author_names` entry.
-- **Normalisation**, the same function on both sides, in this order:
+- **Normalisation**, the same function on both sides, in this order (decided in [Matcher normalisation: the stated step order makes steps 6 and 7 no-ops](https://github.com/ryansull/syncshelf/issues/105)):
   1. NFKD, then strip diacritics;
   2. casefold;
   3. `&` → `and`;
-  4. drop punctuation, collapse whitespace;
-  5. drop a leading `the|a|an`;
-  6. strip a trailing Goodreads series parenthetical `(… #N)`;
-  7. turn `Last, First` into `First Last`.
+  4. strip a trailing Goodreads series parenthetical `(… #N)`;
+  5. **author names only:** turn `Last, First` into `First Last` (on a title it would swap any single-comma title);
+  6. drop punctuation, collapse whitespace;
+  7. drop a leading `the|a|an`.
+
+  The series parenthetical and the comma must be seen before punctuation is dropped.
 - **Fuzzy auto-accept** (outside the backfill only):
   - title **≥ 95**, author **≥ 90**, **and** the runner-up's title score at least **10** points lower;
   - otherwise queue as `fuzzy_low` or `fuzzy_ambiguous`, keeping candidates with title ≥ 60 (at most 5).
