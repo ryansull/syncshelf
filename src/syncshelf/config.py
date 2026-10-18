@@ -555,13 +555,14 @@ def _cadence(raw: Mapping[str, Any]) -> CadenceConfig:
             durations[key] = parse_duration(value)
         except ValueError:
             raise ConfigError(f"cadence.{key}: must be a duration written <n>m or <n>h") from None
+    values: dict[str, int] = dict(durations)
     reserve = raw.get("hardcover_daily_reserve")
     if reserve is not None:
         # bool is an int subclass, and `true` is a typo worth stopping on.
         if not isinstance(reserve, int) or isinstance(reserve, bool) or reserve < 0:
             raise ConfigError("cadence.hardcover_daily_reserve: must be a whole number, 0 or more")
-        return CadenceConfig(**durations, hardcover_daily_reserve=reserve)
-    return CadenceConfig(**durations)
+        values["hardcover_daily_reserve"] = reserve
+    return CadenceConfig(**values)
 
 
 def _profiles(

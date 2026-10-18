@@ -152,6 +152,7 @@ class LimiterState:
 class _Waiter:
     priority: Priority
     seq: int
+    cost: int
     wake: asyncio.Future[None] | None = None
 
     @property
@@ -191,17 +192,27 @@ class HardcoverLimiter:
         """Wait for ``cost`` tokens at the current priority, then ``send`` the call.
 
         A 429 pauses the profile and the call is sent again (up to :data:`MAX_RATE_LIMITED`
-        times). Raises :class:`ServeStale` or :class:`Deferred` when the call can't go out,
-        and re-raises whatever else ``send`` raises.
+        times), keeping its place in the queue. Raises :class:`ServeStale` or
+        :class:`Deferred` when the call can't go out, and re-raises whatever else ``send``
+        raises.
         """
         if cost > self._burst:
-            raise ValueError(f"a call costing {cost} can never fit a bucket of {self._burst}")
-        priority = _PRIORITY.get()
+            log.error(
+                "a Hardcover query costs more than the limiter's bucket holds; this is a bug",
+                extra={"event": "hardcover_capacity_bug", "profile": self.profile, "cost": cost},
+            )
+            raise HardcoverError(
+                f"a Hardcover call costing {cost} can never fit a bucket of {self._burst}"
+            )
+        waiter = _Waiter(_PRIORITY.get(), next(self._seq), cost)
         for attempt in range(1, MAX_RATE_LIMITED + 1):
-            await self._acquire(cost, priority)
+            await self._acquire(waiter)
             try:
                 result = await send()
             except HardcoverRateLimited as exc:
+                # A 429 also carries the daily count: when the day's budget is the cause, the
+                # next _acquire turns this into Deferred or ServeStale.
+                self.observe(exc.rate)
                 self._pause(exc.rate)
                 if attempt == MAX_RATE_LIMITED:
                     raise
@@ -217,11 +228,16 @@ class HardcoverLimiter:
         raise AssertionError("unreachable")
 
     def observe(self, rate: RateLimit) -> None:
-        """Take the daily budget from a response's headers."""
+        """Take the daily budget from a response's headers.
+
+        Without a readable reset time, the count is taken to hold until the next midnight UTC,
+        when Hardcover's daily window resets (§3.3.1).
+        """
         if rate.daily_remaining is not None:
             self._daily_remaining = rate.daily_remaining
-        if rate.daily_reset is not None:
-            self._daily_reset = rate.daily_reset
+            self._daily_reset = rate.daily_reset or _next_midnight_utc(self._clock.time())
+            if not self._below_reserve():
+                self._in_reserve = False
         self._expire_daily()
 
     def state(self) -> LimiterState:
@@ -236,41 +252,46 @@ class HardcoverLimiter:
 
     # --- internals --------------------------------------------------------------------------
 
-    async def _acquire(self, cost: int, priority: Priority) -> None:
-        waiter = _Waiter(priority, next(self._seq))
+    async def _acquire(self, waiter: _Waiter) -> None:
         self._queue.append(waiter)
         self._queue.sort(key=lambda w: w.key)
         try:
             while True:
-                self._check_budget(priority)
+                self._check_budget(waiter.priority)
+                wait = self._wait_for(waiter)
+                if waiter.priority is Priority.INTERACTIVE and wait > INTERACTIVE_WAIT:
+                    raise ServeStale("rate_limited", self._clock.time() + wait)
                 if self._queue[0] is not waiter:
                     # Not this call's turn: wait until the head leaves the queue.
                     waiter.wake = asyncio.get_running_loop().create_future()
                     await waiter.wake
                     continue
-                wait = self._wait_for(cost)
                 if wait <= 0:
-                    self._tokens -= cost
+                    self._tokens -= waiter.cost
                     return
-                if priority is Priority.INTERACTIVE and wait > INTERACTIVE_WAIT:
-                    raise ServeStale("rate_limited", self._clock.time() + wait)
                 await self._clock.sleep(wait)
         finally:
             self._queue.remove(waiter)
             if self._queue and (head := self._queue[0]).wake and not head.wake.done():
                 head.wake.set_result(None)
 
-    def _wait_for(self, cost: int) -> float:
-        """Seconds until ``cost`` tokens are free and no pause is in force; 0 means now."""
+    def _wait_for(self, waiter: _Waiter) -> float:
+        """Seconds until ``waiter`` could go out: once no pause is in force and the bucket has
+        refilled for it and for every call queued ahead of it. 0 means now."""
         now = self._clock.monotonic()
         self._tokens = min(self._burst, self._tokens + (now - self._refilled_at) * self._refill)
         self._refilled_at = now
+        needed = 0
+        for queued in self._queue:
+            needed += queued.cost
+            if queued is waiter:
+                break
         paused = self._paused_until - now
-        short = (cost - self._tokens) / self._refill
-        return max(paused, short, 0.0)
+        return max(paused, (needed - self._tokens) / self._refill, 0.0)
 
     def _pause(self, rate: RateLimit) -> None:
-        seconds = rate.retry_after or rate.ratelimit_reset or DEFAULT_PAUSE
+        given = (s for s in (rate.retry_after, rate.ratelimit_reset) if s is not None)
+        seconds = next(given, DEFAULT_PAUSE)
         until = self._clock.monotonic() + seconds
         if until > self._paused_until:
             self._paused_until = until
@@ -282,7 +303,7 @@ class HardcoverLimiter:
 
     def _check_budget(self, priority: Priority) -> None:
         self._expire_daily()
-        until = self._daily_reset or 0.0
+        until = self._daily_reset or _next_midnight_utc(self._clock.time())
         if priority is Priority.SYNC and self._below_reserve():
             if not self._in_reserve:
                 self._in_reserve = True
@@ -307,6 +328,10 @@ class HardcoverLimiter:
             self._daily_remaining = None
             self._daily_reset = None
             self._in_reserve = False
+
+
+def _next_midnight_utc(now: float) -> float:
+    return (now // 86400 + 1) * 86400
 
 
 def _iso(epoch: float) -> str:

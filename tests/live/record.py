@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 
 from syncshelf.clients.hardcover import LIBRARY, ME, HardcoverClient  # noqa: E402
+from syncshelf.sync.limiter import HardcoverLimiter  # noqa: E402
 
 from scrub import write_fixture  # noqa: E402
 
@@ -42,7 +43,8 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 async def record_hardcover(token: str, limit: int) -> None:
-    client = HardcoverClient(HARDCOVER_URL, token)
+    # Gated like production, with no reserve: recording is a handful of reads.
+    client = HardcoverClient(HARDCOVER_URL, token, gate=HardcoverLimiter("record", reserve=0))
     recorded_at = datetime.now(UTC).date().isoformat()
     try:
         me = await client.execute(ME)

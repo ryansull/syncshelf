@@ -197,8 +197,9 @@ class HardcoverClient:
     """One profile's connection to Hardcover.
 
     ``token`` is the PAT without ``Bearer ``; the client adds the prefix. ``gate`` is the
-    profile's limiter, which every call goes through; only tests of the client alone leave it
-    out. ``transport`` is for tests, which route requests to an in-memory fake (§2.9).
+    profile's limiter, which every call goes through. It must be passed, so an unthrottled
+    client is always a visible choice: ``gate=None`` is for tests of the client alone.
+    ``transport`` is for tests, which route requests to an in-memory fake (§2.9).
     """
 
     def __init__(
@@ -206,7 +207,7 @@ class HardcoverClient:
         url: str,
         token: str,
         *,
-        gate: Gate | None = None,
+        gate: Gate | None,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout: float = TIMEOUT,
     ) -> None:

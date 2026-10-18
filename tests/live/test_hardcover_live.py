@@ -7,6 +7,7 @@ tokens. ``HARDCOVER_TOKEN_TEST`` is left to the write tests.
 import pytest
 
 from syncshelf.clients.hardcover import LIBRARY_PAGE, HardcoverClient
+from syncshelf.sync.limiter import HardcoverLimiter
 
 URL = "https://api.hardcover.app/v1/graphql"
 
@@ -25,7 +26,7 @@ async def test_each_profile_reads_its_own_whole_library(live_env: dict[str, str]
     tokens = profile_tokens(live_env)
     assert tokens, "no HARDCOVER_TOKEN_<PROFILE> in the env file"
     for var, token in tokens.items():
-        client = HardcoverClient(URL, token)
+        client = HardcoverClient(URL, token, gate=HardcoverLimiter(var, reserve=0))
         try:
             user_id = await client.me_id()
             library = await client.library()

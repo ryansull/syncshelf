@@ -55,7 +55,7 @@ services:
   # chaptarr_api_key: ${CHAPTARR_API_KEY}
   browser_ws: ws://browser:3000/            # playwright run-server sidecar (4b); absent = 4b disabled
 
-cadence:                                    # all optional; defaults shown, written <n>m or <n>h
+cadence:                                    # all optional; defaults shown; durations as <n>m or <n>h
   rss_interval: 60m
   abs_interval: 15m
   chaptarr_pending_interval: 2m

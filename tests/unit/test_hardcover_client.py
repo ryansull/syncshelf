@@ -35,7 +35,7 @@ def fake() -> FakeHardcover:
 
 
 def client_for(fake: FakeHardcover, token: str = TOKEN) -> HardcoverClient:
-    return HardcoverClient(URL, token, transport=fake.transport)
+    return HardcoverClient(URL, token, gate=None, transport=fake.transport)
 
 
 # --- cost -------------------------------------------------------------------------------
@@ -76,7 +76,7 @@ async def test_every_request_carries_the_bearer_token_and_user_agent() -> None:
         seen.append(request)
         return httpx2.Response(200, json={"data": {"me": [{"id": 1}]}})
 
-    client = HardcoverClient(URL, TOKEN, transport=httpx2.MockTransport(handler))
+    client = HardcoverClient(URL, TOKEN, gate=None, transport=httpx2.MockTransport(handler))
     await client.execute(ME)
     [request] = seen
     assert request.headers["authorization"] == f"Bearer {TOKEN}"
@@ -205,7 +205,7 @@ async def test_a_capacity_code_in_an_error_object_is_still_a_capacity_error() ->
     body = {"error": {"code": "request_exceeds_capacity", "message": "Too many fields"}}
     transport = httpx2.MockTransport(lambda _r: httpx2.Response(403, json=body))
     with pytest.raises(HardcoverCapacityError):
-        await HardcoverClient(URL, TOKEN, transport=transport).execute(ME)
+        await HardcoverClient(URL, TOKEN, gate=None, transport=transport).execute(ME)
 
 
 async def test_an_undecodable_response_is_unavailable() -> None:
@@ -213,7 +213,9 @@ async def test_an_undecodable_response_is_unavailable() -> None:
         raise httpx2.DecodingError("bad gzip", request=request)
 
     with pytest.raises(HardcoverUnavailable):
-        await HardcoverClient(URL, TOKEN, transport=httpx2.MockTransport(handler)).execute(ME)
+        await HardcoverClient(
+            URL, TOKEN, gate=None, transport=httpx2.MockTransport(handler)
+        ).execute(ME)
 
 
 @pytest.mark.parametrize("me", [[], [None], [{"id": "7"}], None])
@@ -221,14 +223,14 @@ async def test_an_unexpected_me_is_a_query_error(me: object) -> None:
     body = {"data": {"me": me}}
     transport = httpx2.MockTransport(lambda _r: httpx2.Response(200, json=body))
     with pytest.raises(HardcoverQueryError):
-        await HardcoverClient(URL, TOKEN, transport=transport).me_id()
+        await HardcoverClient(URL, TOKEN, gate=None, transport=transport).me_id()
 
 
 async def test_graphql_errors_in_a_200_are_a_query_error() -> None:
     body = {"errors": [{"message": "field 'x' not found", "extensions": {"code": "validation"}}]}
     transport = httpx2.MockTransport(lambda _r: httpx2.Response(200, json=body))
     with pytest.raises(HardcoverQueryError, match="validation"):
-        await HardcoverClient(URL, TOKEN, transport=transport).execute(ME)
+        await HardcoverClient(URL, TOKEN, gate=None, transport=transport).execute(ME)
 
 
 async def test_a_mutation_refused_with_200_raises_through_check_mutation(
