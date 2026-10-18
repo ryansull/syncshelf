@@ -33,11 +33,13 @@ from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
 from mcp.types import Tool as MCPTool
 
 from syncshelf.auth.tokens import RefreshGrace
-from syncshelf.config import PERMISSIONS, ProfileConfig
+from syncshelf.config import HOUSEHOLD, ME, PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
 from syncshelf.sync.limiter import interactive
 from syncshelf.sync.mirror import Mirror
 
+# ME and HOUSEHOLD live in config, which refuses them as profile names (#74), and are
+# re-exported here, where the profile argument is resolved.
 __all__ = [
     "HOUSEHOLD",
     "ME",
@@ -50,12 +52,6 @@ __all__ = [
     "resolve_profiles",
     "services",
 ]
-
-ME = "me"
-"""The ``profile`` argument for the caller's own profile, and its default (§2.8)."""
-
-HOUSEHOLD = "household"
-"""The ``profile`` argument for the caller plus every profile that opted in (§2.8)."""
 
 ToolFn = Callable[..., Awaitable[Any]]
 
