@@ -110,7 +110,7 @@ Decided in [Hosting the MCP server, ingest endpoint and scheduler in one process
 | YAML | `pyyaml` | — |
 | Browser client | `playwright` (phase 4b, imported lazily), pinned in lockstep with the sidecar image tag | — |
 | Scheduler | **plain asyncio loops**, not APScheduler | — |
-| Tests | `pytest>=9.1` with the **anyio** plugin (not pytest-asyncio), `pytest-socket`, `pytest-cov`, `ruff`, `pyright` | dev dependencies |
+| Tests | `pytest>=9.1` with the **anyio** plugin (not pytest-asyncio), `pytest-socket`, `pytest-cov`, `pytest-timeout` (60 s per test, #124), `ruff`, `pyright` | dev dependencies |
 
 **Not used:** FastAPI, APScheduler, aiosqlite, SQLAlchemy, Alembic, Authlib, `fastmcp` (its `cimd.py`, `ssrf.py` and `redirect_validation.py` are Apache-2.0 *reference code* only; keep their notices if any code is borrowed).
 

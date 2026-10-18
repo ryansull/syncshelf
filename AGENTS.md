@@ -18,7 +18,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 
 ## Commands
 
-<!-- Phase 1 fills these in once pyproject.toml exists. Keep them current: a command that's changed here and not in README.md (or the other way round) is a bug. -->
+<!-- Keep these current: a command that's changed here and not in README.md (or the other way round) is a bug. -->
 
 | What | Command |
 |---|---|
@@ -26,6 +26,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
 | Types | `uv run pyright` |
 | Tests (offline, as CI runs them) | `uv run pytest` |
+| Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks (gitleaks, private denylist) | `uv run pre-commit run --all-files` |
@@ -36,7 +37,8 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 - **One thing per PR**, under ~400 changed lines excluding `uv.lock`, fixtures and golden files. A phase is several PRs.
 - Fill in every section of `.github/pull_request_template.md`. Write "None" in Discrepancies rather than deleting it.
 - Commit subjects are imperative, under ~72 characters, with no type prefixes. Use the noreply author.
-- Before opening a PR, run lint, types and tests locally, and check the maintenance table below.
+- While iterating, run only the tests your change touches (`uv run pytest <path> --no-cov -x`). Each test is capped at 60 s, so a hang fails instead of stalling.
+- Before opening a PR, run lint, types and the full test suite locally, and check the maintenance table below.
 - Tag `v0.<n>.0` only when a phase's "Done when" holds (SPEC §2.10 maps phases to versions).
 
 ## Maintenance: what to update when
