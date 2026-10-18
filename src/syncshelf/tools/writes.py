@@ -12,7 +12,12 @@ from typing import Any, Literal, TypedDict
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from syncshelf.clients.hardcover import HardcoverError, HardcoverMutationError
+from syncshelf.clients.hardcover import (
+    HardcoverError,
+    HardcoverHTTPError,
+    HardcoverMutationError,
+    HardcoverUnavailable,
+)
 from syncshelf.sync.apply import UNSET, Applied, NotShelved, Target
 from syncshelf.sync.limiter import ServeStale
 from syncshelf.tools import REGISTRY, current_profile, services
@@ -85,6 +90,8 @@ async def update_book(
     )
     if target == Target():
         raise ToolError("Nothing to change: give a status, rating or review.")
+    if review == "" and review_has_spoilers:
+        raise ToolError("A cleared review has no spoilers: leave out review_has_spoilers.")
     try:
         applied = await services().applier.apply(current_profile(), book_id, target)
     except NotShelved:
@@ -96,8 +103,17 @@ async def update_book(
         raise ToolError(f"{exc}. Nothing was changed; try again then.") from None
     except HardcoverMutationError as exc:
         raise ToolError(f"Hardcover refused the change, and nothing was changed: {exc}") from None
-    except HardcoverError as exc:
+    except HardcoverUnavailable as exc:
         raise ToolError(f"Hardcover couldn't be reached, and nothing was changed: {exc}") from None
+    except HardcoverHTTPError as exc:
+        raise ToolError(
+            f"Hardcover turned the request away ({exc}); nothing was changed. If it says the "
+            "token is invalid, the profile's hardcover_token needs replacing."
+        ) from None
+    except HardcoverError as exc:
+        raise ToolError(
+            f"Hardcover answered unexpectedly, so the edit may not have landed: {exc}"
+        ) from None
     return _edit(book_id, applied)
 
 

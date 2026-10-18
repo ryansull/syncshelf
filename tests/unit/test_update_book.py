@@ -173,3 +173,34 @@ async def test_each_change_is_logged_with_the_review_hashed(
     assert [(line["field"], line["hc_book_id"]) for line in lines] == [("rating", 7), ("review", 7)]
     assert "A secret opinion" not in str(lines)
     assert lines[1]["after"].startswith("17 chars ")
+
+
+async def test_a_failed_write_through_still_reports_the_change(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.fail_next("UserBook", "unavailable", after=1)  # the read before succeeds, after fails
+    async with connect() as mcp:
+        result = await edit(mcp, book_id=7, rating=2.0)
+    assert result["changes"] == [{"field": "rating", "before": 4.0, "after": 2.0}]
+    assert row(fake, 7)["rating"] == 2.0
+
+
+async def test_a_cleared_review_with_spoilers_is_refused(connect: Any, fake: FakeHardcover) -> None:
+    async with connect() as mcp:
+        assert "no spoilers" in await refused(mcp, book_id=7, review="", review_has_spoilers=True)
+    assert fake.writes == []
+
+
+async def test_a_new_entry_doesnt_report_fields_set_to_nothing(connect: Any) -> None:
+    async with connect() as mcp:
+        result = await edit(mcp, book_id=8, status="read", rating=0, review="")
+    assert result["changes"] == [{"field": "status", "before": None, "after": "read"}]
+
+
+async def test_a_bad_token_is_not_reported_as_unreachable(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.tokens.clear()  # Hardcover no longer knows alice's token
+    async with connect() as mcp:
+        message = await refused(mcp, book_id=7, rating=2.0)
+    assert "turned the request away" in message and "hardcover_token" in message

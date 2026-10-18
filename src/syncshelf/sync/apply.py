@@ -32,6 +32,7 @@ from syncshelf.clients.hardcover import (
     UPDATE_USER_BOOK,
     USER_BOOK,
     HardcoverClient,
+    HardcoverQueryError,
     check_mutation,
 )
 from syncshelf.config import ProfileConfig
@@ -109,31 +110,63 @@ class Applier:
         self._profiles = profiles
         self._locks = {profile: asyncio.Lock() for profile in clients}
 
-    async def apply(self, profile: str, book_id: int, target: Target) -> Applied:
+    def lock(self, profile: str) -> asyncio.Lock:
+        """The profile's apply lock (§2.2). A sync run holds it from its Hardcover fetch through
+        its writes, then calls :meth:`apply` with ``locked=True``."""
+        return self._locks[profile]
+
+    async def apply(
+        self,
+        profile: str,
+        book_id: int,
+        target: Target,
+        *,
+        trigger: str = "claude",
+        locked: bool = False,
+    ) -> Applied:
         """Make ``profile``'s shelf entry for ``book_id`` match ``target`` (§3.3.6).
+
+        ``trigger`` names who asked, for the change log (§2.7). ``locked`` says the caller
+        already holds :meth:`lock`; otherwise this call takes it.
 
         Raises :class:`NotShelved` when the book isn't shelved and ``target`` has no status,
         and a :class:`~syncshelf.clients.hardcover.HardcoverError` when Hardcover refuses or
-        can't be reached; nothing is then reported as changed.
+        can't be reached before anything is written. Once a write has landed, nothing after it
+        (the write-through) can make this call fail: the changes are always returned.
         """
-        client = self._clients[profile]
+        if locked:
+            return await self._apply(profile, book_id, target, trigger)
         async with self._locks[profile]:
-            current = await self._fetch(client, book_id)
-            wanted = _wanted(target)
-            if current is None:
-                if "status_id" not in wanted:
-                    raise NotShelved(book_id)
-                applied = await self._insert(client, profile, book_id, wanted)
-            else:
-                applied = await self._update(client, current, wanted)
-            if applied.changes:
-                # The copy catches up at once rather than at the TTL (§3.3.4, Write-through).
-                await self._mirror.write_through(
-                    profile, book_id, await self._fetch(client, book_id)
-                )
-            for change in applied.changes:
-                _log_change(profile, book_id, change)
-            return applied
+            return await self._apply(profile, book_id, target, trigger)
+
+    async def _apply(self, profile: str, book_id: int, target: Target, trigger: str) -> Applied:
+        client = self._clients[profile]
+        current = await self._fetch(client, book_id)
+        wanted = _wanted(target)
+        if current is None:
+            if "status_id" not in wanted:
+                raise NotShelved(book_id)
+            applied = await self._insert(client, profile, book_id, wanted)
+        else:
+            applied = await self._update(client, current, wanted)
+        # Logged as soon as Hardcover has them, whatever happens next.
+        for change in applied.changes:
+            _log_change(profile, book_id, change, trigger)
+        if applied.changes:
+            await self._write_through(client, profile, book_id)
+        return applied
+
+    async def _write_through(self, client: HardcoverClient, profile: str, book_id: int) -> None:
+        """Re-fetch the user_book and upsert it into the copy (§3.3.4, Write-through). Best
+        effort: the write already landed, and a copy that missed it catches up at the TTL."""
+        try:
+            await self._mirror.write_through(profile, book_id, await self._fetch(client, book_id))
+        except Exception:
+            log.warning(
+                "the write landed, but the copy couldn't be brought up to date with it",
+                exc_info=True,
+                extra={"event": "write_through_failed", "profile": profile, "hc_book_id": book_id},
+            )
 
     async def _fetch(self, client: HardcoverClient, book_id: int) -> dict[str, Any] | None:
         result = await client.execute(
@@ -153,8 +186,15 @@ class Applier:
             obj[_FIELDS[name][1]] = value
         result = await client.execute(INSERT_USER_BOOK, {"object": obj})
         inserted = check_mutation(result.data, "insert_user_book")
-        changes = [Change(name, None, value) for name, value in wanted.items()]
-        return Applied(int(inserted["id"]), inserted=True, changes=changes)
+        if not isinstance(inserted.get("id"), int):
+            raise HardcoverQueryError("Hardcover added the book but returned no id for it")
+        # A field set to nothing on a new entry isn't a change.
+        changes = [
+            Change(name, None, value)
+            for name, value in wanted.items()
+            if value not in (None, False)
+        ]
+        return Applied(inserted["id"], inserted=True, changes=changes)
 
     async def _update(
         self, client: HardcoverClient, current: dict[str, Any], wanted: dict[str, Any]
@@ -187,7 +227,7 @@ def _differs(current: Any, wanted: Any) -> bool:
     return current != wanted
 
 
-def _log_change(profile: str, book_id: int, change: Change) -> None:
+def _log_change(profile: str, book_id: int, change: Change, trigger: str) -> None:
     """One INFO line per applied change (§2.7): values for status and rating; a review only as
     its length and a hash prefix, never its text."""
     if change.field == "review":
@@ -204,7 +244,7 @@ def _log_change(profile: str, book_id: int, change: Change) -> None:
             "profile": profile,
             "hc_book_id": book_id,
             "field": change.field,
-            "trigger": "claude",
+            "trigger": trigger,
             **shown,
         },
     )
