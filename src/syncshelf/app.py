@@ -190,8 +190,16 @@ def create_app(
             app.state.grace = grace
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
-
-            mcp.bind(Services(db=db, clock=clock, grace=grace, mirror=mirror, profiles=config.profiles, hardcover=hardcover))
+            mcp.bind(
+                Services(
+                    db=db,
+                    clock=clock,
+                    grace=grace,
+                    mirror=mirror,
+                    profiles=config.profiles,
+                    hardcover=hardcover,
+                )
+            )
             async with AsyncExitStack() as stack:
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
