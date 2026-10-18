@@ -1,6 +1,6 @@
 """SyncShelf as the OAuth authorization server (SPEC §3.2): its routes on the outer app.
 
-Only discovery is built so far (§3.2.1, §3.2.2):
+Discovery (§3.2.1, §3.2.2):
 
 - ``GET /.well-known/oauth-authorization-server`` serves the authorization-server metadata,
   built from ``server.public_url``. It offers CIMD, not dynamic client registration, so there
@@ -12,6 +12,12 @@ Only discovery is built so far (§3.2.1, §3.2.2):
   the mount, shadows the SDK's with one that advertises both scopes: Claude asks for
   ``offline_access``, and so gets a refresh token, only when it is advertised.
 
+``GET /authorize`` (§3.2.3) so far decides only whether the client and redirect can be
+trusted, through :func:`syncshelf.auth.cimd.check_client`. Until they are, ``redirect_uri``
+is untrusted, so a refusal is an HTML :func:`error_page` and never a redirect. A trusted
+request goes on to :func:`continue_authorize`, which is still a placeholder: the Access JWT,
+the rest of the request checks and consent follow (#66).
+
 :func:`oauth_routes` are the authorization server's own routes, served only when
 ``server.auth_mode`` is ``oauth``. :func:`protected_resource_route` belongs to the resource
 server, which runs in every mode, as the SDK's did. Both documents are plain JSON built from
@@ -21,13 +27,17 @@ and ``resource`` exactly (RFC 8414, RFC 9207, §3.2.1). Both get the CORS and
 ``Cache-Control`` the SDK gives its own well-known routes.
 """
 
+import html
+import logging
 from typing import Any
 
 from mcp.server.auth.routes import cors_middleware
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from syncshelf.auth.cimd import ClientDocuments, ClientRefused, TrustedClient, check_client
 from syncshelf.auth.tokens import SCOPE
 from syncshelf.config import ServerConfig
 
@@ -39,6 +49,8 @@ __all__ = [
     "SCOPES_SUPPORTED",
     "TOKEN_PATH",
     "authorization_server_metadata",
+    "continue_authorize",
+    "error_page",
     "oauth_routes",
     "protected_resource_metadata",
     "protected_resource_route",
@@ -66,6 +78,26 @@ SCOPES_SUPPORTED = (SCOPE, OFFLINE_ACCESS)
 
 _WELL_KNOWN_METHODS = ["GET", "OPTIONS"]
 _WELL_KNOWN_HEADERS = {"Cache-Control": "public, max-age=3600"}  # as the SDK's handlers send
+
+_PAGE_HEADERS = {
+    # The consent page's hardening (§3.2.3), on every page /authorize renders.
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'; default-src 'self'",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+}
+
+_ERROR_PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>SyncShelf sign-in</title></head>
+<body>
+<h1>SyncShelf can't sign you in</h1>
+<p>{message}</p>
+</body>
+</html>
+"""
+
+log = logging.getLogger(__name__)
 
 
 def authorization_server_metadata(server: ServerConfig) -> dict[str, Any]:
@@ -101,10 +133,64 @@ def protected_resource_metadata(server: ServerConfig) -> dict[str, Any]:
     }
 
 
-def oauth_routes(server: ServerConfig) -> list[Route]:
+def oauth_routes(server: ServerConfig, clients: ClientDocuments) -> list[Route]:
     """The authorization server's routes, in §2.2 order, for the outer app before the MCP
-    mount. Serve them only in ``oauth`` mode: dev mode disables them (§3.2.5)."""
-    return [_well_known(METADATA_PATH, authorization_server_metadata(server))]
+    mount. Serve them only in ``oauth`` mode: dev mode disables them (§3.2.5).
+
+    ``clients`` fetches and caches the client documents ``/authorize`` checks against.
+    """
+
+    async def authorize(request: Request) -> Response:
+        params = request.query_params
+        try:
+            trusted = await check_client(
+                clients, _single(params, "client_id"), _single(params, "redirect_uri")
+            )
+        except ClientRefused as refused:
+            log.info(
+                "refused an authorization request: %s",
+                refused.reason,
+                extra={"event": "authorize_refused", "reason": refused.reason},
+            )
+            return error_page(refused.message, status_code=refused.status_code)
+        return await continue_authorize(request, trusted)
+
+    return [
+        _well_known(METADATA_PATH, authorization_server_metadata(server)),
+        # No CORS: neither Claude's backend nor Claude Code needs it (§3.2.4).
+        Route(AUTHORIZE_PATH, endpoint=authorize, methods=["GET"]),
+    ]
+
+
+async def continue_authorize(request: Request, client: TrustedClient) -> Response:
+    """The rest of ``GET /authorize``, once ``client`` and its redirect are trusted.
+
+    A placeholder until the Access JWT, the request checks and the consent page are built
+    (#66): it answers 501 and issues nothing.
+    """
+    return error_page("Signing in to SyncShelf isn't available yet.", status_code=501)
+
+
+def error_page(message: str, *, status_code: int = 400) -> HTMLResponse:
+    """An HTML page showing ``message``, escaped, for an ``/authorize`` error that must not
+    be redirected: one before the client and redirect are trusted (§3.2.3), or one with
+    nowhere safe to send it. It carries the consent page's headers, so it can't be framed or
+    cached.
+    """
+    return HTMLResponse(
+        _ERROR_PAGE.format(message=html.escape(message)),
+        status_code=status_code,
+        headers=_PAGE_HEADERS,
+    )
+
+
+def _single(params: QueryParams, name: str) -> str | None:
+    """Parameter ``name``'s one value, or ``None`` when it is missing. A repeated parameter
+    is refused (RFC 6749 §3.1), here as an error page since nothing is trusted yet."""
+    values = params.getlist(name)
+    if len(values) > 1:
+        raise ClientRefused("repeated_parameter", f"The sign-in request repeats {name}.")
+    return values[0] if values else None
 
 
 def protected_resource_route(server: ServerConfig) -> Route:
