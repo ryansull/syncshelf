@@ -93,7 +93,8 @@ class HardcoverError(Exception):
 
 
 class HardcoverUnavailable(HardcoverError):
-    """Transient: a network failure, a timeout, a 408 or a 5xx. Safe to retry later."""
+    """Transient: a network failure, a timeout, an undecodable response, a 408 or a 5xx.
+    Safe to retry later."""
 
 
 class HardcoverHTTPError(HardcoverError):
@@ -227,7 +228,7 @@ class HardcoverClient:
         started = time.monotonic()
         try:
             response = await self._http.post(self._url, json=payload)
-        except httpx2.TransportError as exc:
+        except httpx2.RequestError as exc:
             raise HardcoverUnavailable(f"Hardcover is unreachable ({type(exc).__name__})") from None
         ms = round((time.monotonic() - started) * 1000)
         log.debug(
@@ -277,7 +278,12 @@ class HardcoverClient:
         result = await self.execute(ME)
         me = result.data.get("me")
         # `me` is a list of one.
-        if not isinstance(me, list) or len(me) != 1 or not isinstance(me[0].get("id"), int):
+        if (
+            not isinstance(me, list)
+            or len(me) != 1
+            or not isinstance(me[0], dict)
+            or not isinstance(me[0].get("id"), int)
+        ):
             raise HardcoverQueryError("Hardcover returned an unexpected me")
         user_id: int = me[0]["id"]
         self._me_id = user_id
@@ -288,8 +294,10 @@ class HardcoverClient:
         the user's lists.
 
         Pages past Hardcover's silent 1000-row cap with a stable ``order_by: {id: asc}``. A
-        short page means the end. ``page_size`` is for tests.
+        short page means the end, so ``page_size`` (smaller only in tests) is clamped to the
+        cap: a larger request would come back cut to 1000 rows and look like the last page.
         """
+        page_size = min(page_size, LIBRARY_PAGE)
         user_id = await self.me_id()
         library = Library()
         offset = 0
@@ -362,7 +370,17 @@ def query_cost(query: str) -> int:
     depth = 0
     parens = 0
     expect_field = True
+    skip = False  # the next name isn't a field: a spread's fragment or type, a directive
     for t in tokens[i:]:
+        if skip and (t[0].isalpha() or t[0] == "_"):
+            # `... on Type`: pass over `on`, then still skip the type.
+            skip = t == "on"
+            continue
+        if t in ("...", "@"):
+            # `...Fragment`, `... on Type { }` and `@directive` name no field. A named
+            # fragment's own fields go uncounted, so SyncShelf's queries don't use them.
+            skip = True
+            continue
         if t == "(":
             parens += 1
         elif t == ")":
@@ -404,14 +422,19 @@ def _float(value: str | None) -> float | None:
 
 
 def _error_message(response: httpx2.Response) -> str:
-    """The ``error`` of a transport-error body, else a generic line. Never the raw body."""
+    """The ``error`` of a transport-error body, else a generic line. Never the raw body.
+
+    The error may be a string or an object; an object gives its code and message both, so a
+    code such as ``request_exceeds_capacity`` survives whatever its message says.
+    """
     try:
         body = response.json()
     except ValueError:
         return "no detail"
     error = body.get("error") if isinstance(body, dict) else None
     if isinstance(error, dict):
-        error = error.get("message") or error.get("code")
+        parts = [str(error[k]) for k in ("code", "message") if error.get(k)]
+        error = ": ".join(parts)
     return str(error)[:200] if error else "no detail"
 
 

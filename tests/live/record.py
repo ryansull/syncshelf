@@ -27,13 +27,17 @@ HARDCOVER_VERSION = "api.hardcover.app/v1 (sends no version header)"
 
 
 def read_env(path: Path) -> dict[str, str]:
-    """``KEY=value`` lines, ignoring comments and blanks. Values are never printed."""
+    """``KEY=value`` lines, ignoring comments and blanks, an ``export`` prefix and matching
+    quotes around a value, as dotenv files allow. Values are never printed."""
     env: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            env[key.strip()] = value.strip()
+            key, value = line.removeprefix("export ").split("=", 1)
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            env[key.strip()] = value
     return env
 
 
@@ -42,7 +46,7 @@ async def record_hardcover(token: str, limit: int) -> None:
     recorded_at = datetime.now(UTC).date().isoformat()
     try:
         me = await client.execute(ME)
-        user_id = await client.me_id()
+        user_id = me.data["me"][0]["id"]
         library = await client.execute(LIBRARY, {"user_id": user_id, "limit": limit, "offset": 0})
     finally:
         await client.aclose()

@@ -52,6 +52,9 @@ def client_for(fake: FakeHardcover, token: str = TOKEN) -> HardcoverClient:
         ('query Q { books(where: {title: {_eq: "a { b } c"}}) { id } }', 1),
         ("mutation M($o: X!) { insert_user_book(object: $o) { id error } }", 1),
         ("query Q {\n  # a: comment { here }\n  me { id }\n  lists { id }\n}", 2),
+        ("query Q($x: Boolean!) { me @include(if: $x) { id } }", 1),
+        ("query Q { ... on query_root { me { id } } lists { id } }", 1),
+        ("query Q { ...Frag me { id } }", 1),
     ],
 )
 def test_query_cost_counts_top_level_fields(query: str, cost: int) -> None:
@@ -143,6 +146,15 @@ async def test_the_library_gets_past_the_silent_1000_row_cap(fake: FakeHardcover
     assert len({ub["id"] for ub in library.user_books}) == 1001
 
 
+async def test_a_page_size_over_the_cap_is_clamped_so_no_rows_are_lost(
+    fake: FakeHardcover,
+) -> None:
+    for book_id in range(1, 1102):
+        fake.add_user_book(42, book_id)
+    library = await client_for(fake).library(page_size=5000)
+    assert len(library.user_books) == 1101
+
+
 async def test_the_fake_caps_a_page_at_1000_rows_without_saying_so(fake: FakeHardcover) -> None:
     for book_id in range(1, 1102):
         fake.add_user_book(42, book_id)
@@ -187,6 +199,29 @@ async def test_a_bad_token_is_an_http_error_that_never_names_the_token(
         await client_for(fake, token="not-a-known-token").execute(ME)
     assert excinfo.value.status == 401
     assert "not-a-known-token" not in str(excinfo.value)
+
+
+async def test_a_capacity_code_in_an_error_object_is_still_a_capacity_error() -> None:
+    body = {"error": {"code": "request_exceeds_capacity", "message": "Too many fields"}}
+    transport = httpx2.MockTransport(lambda _r: httpx2.Response(403, json=body))
+    with pytest.raises(HardcoverCapacityError):
+        await HardcoverClient(URL, TOKEN, transport=transport).execute(ME)
+
+
+async def test_an_undecodable_response_is_unavailable() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.DecodingError("bad gzip", request=request)
+
+    with pytest.raises(HardcoverUnavailable):
+        await HardcoverClient(URL, TOKEN, transport=httpx2.MockTransport(handler)).execute(ME)
+
+
+@pytest.mark.parametrize("me", [[], [None], [{"id": "7"}], None])
+async def test_an_unexpected_me_is_a_query_error(me: object) -> None:
+    body = {"data": {"me": me}}
+    transport = httpx2.MockTransport(lambda _r: httpx2.Response(200, json=body))
+    with pytest.raises(HardcoverQueryError):
+        await HardcoverClient(URL, TOKEN, transport=transport).me_id()
 
 
 async def test_graphql_errors_in_a_200_are_a_query_error() -> None:

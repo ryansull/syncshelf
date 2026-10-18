@@ -692,6 +692,11 @@ def test_the_hardcover_token_is_read_from_a_file(tmp_path: Path) -> None:
     assert SECRET not in repr(alice)
 
 
+def test_hardcover_url_must_be_https(tmp_path: Path) -> None:
+    text = MINIMAL + "services:\n  hardcover_url: http://api.hardcover.app/v1/graphql\n"
+    assert "services.hardcover_url: must be a https URL" in load_error(tmp_path, text)
+
+
 @pytest.mark.parametrize("prefix", ["Bearer ", "bearer "])
 def test_a_hardcover_token_with_the_bearer_prefix_is_refused(tmp_path: Path, prefix: str) -> None:
     message = load_error(tmp_path, MINIMAL, {"HC": prefix + SECRET})

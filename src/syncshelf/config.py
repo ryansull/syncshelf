@@ -528,7 +528,13 @@ def _services(raw: Mapping[str, Any]) -> ServicesConfig:
         value = raw.get(key)
         if value is None:
             continue
-        schemes = ("ws", "wss") if key == "browser_ws" else ("http", "https")
+        if key == "browser_ws":
+            schemes: tuple[str, ...] = ("ws", "wss")
+        elif key == "hardcover_url":
+            # Every request carries a profile's token, so never in clear text.
+            schemes = ("https",)
+        else:
+            schemes = ("http", "https")
         _url(value, f"services.{key}", schemes)
         urls[key] = value
     return ServicesConfig(**urls)
