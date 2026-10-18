@@ -62,14 +62,16 @@ services:
   # chaptarr_api_key: ${CHAPTARR_API_KEY}
   browser_ws: ws://browser:3000/            # playwright run-server sidecar (4b); absent = 4b disabled
 
-cadence:                                    # all optional; defaults shown, written <n>m or <n>h
+cadence:                                    # all optional; defaults shown; durations as <n>m or <n>h
   rss_interval: 60m
   abs_interval: 15m
   chaptarr_pending_interval: 2m
   mirror_ttl: 10m
   # csv_interval_days: 5
   # csv_window: "02:00-05:00"               # in each profile's timezone
-  # hardcover_daily_reserve: 1000
+  # Hardcover requests per profile per day kept for Claude: below this many left, syncs wait
+  # for the daily reset (midnight UTC). Hardcover allows each user 5000 a day.
+  hardcover_daily_reserve: 1000
 
 profiles:
   # Profile names match ^[a-z][a-z0-9_]{0,31}$. Emails are lowercased and must be unique.

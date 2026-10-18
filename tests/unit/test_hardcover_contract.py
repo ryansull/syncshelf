@@ -83,12 +83,12 @@ def fake() -> FakeHardcover:
 
 
 async def test_me_matches_the_recording(fake: FakeHardcover) -> None:
-    result = await HardcoverClient(URL, "t", transport=fake.transport).execute(ME)
+    result = await HardcoverClient(URL, "t", gate=None, transport=fake.transport).execute(ME)
     assert_same_shape(shape({"data": result.data}), recorded("me"))
 
 
 async def test_the_library_query_matches_the_recording(fake: FakeHardcover) -> None:
-    client = HardcoverClient(URL, "t", transport=fake.transport)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     variables = {"user_id": 42, "limit": 1000, "after": 0, "lists_after": 0}
     result = await client.execute(LIBRARY, variables)
     assert_same_shape(shape({"data": result.data}), recorded("library"))

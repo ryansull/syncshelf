@@ -3,7 +3,8 @@
 One :class:`HardcoverClient` per profile, holding that profile's PAT. It sends each query,
 reports what it cost (one token per top-level field) and the rate-limit headers that came back,
 and turns every kind of failure into a typed :class:`HardcoverError`. It has no retry, pacing or
-sync logic: the per-profile limiter (§3.3.3) decides when a call may go out and what a 429 means.
+sync logic: the per-profile limiter (§3.3.3), passed in as its ``gate``, decides when a call may
+go out and what a 429 means, and every call goes through it.
 
 Error strings never carry the token or a response body. Hardcover echoes nothing secret today,
 but a body can hold catalog text, which the logging allowlist keeps out of logs (§2.7).
@@ -12,9 +13,9 @@ but a body can hold catalog text, which the logging allowlist keeps out of logs 
 import logging
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx2
 
@@ -22,6 +23,7 @@ from syncshelf import __version__
 
 __all__ = [
     "LIBRARY_PAGE",
+    "Gate",
     "LISTS_MORE",
     "LIST_BOOKS_MORE",
     "HardcoverCapacityError",
@@ -210,11 +212,19 @@ class Library:
     """The headers of the last page."""
 
 
+class Gate(Protocol):
+    """What paces a client's calls: the profile's limiter (``syncshelf.sync.limiter``)."""
+
+    async def run(self, cost: int, send: Callable[[], Awaitable[Result]]) -> Result: ...
+
+
 class HardcoverClient:
     """One profile's connection to Hardcover.
 
-    ``token`` is the PAT without ``Bearer ``; the client adds the prefix. ``transport`` is for
-    tests, which route requests to an in-memory fake (§2.9).
+    ``token`` is the PAT without ``Bearer ``; the client adds the prefix. ``gate`` is the
+    profile's limiter, which every call goes through. It must be passed, so an unthrottled
+    client is always a visible choice: ``gate=None`` is for tests of the client alone.
+    ``transport`` is for tests, which route requests to an in-memory fake (§2.9).
     """
 
     def __init__(
@@ -222,10 +232,12 @@ class HardcoverClient:
         url: str,
         token: str,
         *,
+        gate: Gate | None,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout: float = TIMEOUT,
     ) -> None:
         self._url = url
+        self._gate = gate
         self._http = httpx2.AsyncClient(
             transport=transport,
             timeout=timeout,
@@ -238,15 +250,21 @@ class HardcoverClient:
         await self._http.aclose()
 
     async def execute(self, query: str, variables: Mapping[str, Any] | None = None) -> Result:
-        """Send one GraphQL operation and return its ``data``.
+        """Send one GraphQL operation through the gate and return its ``data``.
 
         Raises :class:`HardcoverRateLimited` on a 429, :class:`HardcoverCapacityError` on
         ``403 request_exceeds_capacity``, :class:`HardcoverHTTPError` on any other non-200,
         :class:`HardcoverUnavailable` on a transient failure, and :class:`HardcoverQueryError`
-        when the body carries GraphQL ``errors``. Mutation ``error`` fields are left for
-        :func:`check_mutation`, since only the caller knows which fields are mutations.
+        when the body carries GraphQL ``errors``, plus whatever the gate raises when the call
+        can't go out. Mutation ``error`` fields are left for :func:`check_mutation`, since only
+        the caller knows which fields are mutations.
         """
         cost = query_cost(query)
+        if self._gate is None:
+            return await self._send(query, variables, cost)
+        return await self._gate.run(cost, lambda: self._send(query, variables, cost))
+
+    async def _send(self, query: str, variables: Mapping[str, Any] | None, cost: int) -> Result:
         payload: dict[str, Any] = {"query": query}
         if variables:
             payload["variables"] = dict(variables)

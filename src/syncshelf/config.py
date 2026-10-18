@@ -181,14 +181,17 @@ class ServicesConfig:
 class CadenceConfig:
     """The ``cadence`` durations, in seconds, with the §2.3 defaults.
 
-    The other cadence keys (``csv_interval_days``, ``csv_window``,
-    ``hardcover_daily_reserve``) are validated by the phases that read them.
+    The other cadence keys (``csv_interval_days``, ``csv_window``) are validated by the phases
+    that read them.
     """
 
     rss_interval: int = 60 * 60
     abs_interval: int = 15 * 60
     chaptarr_pending_interval: int = 2 * 60
     mirror_ttl: int = 10 * 60
+    hardcover_daily_reserve: int = 1000
+    """Hardcover requests per profile per day kept back for interactive use: below this many
+    remaining, syncs wait for the daily reset (§3.3.3)."""
 
 
 @dataclass(frozen=True)
@@ -638,7 +641,14 @@ def _cadence(raw: Mapping[str, Any]) -> CadenceConfig:
             durations[key] = parse_duration(value)
         except ValueError:
             raise ConfigError(f"cadence.{key}: must be a duration written <n>m or <n>h") from None
-    return CadenceConfig(**durations)
+    values: dict[str, int] = dict(durations)
+    reserve = raw.get("hardcover_daily_reserve")
+    if reserve is not None:
+        # bool is an int subclass, and `true` is a typo worth stopping on.
+        if not isinstance(reserve, int) or isinstance(reserve, bool) or reserve < 0:
+            raise ConfigError("cadence.hardcover_daily_reserve: must be a whole number, 0 or more")
+        values["hardcover_daily_reserve"] = reserve
+    return CadenceConfig(**values)
 
 
 def _profiles(
