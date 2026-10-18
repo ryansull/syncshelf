@@ -46,3 +46,5 @@ async def test_get_my_library_answers_from_the_real_library(
         assert page is not None
         assert page["stale"] is False, var
         assert len(page["books"]) == min(5, page["total"]), var
+        # Real Hardcover credits authors as "Author"; a row without one means that was missed.
+        assert all(b["author"] for b in page["books"]), var

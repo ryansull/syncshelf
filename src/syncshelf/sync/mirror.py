@@ -30,6 +30,9 @@ __all__ = ["TAG_CATEGORIES", "Freshness", "Mirror", "NoMirror", "replace_library
 
 log = logging.getLogger(__name__)
 
+AUTHOR_ROLES = (None, "", "Author")
+"""The ``cached_contributors`` contributions that mean "an author of the book"."""
+
 TAG_CATEGORIES = ("genres", "moods", "tags")
 """The ``cached_tags`` categories the library query fetches, as ``tags_json`` keys."""
 
@@ -240,7 +243,9 @@ def _contributors(cached: Any) -> list[dict[str, str | None]]:
     for entry in cached or []:
         author = entry.get("author") or {}
         if author.get("name"):
-            out.append({"name": author["name"], "role": entry.get("contribution")})
+            role = entry.get("contribution")
+            # Hardcover credits authors as "Author" (older rows: no contribution at all).
+            out.append({"name": author["name"], "role": None if role in AUTHOR_ROLES else role})
     return out
 
 

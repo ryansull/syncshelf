@@ -231,7 +231,7 @@ def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
             "pages": 300,
             "canonical_id": None,
             "cached_contributors": [
-                {"author": {"id": 1, "name": "An Author"}, "contribution": None}
+                {"author": {"id": 1, "name": "An Author"}, "contribution": "Author"}
             ],
             "cached_featured_series": {},
             "genres": [],

@@ -166,7 +166,7 @@ async def test_a_user_book_is_stored_without_its_review(
             "title": "Dune",
             "pages": None,
             "cached_contributors": [
-                {"author": {"id": 1, "name": "Frank Herbert"}, "contribution": None},
+                {"author": {"id": 1, "name": "Frank Herbert"}, "contribution": "Author"},
                 {"author": {"id": 2, "name": "Scott Brick"}, "contribution": "Narrator"},
             ],
             "cached_featured_series": {"series": {"id": 5, "name": "Dune"}, "position": 1.0},
