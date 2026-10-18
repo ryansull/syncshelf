@@ -11,8 +11,9 @@ All notable changes to SyncShelf are recorded here. The format follows
 - New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
   secret: the Hardcover API token without its `Bearer ` prefix, which is refused). Startup
   stops on a profile without one, naming the key.
-- A Hardcover API client: it pages a profile's whole library past Hardcover's silent
-  1000-row cap, counts each call's cost, and reads the rate-limit headers.
+- A Hardcover API client: it pages a profile's whole library, lists included, past
+  Hardcover's silent 1000-row cap by keyset (so an edit between pages can't skip a row),
+  counts each call's cost, and reads the rate-limit headers.
 
 ### Changed
 
