@@ -610,6 +610,8 @@ def read_row(
     finished_at: str | None = None,
     edition_id: int | None = None,
     reading_format_id: int | None = None,
+    progress_pages: int | None = None,
+    progress_seconds: int | None = None,
 ) -> dict[str, Any]:
     """One user_book_read, in the library query's shape."""
     return {
@@ -618,8 +620,8 @@ def read_row(
         "finished_at": finished_at,
         "paused_at": None,
         "edition_id": edition_id,
-        "progress_pages": None,
-        "progress_seconds": None,
+        "progress_pages": progress_pages,
+        "progress_seconds": progress_seconds,
         "edition": None if edition_id is None else {"reading_format_id": reading_format_id},
     }
 

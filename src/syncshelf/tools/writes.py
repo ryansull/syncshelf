@@ -1,12 +1,15 @@
 """Claude's direct edits to the caller's Hardcover shelves (SPEC §3.3.9).
 
-Every edit goes through the write procedure (:mod:`syncshelf.sync.apply`): fresh state, no-op
-skips, inserts with the profile's ``hardcover_privacy``, a write-through to the mirror, and the
-prior values of whatever changed, so Claude can undo. Edits act on the first call; Claude asks
+Every edit goes through :mod:`syncshelf.sync.apply` (``correct_read`` beside the procedure, as
+it changes no status): fresh state, no-op skips, inserts with the profile's
+``hardcover_privacy``, a write-through to the mirror, and the prior values of whatever changed,
+so Claude can undo. Edits act on the first call; Claude asks
 the user in conversation first. They touch only the caller's own profile and never a Goodreads
 or ABS baseline (4a), so a later unchanged source row can't overwrite them.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from typing import Any, Literal, TypedDict
 
@@ -23,11 +26,13 @@ from syncshelf.sync.apply import (
     UNSET,
     Applied,
     DateNeeded,
+    DatesOutOfOrder,
     Finish,
     FormatNeeded,
     Incomplete,
     NotShelved,
     OpenReadExists,
+    ReadNotFound,
     ReadOp,
     ReadStillOpen,
     Start,
@@ -36,7 +41,7 @@ from syncshelf.sync.apply import (
 from syncshelf.sync.limiter import ServeStale
 from syncshelf.tools import REGISTRY, current_profile, services
 
-__all__ = ["STATUS_IDS", "Edit", "update_book"]
+__all__ = ["STATUS_IDS", "Edit", "correct_read", "update_book"]
 
 STATUS_IDS = {
     "want-to-read": 1,
@@ -129,7 +134,8 @@ async def update_book(
     if target == Target():
         raise ToolError("Nothing to change: give a status, rating, review or a date.")
     try:
-        applied = await services().applier.apply(current_profile(), book_id, target)
+        with _hardcover_errors():
+            applied = await services().applier.apply(current_profile(), book_id, target)
     except NotShelved:
         raise ToolError(
             f"Book {book_id} isn't on the shelves yet, so give a status to add it with "
@@ -161,6 +167,70 @@ async def update_book(
             f"Partly done: Hardcover failed while fixing the book's reads ({exc}). Call "
             "update_book again with the same values to finish it."
         ) from None
+    return _edit(book_id, applied)
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def correct_read(
+    book_id: int,
+    read_id: int,
+    started_on: date | None = None,
+    finished_on: date | None = None,
+    format: Format | None = None,  # noqa: A002 - the spec's argument name
+) -> Edit:
+    """Fix one read already logged on the caller's Hardcover shelf: its dates or its format.
+
+    Use this when the user says a logged read is wrong ("I actually finished it on the 3rd",
+    "that was the audiobook"), or to change the start of a read still open. It acts at once,
+    so confirm with the user first. Give the book_id and the read_id; get_book lists each
+    read with its read_id. Only the caller's own reads can be changed. It changes no status:
+    to log a new read, use update_book.
+
+    Arguments (give at least one; leave out what shouldn't change):
+    - started_on: the date they started that read (ISO).
+    - finished_on: the date they finished it (ISO). On an open read, this finishes it.
+    - format: audio, ebook or print; the read moves to the book's default edition for it.
+
+    Dates: only ever a date the user stated, resolved to an ISO date in the user's own time
+    zone ("yesterday", "last Tuesday"). A read can't start after it finished.
+
+    The result gives the read before and after (read_id, dates, format), so you can undo it
+    with another correct_read. A value the read already had isn't written.
+    """
+    if started_on is None and finished_on is None and format is None:
+        raise ToolError("Nothing to change: give started_on, finished_on or format.")
+    if started_on is not None and finished_on is not None and started_on > finished_on:
+        raise ToolError("started_on is after finished_on; give the earlier date first.")
+    try:
+        with _hardcover_errors():
+            applied = await services().applier.correct_read(
+                current_profile(),
+                book_id,
+                read_id,
+                started_on=started_on.isoformat() if started_on else None,
+                finished_on=finished_on.isoformat() if finished_on else None,
+                format=format,
+            )
+    except NotShelved:
+        raise ToolError(f"Book {book_id} isn't on the shelves, so it has no reads.") from None
+    except ReadNotFound:
+        raise ToolError(
+            f"Read {read_id} isn't one of book {book_id}'s reads: get_book lists them with "
+            "their read_ids. Nothing was changed."
+        ) from None
+    except DatesOutOfOrder as exc:
+        raise ToolError(
+            f"The read would start on {exc.started_on}, after it finished on "
+            f"{exc.finished_on}: give both dates. Nothing was changed."
+        ) from None
+    return _edit(book_id, applied)
+
+
+@contextmanager
+def _hardcover_errors() -> Iterator[None]:
+    """Hardcover's failures as tool errors that say whether anything landed."""
+    try:
+        yield
     except ServeStale as exc:
         raise ToolError(f"{exc}. Nothing was changed; try again then.") from None
     except HardcoverMutationError as exc:
@@ -176,7 +246,6 @@ async def update_book(
         raise ToolError(
             f"Hardcover answered unexpectedly, so the edit may not have landed: {exc}"
         ) from None
-    return _edit(book_id, applied)
 
 
 def _read_op(
