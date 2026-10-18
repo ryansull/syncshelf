@@ -399,6 +399,18 @@ def test_bad_cadence_duration_names_the_key(tmp_path: Path, value: str) -> None:
     assert "cadence.abs_interval" in message
 
 
+def test_hardcover_daily_reserve_defaults_to_1000_and_is_read(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).cadence.hardcover_daily_reserve == 1000
+    text = MINIMAL + "cadence:\n  hardcover_daily_reserve: 250\n"
+    assert load(tmp_path, text).cadence.hardcover_daily_reserve == 250
+
+
+@pytest.mark.parametrize("value", ["-1", "1.5", "true", '"1000"'])
+def test_hardcover_daily_reserve_must_be_a_whole_number(tmp_path: Path, value: str) -> None:
+    message = load_error(tmp_path, MINIMAL + f"cadence:\n  hardcover_daily_reserve: {value}\n")
+    assert message == "cadence.hardcover_daily_reserve: must be a whole number, 0 or more"
+
+
 # --- profiles ---------------------------------------------------------------------------
 
 
@@ -733,7 +745,13 @@ def test_committed_example_sets_every_key_phase_1_validates() -> None:
     assert all(vars(config.services).values()), "every services URL key is shown"
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
     assert "\n  listen: " in raw, "server.listen is shown"
-    for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
+    for key in (
+        "rss_interval",
+        "abs_interval",
+        "chaptarr_pending_interval",
+        "mirror_ttl",
+        "hardcover_daily_reserve",
+    ):
         assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
 
 

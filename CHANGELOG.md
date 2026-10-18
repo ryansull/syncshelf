@@ -13,6 +13,12 @@ All notable changes to SyncShelf are recorded here. The format follows
   stops on a profile without one, naming the key.
 - A Hardcover API client: it pages a profile's whole library past Hardcover's silent
   1000-row cap, counts each call's cost, and reads the rate-limit headers.
+- Every Hardcover call goes through a per-profile limiter: bursts of 8, then 1 a second, with
+  Claude's calls served ahead of syncs. A 429 pauses that profile's calls until Hardcover's
+  `Retry-After` (a `hardcover_paused` warning). New config key
+  `cadence.hardcover_daily_reserve` (a whole number, default 1000): below that many requests
+  left for the day, syncs wait for the daily reset (a `hardcover_reserve` warning), while
+  Claude's calls carry on until none are left.
 - New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.

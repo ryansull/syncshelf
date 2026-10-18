@@ -62,7 +62,9 @@ cadence:                                    # all optional; defaults shown, writ
   mirror_ttl: 10m
   # csv_interval_days: 5
   # csv_window: "02:00-05:00"               # in each profile's timezone
-  # hardcover_daily_reserve: 1000
+  # Hardcover requests per profile per day kept for Claude: below this many left, syncs wait
+  # for the daily reset (midnight UTC). Hardcover allows each user 5000 a day.
+  hardcover_daily_reserve: 1000
 
 profiles:
   # Profile names match ^[a-z][a-z0-9_]{0,31}$. Emails are lowercased and must be unique.
