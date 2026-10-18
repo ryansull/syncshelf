@@ -161,7 +161,12 @@ class Config:
 
     def other_hosts(self) -> frozenset[str]:
         """Configured hosts that aren't services: ``server.public_url`` and, when set,
-        ``server.access.team_domain``. §2.7 says these are aliased too but names no alias."""
+        ``server.access.team_domain``.
+
+        Not wired into logging yet: §2.7 says these hosts are aliased too but names no alias
+        for them, and #49 (point 5) leaves that open. Until it's decided, nothing calls this
+        and these hosts are logged as they are.
+        """
         hosts = {self.server.public_host}
         if self.server.access_team_domain:
             hosts.add(urlsplit(self.server.access_team_domain).hostname or "")
