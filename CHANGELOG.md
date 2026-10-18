@@ -31,6 +31,11 @@ All notable changes to SyncShelf are recorded here. The format follows
   copy flagged `stale`, and refuses only when there is no copy yet. Each refresh logs
   `mirror_refreshed`, and a failed one `mirror_refresh_failed`.
 
+### Changed
+
+- `my_connections`' description now says that a local dev-mode session isn't a connection,
+  so it isn't listed and an empty list is normal there.
+
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
