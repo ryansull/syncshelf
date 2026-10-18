@@ -6,10 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-18
-
-Phase 2: Front door and profiles.
-
 ### Added
 
 - New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
@@ -34,6 +30,13 @@ Phase 2: Front door and profiles.
   older than `cadence.mirror_ttl`; when Hardcover can't be reached it answers from the older
   copy flagged `stale`, and refuses only when there is no copy yet. Each refresh logs
   `mirror_refreshed`, and a failed one `mirror_refresh_failed`.
+
+## [0.2.0] - 2026-10-18
+
+Phase 2: Front door and profiles.
+
+### Added
+
 - New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.
