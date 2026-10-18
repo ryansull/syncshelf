@@ -6,6 +6,11 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- uvicorn's access log line no longer includes the client address (IP and port), so it reads
+  `"GET /healthz HTTP/1.1" 200`. Traefik and Cloudflare already log callers (#46).
+
 ## [0.1.0] - 2026-10-17
 
 Phase 1: Skeleton.

@@ -1,5 +1,5 @@
 """The entrypoint (SPEC §2.1, §3.1): fail-fast config, one uvicorn worker with proxy headers,
-and uvicorn's lines as JSON with no query string in the access log."""
+and uvicorn's lines as JSON with no query string or client address in the access log."""
 
 import json
 import socket
@@ -107,7 +107,7 @@ async def serve_once(app_config: uvicorn.Config, path: str) -> int:
 
 
 @pytest.mark.anyio
-async def test_the_real_server_logs_json_with_no_query_string(
+async def test_the_real_server_logs_json_with_no_query_string_or_client(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = load_config(write_config(tmp_path), environ={})
@@ -120,6 +120,7 @@ async def test_the_real_server_logs_json_with_no_query_string(
 
     lines = json_lines(capsys.readouterr().out)
     access = [line for line in lines if line["logger"] == "uvicorn.access"]
-    assert [line["msg"].split(" - ", 1)[1] for line in access] == ['"GET /healthz HTTP/1.1" 200']
+    assert [line["msg"] for line in access] == ['"GET /healthz HTTP/1.1" 200']
+    assert all("127.0.0.1" not in json.dumps(line) for line in access)
     assert all("abc123" not in json.dumps(line) for line in lines)
     assert any(line.get("event") == "startup" for line in lines)

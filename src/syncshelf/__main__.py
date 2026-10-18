@@ -3,8 +3,8 @@
 uvicorn runs exactly **one worker** (§2.1): the DB writer, the locks and the sync loops are
 all in-process. Proxy headers are trusted only from ``server.forwarded_allow_ips``, the
 Traefik network. uvicorn's own logging config is turned off, so its lines go through
-:mod:`syncshelf.logging` like everything else, as JSON with the access log's query strings
-dropped.
+:mod:`syncshelf.logging` like everything else, as JSON with the access log's client
+addresses and query strings dropped.
 
 Config is loaded here, before the app starts, because uvicorn itself needs
 ``forwarded_allow_ips`` and the log level. A bad config logs one line naming the key and
