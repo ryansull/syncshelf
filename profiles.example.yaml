@@ -31,9 +31,11 @@ server:
     # "Authorization: Bearer <token>".
     token: ${SYNCSHELF_DEV_TOKEN}
     profile: alice                          # the profile the token acts as
-  access:                                   # Cloudflare Access app guarding /authorize
-    team_domain: https://example.cloudflareaccess.com   # an https URL
-    # aud: ${ACCESS_AUD}
+  # The Cloudflare Access app guarding /authorize. All three keys below are required in
+  # oauth mode; uncomment aud and consent_hmac_key once their variables are set.
+  access:
+    team_domain: https://example.cloudflareaccess.com   # just https:// and the team's host
+    # aud: ${ACCESS_AUD}                    # the Access app's AUD tag
   # consent_hmac_key: ${CONSENT_HMAC_KEY}   # signs the consent form blob
   # Addresses or networks (comma-separated) trusted to set X-Forwarded-* headers: the Traefik
   # network in production, or 127.0.0.1 when running locally without a proxy.

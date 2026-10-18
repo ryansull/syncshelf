@@ -278,8 +278,60 @@ DEV = MINIMAL + "  auth_mode: dev\n  dev:\n    token: ${DEV_TOKEN}\n    profile:
 DEV_ENV = {"DEV_TOKEN": SECRET}
 
 
-def test_auth_mode_accepts_oauth(tmp_path: Path) -> None:
-    assert load(tmp_path, MINIMAL + "  auth_mode: oauth\n").server.auth_mode == "oauth"
+OAUTH = MINIMAL + (
+    "  auth_mode: oauth\n"
+    "  access:\n"
+    "    team_domain: https://example.cloudflareaccess.com\n"
+    "    aud: ${AUD}\n"
+    "  consent_hmac_key: ${HMAC}\n"
+)
+OAUTH_ENV = {"AUD": "aud-" + SECRET, "HMAC": "hmac-" + SECRET}
+
+
+def test_oauth_mode_reads_the_access_app_and_consent_key(tmp_path: Path) -> None:
+    config = load(tmp_path, OAUTH, OAUTH_ENV)
+    assert config.server.auth_mode == "oauth"
+    oauth = config.server.oauth
+    assert oauth is not None
+    assert oauth.access_team_domain == "https://example.cloudflareaccess.com"
+    assert (oauth.access_aud, oauth.consent_hmac_key) == ("aud-" + SECRET, "hmac-" + SECRET)
+    assert SECRET not in repr(config)
+
+
+@pytest.mark.parametrize(
+    ("line", "key"),
+    [
+        ("    team_domain:", "server.access.team_domain"),
+        ("    aud:", "server.access.aud"),
+        ("  consent_hmac_key:", "server.consent_hmac_key"),
+    ],
+)
+def test_oauth_mode_requires_its_keys(tmp_path: Path, line: str, key: str) -> None:
+    text = "\n".join(row for row in OAUTH.splitlines() if not row.startswith(line)) + "\n"
+    message = load_error(tmp_path, text, OAUTH_ENV)
+    assert key in message
+    assert "required when server.auth_mode is oauth" in message
+    assert SECRET not in message
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "https://example.cloudflareaccess.com/",
+        "https://example.cloudflareaccess.com/x",
+        "https://example.cloudflareaccess.com?",
+        "https://example.cloudflareaccess.com:443",
+        "https://u@example.cloudflareaccess.com",
+        "https://Example.cloudflareaccess.com",
+    ],
+)
+def test_the_team_domain_is_only_a_scheme_and_host(tmp_path: Path, domain: str) -> None:
+    text = OAUTH.replace("https://example.cloudflareaccess.com", domain)
+    assert "server.access.team_domain" in load_error(tmp_path, text, OAUTH_ENV)
+
+
+def test_other_modes_do_not_read_the_oauth_keys(tmp_path: Path) -> None:
+    assert load(tmp_path, DEV, DEV_ENV).server.oauth is None
 
 
 def test_auth_mode_may_be_absent_for_now(tmp_path: Path) -> None:
@@ -312,8 +364,8 @@ def test_the_dev_profile_must_be_a_configured_profile(tmp_path: Path, profile: s
 
 
 def test_oauth_mode_does_not_read_the_dev_section(tmp_path: Path) -> None:
-    text = DEV.replace("auth_mode: dev", "auth_mode: oauth").replace("profile: alice", "profile: x")
-    config = load(tmp_path, text, DEV_ENV)
+    text = OAUTH + "  dev:\n    token: ${DEV_TOKEN}\n    profile: x\n"
+    config = load(tmp_path, text, DEV_ENV | OAUTH_ENV)
     assert config.server.dev is None
     assert SECRET in config.secret_values(), "a configured dev token is still scrubbed"
 

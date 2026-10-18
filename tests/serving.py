@@ -25,7 +25,9 @@ SECRET = "fake-consent-key"
 DEV_TOKEN = "fake-dev-token-for-tests"
 BASE_URL = "http://localhost:8000"  # "localhost:*" only matches a Host with a port
 MCP_URL = f"{BASE_URL}/mcp"
-ENVIRON = {"CONSENT": SECRET, "DEV_TOKEN": DEV_TOKEN}
+ACCESS_AUD = "fake-access-aud-tag"
+TEAM_DOMAIN = "https://example.cloudflareaccess.com"
+ENVIRON = {"CONSENT": SECRET, "DEV_TOKEN": DEV_TOKEN, "ACCESS_AUD": ACCESS_AUD}
 HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 """The headers a raw Streamable HTTP POST to ``/mcp`` needs."""
@@ -43,7 +45,8 @@ def make_config(
     auth_mode: str = "dev",
 ) -> Config:
     """A config in ``auth_mode``: ``dev`` acting as ``dev_profile`` (default: the first
-    profile), or ``oauth``.
+    profile), or ``oauth`` with the test Access app (:data:`TEAM_DOMAIN`, :data:`ACCESS_AUD`)
+    and consent key (:data:`SECRET`).
 
     ``profile_yaml`` gives a profile's body as one line of flow YAML, ``{}`` by default. Each
     profile also gets the Hardcover token :func:`hardcover_token` names, unless its body sets one.
@@ -52,6 +55,7 @@ def make_config(
     bodies = profile_yaml or {}
     dev = dev_profile or (profiles[0] if profiles else "alice")
     dev_block = f"  dev:\n    token: ${{DEV_TOKEN}}\n    profile: {dev}\n"
+    access_block = f"  access:\n    team_domain: {TEAM_DOMAIN}\n    aud: ${{ACCESS_AUD}}\n"
     path = tmp_path / "profiles.yaml"
     path.write_text(
         dedent(f"""\
@@ -61,7 +65,7 @@ def make_config(
               forwarded_allow_ips: 127.0.0.1
               consent_hmac_key: ${{CONSENT}}
             """)
-        + (dev_block if auth_mode == "dev" else "")
+        + (dev_block if auth_mode == "dev" else access_block)
         + f"services:\n  hardcover_url: {HARDCOVER_URL}\n"
         + "profiles:\n"
         + "".join(f"  {name}: {_with_token(name, bodies.get(name, '{}'))}\n" for name in profiles),
