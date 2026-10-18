@@ -38,6 +38,11 @@ All notable changes to SyncShelf are recorded here. The format follows
   zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
   names resolve on any system.
 
+### Changed
+
+- `my_connections`' description now says that a local dev-mode session isn't a connection,
+  so it isn't listed and an empty list is normal there.
+
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
