@@ -74,7 +74,9 @@ async def my_connections() -> list[Connection]:
 
     Each row has grant_id (pass it to revoke_connection), client ("Claude app" or "Claude
     Code"), created_at and last_used_at (ISO 8601, UTC; last_used_at moves at most once a
-    minute), and current (true for the connection making this call).
+    minute), and current (true for the connection making this call). A local dev-mode
+    session isn't a connection, so it isn't listed and no row is current; an empty list
+    there is normal.
     """
     current = _current_grant()
     grants = await services().db.read(open_grants, current_profile())
