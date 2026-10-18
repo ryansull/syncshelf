@@ -1,5 +1,6 @@
 """The migration runner (SPEC §2.4, §3.1): user_version, one transaction per file, the
-pre-migration snapshot, and a failed migration leaving the DB at the last good version."""
+pre-migration snapshot, a failed migration leaving the DB at the last good version, and a
+database newer than the shipped migrations refusing to start."""
 
 import logging
 import re
@@ -138,13 +139,41 @@ class TestMigrate:
             assert user_version(other) == 3
 
 
+FIRST = {"0001_first.sql": STEPS["0001_first.sql"]}
+
+
+def at_version_one(directory: Path, conn: sqlite3.Connection, snapshots: Path) -> None:
+    """Migrate ``conn`` to version 1, which takes no snapshot (a fresh install)."""
+    write_migrations(directory, FIRST)
+    migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
+    assert list(snapshots.iterdir()) == []
+
+
 class TestSnapshot:
+    def test_a_fresh_install_takes_no_snapshot(
+        self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
+    ) -> None:
+        # At version 0 there is nothing to roll back to (#48).
+        result = migrate(
+            conn, snapshot_dir=snapshots, migrations_dir=write_migrations(tmp_path / "m", STEPS)
+        )
+        assert result.applied == [1, 2, 3]
+        assert result.snapshot is None
+        assert list(snapshots.iterdir()) == []
+
+    def test_a_failed_fresh_install_takes_no_snapshot(
+        self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
+    ) -> None:
+        directory = write_migrations(tmp_path / "m", {"0001_bad.sql": "NOT SQL;"})
+        with pytest.raises(MigrationError):
+            migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
+        assert list(snapshots.iterdir()) == []
+
     def test_snapshot_holds_the_db_as_it_was_before_migrating(
         self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
     ) -> None:
         directory = tmp_path / "m"
-        write_migrations(directory, {"0001_first.sql": STEPS["0001_first.sql"]})
-        migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
+        at_version_one(directory, conn, snapshots)
         conn.execute("INSERT INTO one VALUES (7)")
 
         write_migrations(directory, STEPS)
@@ -161,10 +190,12 @@ class TestSnapshot:
         self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
     ) -> None:
         # Even when the very first pending file fails, the snapshot already exists.
-        directory = write_migrations(tmp_path / "m", {"0001_bad.sql": "NOT SQL;"})
+        directory = tmp_path / "m"
+        at_version_one(directory, conn, snapshots)
+        write_migrations(directory, {"0002_bad.sql": "NOT SQL;"})
         with pytest.raises(MigrationError):
             migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
-        assert snapshot_path(snapshots, 0).exists()
+        assert snapshot_path(snapshots, 1).exists()
 
     def test_an_existing_snapshot_is_reused_and_never_overwritten(
         self,
@@ -175,9 +206,11 @@ class TestSnapshot:
     ) -> None:
         # The DB is still at the version the snapshot was taken at, so the existing file is
         # the true pre-migration state: keep it, say so, and migrate.
-        existing = snapshot_path(snapshots, 0)
+        directory = tmp_path / "m"
+        at_version_one(directory, conn, snapshots)
+        existing = snapshot_path(snapshots, 1)
         existing.write_bytes(b"keep me")
-        directory = write_migrations(tmp_path / "m", STEPS)
+        write_migrations(directory, STEPS)
         with caplog.at_level(logging.INFO, logger="syncshelf.db.migrate"):
             result = migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
         assert existing.read_bytes() == b"keep me"
@@ -190,14 +223,16 @@ class TestSnapshot:
     ) -> None:
         # The snapshot is written under a temporary name and renamed once complete, so only a
         # finished snapshot ever carries the name that gets reused.
-        partial = snapshots / "pre-migration-0000.db.tmp"
+        directory = tmp_path / "m"
+        at_version_one(directory, conn, snapshots)
+        partial = snapshots / "pre-migration-0001.db.tmp"
         partial.write_bytes(b"half a snapshot")
-        directory = write_migrations(tmp_path / "m", STEPS)
+        write_migrations(directory, STEPS)
         result = migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
-        assert result.snapshot == snapshot_path(snapshots, 0)
+        assert result.snapshot == snapshot_path(snapshots, 1)
         assert not partial.exists()
         with closing(sqlite3.connect(result.snapshot)) as snap:
-            assert user_version(snap) == 0
+            assert user_version(snap) == 1
 
 
 class TestFailedMigration:
@@ -236,8 +271,7 @@ class TestFailedMigration:
         # At v1, 0002 fails after pre-migration-0001.db is written. Once 0002 is fixed, the
         # next start must reuse that snapshot rather than refuse to run.
         directory = tmp_path / "m"
-        write_migrations(directory, {"0001_first.sql": STEPS["0001_first.sql"]})
-        migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
+        at_version_one(directory, conn, snapshots)
         conn.execute("INSERT INTO one VALUES (7)")
 
         write_migrations(directory, self.BAD)
@@ -254,6 +288,29 @@ class TestFailedMigration:
         with closing(sqlite3.connect(snapshot)) as snap:
             assert user_version(snap) == 1
             assert snap.execute("SELECT id FROM one").fetchall() == [(7,)]
+
+
+class TestNewerDatabase:
+    def test_a_database_newer_than_the_migrations_refuses_naming_both_versions(
+        self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
+    ) -> None:
+        # An older image started on a newer database (#48): refuse rather than run on a schema
+        # this code doesn't know.
+        conn.execute("PRAGMA user_version = 5")
+        directory = write_migrations(tmp_path / "m", STEPS)
+        with pytest.raises(MigrationError, match=r"version 5\b.*ships is 3$"):
+            migrate(conn, snapshot_dir=snapshots, migrations_dir=directory)
+        assert user_version(conn) == 5
+        assert list(snapshots.iterdir()) == []
+
+    def test_a_database_at_the_newest_migration_starts(
+        self, tmp_path: Path, conn: sqlite3.Connection, snapshots: Path
+    ) -> None:
+        conn.execute("PRAGMA user_version = 3")
+        result = migrate(
+            conn, snapshot_dir=snapshots, migrations_dir=write_migrations(tmp_path / "m", STEPS)
+        )
+        assert (result.from_version, result.to_version, result.applied) == (3, 3, [])
 
 
 class TestMeta:

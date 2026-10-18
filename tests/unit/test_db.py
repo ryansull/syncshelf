@@ -58,7 +58,7 @@ def select_all(conn: sqlite3.Connection) -> list[int]:
 class TestDatabase:
     async def test_open_migrates_and_reports_it(self, db: Database, tmp_path: Path) -> None:
         assert db.migration.applied[0] == 1
-        assert db.migration.snapshot is not None
+        assert db.migration.snapshot is None  # a fresh install takes none
         assert db.path == tmp_path / "syncshelf.db"
         version = await db.read(lambda c: c.execute("PRAGMA user_version").fetchone()[0])
         assert version == db.migration.to_version
@@ -154,6 +154,16 @@ class TestDatabase:
         path = tmp_path / "failed.db"
         with pytest.raises(MigrationError):
             await Database.open(path, snapshot_dir=tmp_path, migrations_dir=migrations)
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{path}{suffix}").unlink(missing_ok=True)
+        assert not path.exists()
+
+    async def test_a_database_newer_than_the_migrations_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "newer.db"
+        with closing(connect(path)) as conn:
+            conn.execute("PRAGMA user_version = 99")
+        with pytest.raises(MigrationError, match="99"):
+            await Database.open(path, snapshot_dir=tmp_path)
         for suffix in ("", "-wal", "-shm"):
             Path(f"{path}{suffix}").unlink(missing_ok=True)
         assert not path.exists()
