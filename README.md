@@ -36,6 +36,7 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Tests (offline, as CI runs them) | `uv run pytest` |
 | Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
+| Live write tests (test account only, never in CI) | `SYNCSHELF_LIVE=1 SYNCSHELF_LIVE_WRITE=1 uv run pytest --live tests/live/test_writes_live.py` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 | Check changelog fragments | `uv run python scripts/changelog.py check` |
@@ -43,6 +44,8 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 
 Tests block outbound network access. Live tests read credentials from the git-ignored
 repo-root `.env` (or the file in `SYNCSHELF_LIVE_ENV`, for a worktree); see `.env.example`.
+Live write tests use only `HARDCOVER_TOKEN_TEST`, a throwaway Hardcover account. They refuse
+to run if it's the same account as a profile's token, and take off whatever they shelve.
 
 To stop real values (your domain, emails, LAN hostnames) ever being committed, list them one per
 line in the git-ignored `local/denylist.txt`. The pre-commit hook then refuses any commit that
