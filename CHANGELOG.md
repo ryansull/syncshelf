@@ -25,8 +25,10 @@ All notable changes to SyncShelf are recorded here. The format follows
   context fields, configured hosts rewritten to their alias, and every configured secret
   replaced with `***`, tracebacks included.
 - The database layer: one writer thread, per-thread read connections, and a forward-only
-  migration runner that writes a `pre-migration-NNNN.db` snapshot before migrating. Ships
-  migration `0001_meta` (the `meta` table).
+  migration runner that writes a `pre-migration-NNNN.db` snapshot before migrating. If that
+  snapshot already exists (an earlier start's first pending migration failed), it is kept and
+  reused, never overwritten, and the reuse is logged. Ships migration `0001_meta` (the `meta`
+  table).
 - `python -m syncshelf` serves the app with one uvicorn worker, proxy headers trusted from
   `server.forwarded_allow_ips`, and uvicorn's lines as JSON with query strings dropped from
   the access log. It listens on uvicorn's default `127.0.0.1:8000` for now.
