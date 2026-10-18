@@ -9,6 +9,7 @@ config itself, so the caller wires it up once at startup::
 
 ``scrub`` is the same redaction for strings that are about to be stored, and ``add_secret``
 registers a token that only exists at runtime (an issued access token, a session cookie).
+``discard_secret`` drops one again once it has expired, so the set doesn't only ever grow.
 """
 
 import json
@@ -33,6 +34,7 @@ __all__ = [
     "add_secret",
     "configure",
     "configure_redaction",
+    "discard_secret",
     "log_context",
     "scrub",
 ]
@@ -96,10 +98,22 @@ class Redactor:
 
     def add_secret(self, value: str) -> None:
         """Start redacting ``value`` too. Safe to call from any thread."""
-        if not value or value in self._secrets:
+        if not value:
             return
+        # The check is under the lock too, so a concurrent discard can't be lost.
         with self._lock:
+            if value in self._secrets:
+                return
             self._secrets.add(value)
+            self._secret_re = self._compile_secrets()
+
+    def discard_secret(self, value: str) -> None:
+        """Stop redacting ``value``, such as a token that has expired. Safe to call from any
+        thread, and a no-op for a value that was never added."""
+        with self._lock:
+            if value not in self._secrets:
+                return
+            self._secrets.discard(value)
             self._secret_re = self._compile_secrets()
 
     def scrub(self, text: str) -> str:
@@ -141,6 +155,11 @@ def configure_redaction(
 def add_secret(value: str) -> None:
     """Redact a value that only exists at runtime, such as a freshly issued token."""
     _redactor.add_secret(value)
+
+
+def discard_secret(value: str) -> None:
+    """Stop redacting a runtime value added with ``add_secret``, once it can't be used."""
+    _redactor.discard_secret(value)
 
 
 def scrub(text: str) -> str:

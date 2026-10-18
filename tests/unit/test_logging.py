@@ -139,6 +139,16 @@ def test_a_live_token_added_later_is_scrubbed() -> None:
     assert slog.scrub("Bearer fake-live-token and " + SECRET) == "Bearer *** and ***"
 
 
+def test_a_discarded_secret_is_no_longer_scrubbed() -> None:
+    slog.configure_redaction(secrets=[SECRET])
+    slog.add_secret("fake-live-token")
+    slog.discard_secret("fake-live-token")
+    slog.discard_secret("never-added")  # a no-op, not an error
+    assert slog.scrub("Bearer fake-live-token and " + SECRET) == "Bearer fake-live-token and ***"
+    slog.discard_secret(SECRET)
+    assert slog.scrub(SECRET) == SECRET
+
+
 def test_overlapping_secrets_redact_the_longest_match() -> None:
     redactor = slog.Redactor(secrets=["abc", "abcdef", ""])
     assert redactor.scrub("x abcdef y abc") == "x *** y ***"
