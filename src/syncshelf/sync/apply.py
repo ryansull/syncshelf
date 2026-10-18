@@ -15,7 +15,8 @@ Goodreads (4a), ABS (5) and Chaptarr (6) syncs later. Given a profile, a book an
 - **writes through** to the mirror after success, and returns what changed with the prior
   values, so a caller can undo.
 
-A target may also carry one read operation, :class:`Start` or :class:`Finish`. After a status
+A target may also carry one read operation: :class:`Start`, :class:`Finish` or
+:class:`Correct`. After a status
 write, every read Hardcover invented (a "today" read it opened, a "today" finish it stamped) is
 undone against a snapshot taken first, and the intended read is then written explicitly, with
 full objects only. A finish adopts a read already logged within 14 days, or completes an open
@@ -53,12 +54,15 @@ __all__ = [
     "Applied",
     "Applier",
     "Change",
+    "Correct",
     "DateNeeded",
+    "DatesOutOfOrder",
     "Finish",
     "FormatNeeded",
     "Incomplete",
     "NotShelved",
     "OpenReadExists",
+    "ReadNotFound",
     "ReadStillOpen",
     "Start",
     "Target",
@@ -207,6 +211,8 @@ class Applier:
         # A replay is judged against the reads before the change began, not against what
         # Hardcover invented when its first attempt's status write landed.
         basis = pending.snapshot if pending else list((current or {}).get("user_book_reads") or [])
+        if isinstance(op, Correct) and _finished_on(basis, op.old) is None:
+            op = Finish(op.on, format=op.format)  # nothing logged on the old date (rule 5)
         edition = await self._edition(client, book_id, current, op, basis)
         if current is None:
             if "status_id" not in wanted:
@@ -268,6 +274,8 @@ class Applier:
         if op is None:
             return None
         if op.format is None:
+            if isinstance(op, Correct):
+                return None  # the read it moves keeps its edition
             adoptable = isinstance(op, Finish) and not op.reread and current is not None
             if adoptable and (_open_read(reads, op.on) or _near(reads, op.on)):
                 return None
@@ -296,26 +304,31 @@ class Applier:
         if after is None:
             return
         before = {r["id"]: r for r in snapshot}
-        # The open read a finish completes: it becomes the finished read in one write, stamped
-        # by Hardcover or not.
+        # The read the op rewrites (the open read a finish completes, the read a correction
+        # moves) becomes the intended read in one write, stamped by Hardcover or not.
         completes = None
         if isinstance(op, Finish) and not op.reread:
             completes = _open_read(snapshot, op.on)
+        elif isinstance(op, Correct):
+            completes = _finished_on(snapshot, op.old)
         done = False
         kept: list[dict[str, Any]] = []
         for read in after.get("user_book_reads") or []:
             old = before.get(read["id"])
             if old is not None and completes is not None and read["id"] == completes["id"]:
-                assert isinstance(op, Finish)
+                assert isinstance(op, Finish | Correct)
+                started = op.started if isinstance(op, Finish) else None
                 intended = _full(
                     old,
                     finished_at=op.on,
-                    started_at=op.started or old.get("started_at"),
+                    started_at=started or old.get("started_at"),
                     edition_id=edition if op.format else old.get("edition_id"),
                 )
-                await self._write_read(client, UPDATE_READ, {"id": read["id"]}, intended)
+                if intended != _full(read):
+                    await self._write_read(client, UPDATE_READ, {"id": read["id"]}, intended)
                 new = {**read, **intended}
-                changes.append(Change("read", _shown(old), _shown(new, op.format)))
+                if intended != _full(old):
+                    changes.append(Change("read", _shown(old), _shown(new, op.format)))
                 kept.append(new)
                 done = True
             elif old is not None:
@@ -332,6 +345,7 @@ class Applier:
             if isinstance(op, Finish) and not op.reread and _near(kept, op.on) is not None:
                 pass  # already logged, within days of this finish
             else:
+                assert not isinstance(op, Correct)  # one with nothing to move became a Finish
                 started = op.started if isinstance(op, Finish) else op.on
                 fields = {
                     "started_at": started,
@@ -361,6 +375,60 @@ class Applier:
                 {"id": user_book["id"], "object": {"first_started_reading_date": earliest}},
             )
             check_mutation(result.data, "update_user_book")
+
+    async def correct_read(
+        self,
+        profile: str,
+        book_id: int,
+        read_id: int,
+        *,
+        started_on: str | None = None,
+        finished_on: str | None = None,
+        format: str | None = None,  # noqa: A002 - matches the read ops
+        trigger: str = "claude",
+    ) -> Applied:
+        """Edit one logged read in place (§3.3.9 ``correct_read``): the given dates, and the
+        book's default edition for ``format``, over its current values, in one full-object
+        write. It runs outside the procedure, as it changes no status and Hardcover invents
+        nothing for it; ``first_started_reading_date`` still follows (rule 6).
+
+        Raises :class:`NotShelved`, :class:`ReadNotFound` or :class:`DatesOutOfOrder` before
+        anything is written.
+        """
+        async with self._locks[profile]:
+            client = self._clients[profile]
+            current = await self._fetch(client, book_id)
+            if current is None:
+                raise NotShelved(book_id)
+            reads = list(current.get("user_book_reads") or [])
+            old = next((r for r in reads if r["id"] == read_id), None)
+            if old is None:
+                raise ReadNotFound(read_id)
+            changed: dict[str, Any] = {}
+            if started_on is not None:
+                changed["started_at"] = started_on
+            if finished_on is not None:
+                changed["finished_at"] = finished_on
+            if format is not None:
+                book = current.get("book") or {}
+                changed["edition_id"] = (book.get(EDITION_FOR[format]) or {}).get("id")
+            intended = _full(old, **changed)
+            start, finish = intended["started_at"], intended["finished_at"]
+            if start and finish and start[:10] > finish[:10]:
+                raise DatesOutOfOrder(start[:10], finish[:10])
+            applied = Applied(current["id"], inserted=False, changes=[])
+            if any(_differs(old.get(k), intended[k]) for k in changed):
+                await self._write_read(client, UPDATE_READ, {"id": read_id}, intended)
+                new = {**old, **intended}
+                if format is not None:
+                    new["edition"] = None  # shown by ``format``, not the old edition's
+                change = Change("read", _shown(old), _shown(new, format))
+                applied.changes.append(change)
+                _log_change(profile, book_id, change, trigger)
+                reads[reads.index(old)] = new
+                await self._first_started(client, current, reads)
+                await self._write_through(client, profile, book_id)
+            return applied
 
     async def _write_read(
         self,
@@ -475,6 +543,8 @@ def _is_intended(read: dict[str, Any], op: ReadOp, edition: int | None) -> bool:
         return False
     if isinstance(op, Start):
         return started == op.on and finished is None
+    if isinstance(op, Correct):
+        return False  # it moves a read already logged, so a new one is never asked for
     return finished == op.on and started == op.started
 
 
@@ -559,7 +629,17 @@ class Finish:
     """Never adopt: always add a new read."""
 
 
-type ReadOp = Start | Finish
+@dataclass(frozen=True)
+class Correct:
+    """Move a logged finish from ``old`` to ``on``: the read finished on ``old`` gets the new
+    date. With none, it's a finish on ``on``, adopting rather than duplicating (rule 5)."""
+
+    old: str
+    on: str
+    format: str | None = None
+
+
+type ReadOp = Start | Finish | Correct
 
 
 class DateNeeded(Exception):
@@ -578,6 +658,19 @@ class OpenReadExists(Exception):
         self.started_on = started_on
 
 
+class DatesOutOfOrder(Exception):
+    """An edit would leave a read starting after it finished."""
+
+    def __init__(self, started_on: str, finished_on: str) -> None:
+        super().__init__(started_on, finished_on)
+        self.started_on = started_on
+        self.finished_on = finished_on
+
+
+class ReadNotFound(Exception):
+    """The read id isn't one of this book's reads on the caller's shelf."""
+
+
 class FormatNeeded(Exception):
     """A read must be written but its format can't be told: ask how it was read."""
 
@@ -594,6 +687,12 @@ def _open_read(
         and (on_or_before is None or r["started_at"][:10] <= on_or_before)
     ]
     return max(candidates, key=lambda r: (r["started_at"], r["id"]), default=None)
+
+
+def _finished_on(reads: list[dict[str, Any]], on: str) -> dict[str, Any] | None:
+    """The read finished on exactly ``on`` (the earliest such, if two are)."""
+    matches = [r for r in reads if (r.get("finished_at") or "")[:10] == on]
+    return min(matches, key=lambda r: r["id"], default=None)
 
 
 def _near(reads: list[dict[str, Any]], on: str) -> dict[str, Any] | None:
