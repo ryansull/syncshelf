@@ -6,10 +6,12 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.14,<3.15"
-# Phase 1's share of SPEC §2.1. Later phases add their own (PyJWT, rapidfuzz, playwright).
+# SPEC §2.1 as far as phase 2 (PyJWT checks the Access JWT). Later phases add rapidfuzz and
+# playwright.
 dependencies = [
     "httpx2>=2.13",
     "mcp>=2.3,<3",
+    "pyjwt[crypto]>=2.10",
     "pyyaml>=6",
     "starlette>=1.8,<2",
     "uvicorn>=0.54",
@@ -39,7 +41,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
 # Harness helpers in tests/, imported through pytest's pythonpath.
-known-local-folder = ["cimd_docs", "clock", "image", "invariants", "scrub", "serving"]
+known-local-folder = ["access_jwt", "cimd_docs", "clock", "image", "invariants", "scrub", "serving"]
 
 [tool.pyright]
 include = ["src"]
