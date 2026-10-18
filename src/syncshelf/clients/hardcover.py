@@ -22,6 +22,7 @@ import httpx2
 from syncshelf import __version__
 
 __all__ = [
+    "BOOK",
     "GOALS",
     "LIBRARY_PAGE",
     "Gate",
@@ -38,6 +39,8 @@ __all__ = [
     "Library",
     "RateLimit",
     "Result",
+    "SHELF",
+    "SIMILAR",
     "check_mutation",
     "query_cost",
 ]
@@ -58,7 +61,7 @@ ME = "query Me { me { id } }"
 GOALS = "query Goals { me { goals { metric goal progress start_date end_date state } } }"
 """The token owner's reading goals with their progress (§3.3.7, ``reading_stats``)."""
 
-_USER_BOOK_FIELDS = """
+_SHELF_FIELDS = """
     id book_id edition_id status_id rating has_review review_raw review_has_spoilers
     date_added first_started_reading_date privacy_setting_id updated_at
     user_book_reads(order_by: {id: asc}) {
@@ -66,7 +69,10 @@ _USER_BOOK_FIELDS = """
       edition { reading_format_id }
     }
     edition { id reading_format_id pages audio_seconds isbn_13 isbn_10 asin }
-    book {
+"""
+"""A user_book and its reads, without the book: what a shelf holds."""
+
+_BOOK_FIELDS = """
       id title subtitle release_year pages canonical_id
       cached_contributors cached_featured_series
       genres: cached_tags(path: "Genre")
@@ -75,8 +81,10 @@ _USER_BOOK_FIELDS = """
       default_audio_edition { id audio_seconds }
       default_ebook_edition { id }
       default_physical_edition { id pages }
-    }
 """
+"""What the mirror keeps of a book (§3.3.4)."""
+
+_USER_BOOK_FIELDS = _SHELF_FIELDS + "    book {" + _BOOK_FIELDS + "    }\n"
 
 _USER_BOOKS_PAGE = (
     "user_books(where: {user_id: {_eq: $user_id}, id: {_gt: $after}}, "
@@ -117,6 +125,36 @@ query ListBooksMore($list_id: Int!, $limit: Int!, $after: Int!) {
 }
 """
 """Later pages of one list's books, for a list of more than 1000 (cost 1)."""
+
+BOOK = f"""
+query Book($book_id: Int!, $user_id: Int!) {{
+  books(where: {{id: {{_eq: $book_id}}}}) {{{_BOOK_FIELDS}
+      rating cached_similar_book_ids
+      book_series(order_by: {{position: asc}}) {{ position series {{ id name }} }}
+      warnings: cached_tags(path: "[\\"Content Warning\\"]")
+      narrated: default_audio_edition {{ cached_contributors }}
+  }}
+  user_books(where: {{user_id: {{_eq: $user_id}}, book_id: {{_eq: $book_id}}}}) {{
+    {_SHELF_FIELDS}  }}
+}}
+"""
+"""``get_book``'s live read (§3.3.7): the full book and the caller's shelf for it (cost 2).
+Narrators are credited on the audio edition, not the book."""
+
+SHELF = f"""
+query Shelf($book_id: Int!, $user_id: Int!) {{
+  user_books(where: {{user_id: {{_eq: $user_id}}, book_id: {{_eq: $book_id}}}}) {{
+    {_SHELF_FIELDS}  }}
+}}
+"""
+"""One user's shelf for one book (cost 1): another profile's, for a household ``get_book``."""
+
+SIMILAR = """
+query Similar($ids: [Int!]!) {
+  books(where: {id: {_in: $ids}}) { id title release_year rating cached_contributors }
+}
+"""
+"""Hydrates similar-book ids into compact rows (cost 1)."""
 
 
 class HardcoverError(Exception):

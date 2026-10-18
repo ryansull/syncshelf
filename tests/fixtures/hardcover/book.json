@@ -1,0 +1,584 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "books": [
+        {
+          "id": 1464466,
+          "title": "This Inevitable Ruin",
+          "subtitle": "Dungeon Crawler Carl, Book 7",
+          "release_year": 0,
+          "pages": 0,
+          "canonical_id": null,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 241306,
+                "slug": "scrubbed",
+                "name": "Matt Dinniman",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            },
+            {
+              "author": {
+                "id": 1164835,
+                "slug": "scrubbed",
+                "name": "Erik Wilson",
+                "image": {}
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ],
+          "cached_featured_series": {
+            "id": 0,
+            "series": {
+              "id": 0,
+              "name": "Dungeon Crawler Carl",
+              "slug": "scrubbed",
+              "books_count": 0,
+              "primary_books_count": 0
+            },
+            "details": "scrubbed",
+            "featured": false,
+            "position": 0.0,
+            "collection": false,
+            "unreleased": false
+          },
+          "genres": [
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            }
+          ],
+          "moods": [
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            }
+          ],
+          "tags": [
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            }
+          ],
+          "default_audio_edition": {
+            "id": 0,
+            "audio_seconds": 0
+          },
+          "default_ebook_edition": {
+            "id": 0
+          },
+          "default_physical_edition": {
+            "id": 0,
+            "pages": 0
+          },
+          "rating": 0.0,
+          "cached_similar_book_ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "book_series": [
+            {
+              "position": 0,
+              "series": {
+                "id": 0,
+                "name": "Dungeon Crawler Carl"
+              }
+            }
+          ],
+          "warnings": [
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            }
+          ],
+          "narrated": {
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 241306,
+                  "slug": "scrubbed",
+                  "name": "Matt Dinniman",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              },
+              {
+                "author": {
+                  "id": 588576,
+                  "slug": "scrubbed",
+                  "name": "Jeff Hays",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              },
+              {
+                "author": {
+                  "id": 254153,
+                  "slug": "scrubbed",
+                  "name": "Travis Baldree",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ]
+          }
+        }
+      ],
+      "user_books": [
+        {
+          "id": 0,
+          "book_id": 1464466,
+          "edition_id": 31606264,
+          "status_id": 0,
+          "rating": 0.0,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [
+            {
+              "id": 0,
+              "started_at": null,
+              "finished_at": null,
+              "paused_at": null,
+              "edition_id": 31606264,
+              "progress_pages": 0,
+              "progress_seconds": null,
+              "edition": {
+                "reading_format_id": 0
+              }
+            }
+          ],
+          "edition": {
+            "id": 31606264,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B0DJWKWV8W"
+          }
+        }
+      ]
+    }
+  }
+}

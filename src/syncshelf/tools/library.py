@@ -10,6 +10,7 @@ Reads without a format are reported in an explicit ``unknown`` bucket, never gue
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -25,9 +26,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from syncshelf.clients.hardcover import GOALS, HardcoverClient, HardcoverError
+from syncshelf.clients.hardcover import BOOK, GOALS, SHELF, SIMILAR, HardcoverClient, HardcoverError
 from syncshelf.config import ProfileConfig
-from syncshelf.sync.mirror import Freshness, Mirror, NoMirror
+from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
 from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
 __all__ = [
@@ -36,7 +37,9 @@ __all__ = [
     "STATUSES",
     "LibraryPage",
     "LibraryRow",
+    "BookRecord",
     "Stats",
+    "get_book",
     "get_my_library",
     "reading_stats",
 ]
@@ -793,3 +796,314 @@ async def _goals(client: HardcoverClient) -> list[Goal] | None:
     except HardcoverError, KeyError, TypeError, ValueError:
         log.info("reading goals unavailable", extra={"event": "goals_unavailable"})
         return None
+
+
+# --- get_book -----------------------------------------------------------------------------
+
+TOP_TAGS = 5
+"""Genres, moods and tags shown per category in a full record (§3.3.8)."""
+MAX_WARNINGS = 10
+SIMILAR_SHOWN = 10
+
+
+class BookRead(TypedDict):
+    """One read of a book: its Hardcover id (for correct_read), dates and formats."""
+
+    read_id: int
+    started_on: str | None
+    finished_on: str | None
+    formats: list[str]
+
+
+class Shelf(TypedDict):
+    """One profile's shelf state for the book."""
+
+    profile: str
+    status: str
+    rating: float | None
+    date_added: str | None
+    reads: list[BookRead]
+    lists: list[str]
+    review: NotRequired[str | None]
+    """The caller's own review only; never another profile's (§2.8)."""
+    review_has_spoilers: NotRequired[bool]
+
+
+class SeriesEntry(TypedDict):
+    """A series the book belongs to, and its position there."""
+
+    series_id: int
+    name: str
+    position: float | None
+
+
+class Contributor(TypedDict):
+    """A person credited on the book, with Hardcover's role for them (Author, Illustrator…)."""
+
+    name: str
+    role: str | None
+
+
+class SimilarBook(TypedDict):
+    """A book Hardcover's readers of this one also read, compactly."""
+
+    book_id: int
+    title: str
+    author: str | None
+    release_year: int | None
+    community_rating: float | None
+    status: str | None
+    """The caller's shelf for it, or null when it isn't shelved."""
+
+
+class BookRecord(TypedDict):
+    """``get_book``'s answer: the book, each requested shelf, and similar books."""
+
+    book_id: int
+    title: str
+    subtitle: str | None
+    release_year: int | None
+    canonical_id: NotRequired[int]
+    pages: int | None
+    audio_hours: float | None
+    community_rating: float | None
+    contributors: list[Contributor]
+    narrators: list[str]
+    series: list[SeriesEntry]
+    genres: list[str]
+    moods: list[str]
+    tags: list[str]
+    content_warnings: list[str]
+    shelves: list[Shelf]
+    similar: list[SimilarBook]
+    unavailable: NotRequired[list[str]]
+    """Extras Hardcover couldn't give this time ("similar", "bob's shelf")."""
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def get_book(book: int, profile: str = ME) -> BookRecord:
+    """Get one book's full record from Hardcover, live, with the caller's shelf for it.
+
+    Use this for "have I read X, what did I rate it and what did I say?", "when did I read X,
+    how many times?" and "tell me about X". It takes Hardcover's book_id: find it first with
+    get_my_library (for a shelved book), search_books or check_books. Don't guess an id.
+
+    Arguments:
+    - book: the Hardcover book_id.
+    - profile: "me" (the default), another profile's name, or "household" to see each
+      sharing profile's shelf for the book too.
+
+    The record has title, subtitle, release_year, pages, audio_hours (of the default
+    audiobook), community_rating (Hardcover's average, not the user's), contributors (with
+    roles such as Author or Illustrator), narrators, every series with the book's position,
+    the top 5 genres, moods and tags, content_warnings, and similar (10 books Hardcover's
+    readers also read, with the caller's shelf status for each: a seed for recommendations,
+    not a verdict). canonical_id, when present, means Hardcover merged this book into
+    another; prefer that id.
+
+    shelves has one entry per profile that has the book shelved (empty when nobody has):
+    status, rating (the user's own, 0.5–5), date_added, every read with its read_id, dates
+    and formats (unknown when Hardcover has none), and the lists it's on. The caller's own
+    entry also has review and review_has_spoilers; other people's reviews are never shown.
+    Many books shelved as read have no reads logged: say so rather than guess a date. When
+    Hardcover couldn't give an extra this time, unavailable names it (for example "similar"),
+    and the rest of the record still stands.
+    """
+    caller = current_profile()
+    bound = services()
+    names = resolve_profiles(profile, caller, bound.profiles)
+    # Lists and the similar books' shelf status come from the copy, so make it current first
+    # (free within the TTL). A profile with no copy just has no lists to show.
+    with contextlib.suppress(ToolError):
+        await _refresh(bound.mirror, names, caller)
+    first = bound.hardcover[names[0]]
+    result = await first.execute(BOOK, {"book_id": book, "user_id": await first.me_id()})
+    if not result.data.get("books"):
+        raise ToolError(
+            f"Hardcover has no book with id {book}. Find the id with search_books or "
+            "check_books, or with get_my_library for a shelved book."
+        )
+    data: dict[str, Any] = result.data["books"][0]
+    found: dict[str, dict[str, Any] | None] = {names[0]: _first(result.data.get("user_books"))}
+    missing: list[str] = []
+    # The other shelves and the similar books are extras: each is fetched at the same time,
+    # and one that fails is named in `unavailable` rather than costing the whole record.
+    async with asyncio.TaskGroup() as tg:
+        others = {
+            name: tg.create_task(_other_shelf(bound.hardcover[name], book)) for name in names[1:]
+        }
+        similar = tg.create_task(_similar(first, data.get("cached_similar_book_ids") or [], caller))
+    for name, task in others.items():
+        if isinstance(shelf := task.result(), HardcoverError):
+            missing.append(f"{name}'s shelf")
+        else:
+            found[name] = shelf
+    if isinstance(similar_rows := similar.result(), HardcoverError):
+        missing.append("similar")
+        similar_rows = []
+    for name, user_book in found.items():
+        # The copy catches up with what Hardcover just said (§3.3.4).
+        stored = {**user_book, "book": data} if user_book else None
+        await bound.mirror.write_through(name, book, stored)
+    lists = await bound.db.read(_lists_for, book, tuple(found))
+    shelves = [
+        _shelf(name, ub, lists.get(name, []), own=name == caller)
+        for name, ub in found.items()
+        if ub is not None
+    ]
+    record = BookRecord(
+        book_id=data["id"],
+        title=data.get("title") or "",
+        subtitle=data.get("subtitle"),
+        release_year=data.get("release_year"),
+        pages=data.get("pages") or (data.get("default_physical_edition") or {}).get("pages"),
+        audio_hours=_hours((data.get("default_audio_edition") or {}).get("audio_seconds")),
+        community_rating=_rounded(data.get("rating")),
+        contributors=[
+            Contributor(name=c["author"]["name"], role=c.get("contribution"))
+            for c in data.get("cached_contributors") or []
+            if (c.get("author") or {}).get("name")
+        ],
+        narrators=_narrators(data.get("narrated")),
+        series=[
+            SeriesEntry(
+                series_id=s["series"]["id"], name=s["series"]["name"], position=s["position"]
+            )
+            for s in data.get("book_series") or []
+            if s.get("series")
+        ],
+        genres=tag_names(data.get("genres"))[:TOP_TAGS],
+        moods=tag_names(data.get("moods"))[:TOP_TAGS],
+        tags=tag_names(data.get("tags"))[:TOP_TAGS],
+        content_warnings=tag_names(data.get("warnings"))[:MAX_WARNINGS],
+        shelves=shelves,
+        similar=similar_rows,
+    )
+    if data.get("canonical_id"):
+        record["canonical_id"] = data["canonical_id"]
+    if missing:
+        record["unavailable"] = missing
+    return record
+
+
+async def _other_shelf(
+    client: HardcoverClient, book: int
+) -> dict[str, Any] | None | HardcoverError:
+    try:
+        shelf = await client.execute(SHELF, {"book_id": book, "user_id": await client.me_id()})
+    except HardcoverError as exc:
+        return exc
+    return _first(shelf.data.get("user_books"))
+
+
+def _first(rows: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    return rows[0] if rows else None
+
+
+def _shelf(name: str, ub: dict[str, Any], lists: list[str], *, own: bool) -> Shelf:
+    shelf = Shelf(
+        profile=name,
+        status=STATUSES.get(ub["status_id"], str(ub["status_id"])),
+        rating=ub.get("rating"),
+        date_added=ub.get("date_added"),
+        reads=[
+            BookRead(
+                read_id=r["id"],
+                started_on=r.get("started_at"),
+                finished_on=r.get("finished_at"),
+                formats=list(
+                    FORMATS.get((r.get("edition") or {}).get("reading_format_id") or 0, (UNKNOWN,))
+                ),
+            )
+            for r in ub.get("user_book_reads") or []
+        ],
+        lists=lists,
+    )
+    if own:
+        shelf["review"] = ub.get("review_raw") or None
+        shelf["review_has_spoilers"] = bool(ub.get("review_has_spoilers"))
+    return shelf
+
+
+def _lists_for(
+    conn: sqlite3.Connection, book_id: int, profiles: tuple[str, ...]
+) -> dict[str, list[str]]:
+    """The names of the lists each profile has the book on, from the mirror."""
+    out: dict[str, list[str]] = {}
+    for profile in profiles:
+        rows = conn.execute(
+            "SELECT list_name FROM mirror_list_items WHERE profile = ? AND hc_book_id = ? "
+            "ORDER BY list_name",
+            (profile, book_id),
+        )
+        out[profile] = [name for (name,) in rows]
+    return out
+
+
+def _narrators(narrated: dict[str, Any] | None) -> list[str]:
+    """Narrators are credited on the audio edition, as contribution "Narrator"."""
+    people = (narrated or {}).get("cached_contributors") or []
+    return [
+        c["author"]["name"]
+        for c in people
+        if c.get("contribution") == "Narrator" and (c.get("author") or {}).get("name")
+    ]
+
+
+def _hours(seconds: int | None) -> float | None:
+    return round(seconds / 3600, 1) if seconds else None
+
+
+def _rounded(value: float | None) -> float | None:
+    return round(value, 2) if value is not None else None
+
+
+async def _similar(
+    client: HardcoverClient, ids: list[int], caller: str
+) -> list[SimilarBook] | HardcoverError:
+    """The first similar ids, hydrated in one request, in Hardcover's own order, with the
+    caller's shelf status for each; the error instead when Hardcover can't answer."""
+    wanted = ids[:SIMILAR_SHOWN]
+    if not wanted:
+        return []
+    try:
+        result = await client.execute(SIMILAR, {"ids": wanted})
+    except HardcoverError as exc:
+        return exc
+    by_id = {b["id"]: b for b in result.data.get("books") or []}
+    statuses = await services().db.read(_statuses, caller, tuple(by_id))
+    rows: list[SimilarBook] = []
+    for book_id in wanted:  # the _in answer comes back in no particular order
+        b = by_id.get(book_id)
+        if b is None:
+            continue
+        people = b.get("cached_contributors") or []
+        authors = [
+            c["author"]["name"]
+            for c in people
+            if c.get("contribution") in AUTHOR_ROLES and (c.get("author") or {}).get("name")
+        ]
+        rows.append(
+            SimilarBook(
+                book_id=book_id,
+                title=b.get("title") or "",
+                author=authors[0] if authors else None,
+                release_year=b.get("release_year"),
+                community_rating=_rounded(b.get("rating")),
+                status=statuses.get(book_id),
+            )
+        )
+    return rows
+
+
+def _statuses(conn: sqlite3.Connection, profile: str, book_ids: tuple[int, ...]) -> dict[int, str]:
+    """The profile's shelf status for each of ``book_ids`` it has shelved, from the mirror."""
+    if not book_ids:
+        return {}
+    marks = ",".join("?" * len(book_ids))
+    rows = conn.execute(
+        f"SELECT hc_book_id, status_id FROM mirror_user_books "  # noqa: S608
+        f"WHERE profile = ? AND hc_book_id IN ({marks})",
+        (profile, *book_ids),
+    )
+    return {book_id: STATUSES.get(status, str(status)) for book_id, status in rows}

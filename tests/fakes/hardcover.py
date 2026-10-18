@@ -46,6 +46,9 @@ class FakeHardcover:
         self.user_books: dict[int, list[dict[str, Any]]] = {}
         self.lists: dict[int, list[dict[str, Any]]] = {}
         self.goals: dict[int, list[dict[str, Any]]] = {}
+        self.catalog: dict[int, dict[str, Any]] = {}
+        """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
+        library query's. Shelving a book adds it."""
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
         self.callers: list[int] = []
@@ -76,6 +79,9 @@ class FakeHardcover:
         ``user_book_reads=`` are merged into the defaults.
         """
         row = user_book_row(next(self._ids), book_id)
+        if (known := self.catalog.get(book_id)) is not None:
+            # A book already in the catalog keeps its details on every shelf it's added to.
+            row["book"] = {k: known.get(k, v) for k, v in row["book"].items()}
         for key in ("book", "edition"):
             if key in fields:
                 override = fields.pop(key)
@@ -84,7 +90,19 @@ class FakeHardcover:
             row["user_book_reads"] = [read_row(**r) for r in fields.pop("user_book_reads")]
         row.update(fields)
         self.user_books[user_id].append(row)
+        if row["book"] is not None:
+            self.catalog[book_id] = {
+                **book_extras(),
+                **self.catalog.get(book_id, {}),
+                **row["book"],
+            }
         return row
+
+    def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
+        """Put an unshelved book in the catalog, with ``fields`` over the defaults."""
+        book = {**user_book_row(0, book_id)["book"], **book_extras(), **fields}
+        self.catalog[book_id] = book
+        return book
 
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
         list_id = next(self._ids)
@@ -167,6 +185,9 @@ class FakeHardcover:
             "LibraryMore": self._library_more,
             "ListsMore": lambda uid, v: {"lists": self._lists_page(uid, v)},
             "ListBooksMore": self._list_books_more,
+            "Book": self._book,
+            "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
+            "Similar": self._similar,
         }
 
     def _ok(self, data: dict[str, Any]) -> httpx2.Response:
@@ -216,6 +237,21 @@ class FakeHardcover:
     def _library_more(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         return {"user_books": self._user_books_page(user_id, variables)}
 
+    def _shelf(self, user_id: int, variables: dict[str, Any]) -> list[dict[str, Any]]:
+        assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
+        rows = [r for r in self.user_books[user_id] if r["book_id"] == variables["book_id"]]
+        return [{k: v for k, v in r.items() if k != "book"} for r in rows]
+
+    def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        book = self.catalog.get(variables["book_id"])
+        return {"books": [book] if book else [], "user_books": self._shelf(user_id, variables)}
+
+    def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        # Hardcover returns an _in match in its own order, not the order asked for.
+        fields = ("id", "title", "release_year", "rating", "cached_contributors")
+        found = sorted(i for i in variables["ids"] if i in self.catalog)
+        return {"books": [{f: self.catalog[i][f] for f in fields} for i in found]}
+
 
 def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
     """A shelved book with no reads, in exactly the library query's shape."""
@@ -260,6 +296,17 @@ def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
             "default_ebook_edition": None,
             "default_physical_edition": {"id": book_id * 10, "pages": 300},
         },
+    }
+
+
+def book_extras() -> dict[str, Any]:
+    """The fields ``Book`` answers beyond the library query's book, empty by default."""
+    return {
+        "rating": None,
+        "cached_similar_book_ids": [],
+        "book_series": [],
+        "warnings": [],
+        "narrated": None,
     }
 
 

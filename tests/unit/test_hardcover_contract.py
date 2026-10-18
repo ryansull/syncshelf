@@ -15,12 +15,14 @@ from typing import Any
 
 import pytest
 
-from syncshelf.clients.hardcover import GOALS, LIBRARY, ME, HardcoverClient
+from syncshelf.clients.hardcover import BOOK, GOALS, LIBRARY, ME, SHELF, SIMILAR, HardcoverClient
 
 from fakes.hardcover import URL, FakeHardcover
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "hardcover"
-OPAQUE = frozenset({"cached_contributors", "cached_featured_series", "genres", "moods", "tags"})
+OPAQUE = frozenset(
+    {"cached_contributors", "cached_featured_series", "genres", "moods", "tags", "warnings"}
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -102,3 +104,30 @@ async def test_goals_match_the_recording(fake: FakeHardcover) -> None:
     client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     result = await client.execute(GOALS)
     assert_same_shape(shape({"data": result.data}), recorded("goals"))
+
+
+async def test_the_book_query_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.catalog[7].update(
+        rating=4.31,
+        cached_similar_book_ids=[8, 9],
+        book_series=[{"position": 1.0, "series": {"id": 2, "name": "S"}}],
+        warnings=[{"tag": "Violence", "count": 3}],
+        narrated={"cached_contributors": [{"author": {"id": 5, "name": "N"},
+                                           "contribution": "Narrator"}]},
+    )  # fmt: skip
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(BOOK, {"book_id": 7, "user_id": 42})
+    assert_same_shape(shape({"data": result.data}), recorded("book"))
+
+
+async def test_similar_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.catalog[7]["rating"] = 4.0
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(SIMILAR, {"ids": [7, 8]})
+    assert_same_shape(shape({"data": result.data}), recorded("similar"))
+
+
+async def test_shelf_matches_the_recording(fake: FakeHardcover) -> None:
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(SHELF, {"book_id": 7, "user_id": 42})
+    assert_same_shape(shape({"data": result.data}), recorded("shelf"))

@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "user_books": [
+        {
+          "id": 0,
+          "book_id": 1464466,
+          "edition_id": 31606264,
+          "status_id": 0,
+          "rating": 0.0,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [
+            {
+              "id": 0,
+              "started_at": null,
+              "finished_at": null,
+              "paused_at": null,
+              "edition_id": 31606264,
+              "progress_pages": 0,
+              "progress_seconds": null,
+              "edition": {
+                "reading_format_id": 0
+              }
+            }
+          ],
+          "edition": {
+            "id": 31606264,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B0DJWKWV8W"
+          }
+        }
+      ]
+    }
+  }
+}
