@@ -13,9 +13,10 @@ and turns a ``ToolError`` into an ``isError`` result. Both run inside the reques
 identity without touching private SDK state. (The SDK's server middleware could do the same,
 but its signature is marked provisional.)
 
-A tool reaches the database and the clock through :func:`services`. The app binds them to its
-server once the lifespan has opened the database, and :meth:`SyncShelfServer.call_tool` puts
-them in a context variable for the call, the same way the SDK carries the caller.
+A tool reaches the database, the clock and the refresh-grace cache through :func:`services`.
+The app binds them to its server once the lifespan has opened the database, and
+:meth:`SyncShelfServer.call_tool` puts them in a context variable for the call, the same way
+the SDK carries the caller.
 """
 
 from collections.abc import Awaitable, Callable, Iterator, Mapping
@@ -31,6 +32,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
 from mcp.types import Tool as MCPTool
 
+from syncshelf.auth.tokens import RefreshGrace
 from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
@@ -116,6 +118,8 @@ class Services:
     db: Database
     clock: Callable[[], float]
     """Wall-clock epoch seconds: ``create_app``'s one clock (§2.9)."""
+    grace: RefreshGrace
+    """The refresh-grace cache ``/token`` fills, which a revocation empties (§3.2.7)."""
     mirror: Mirror
     """Each profile's copy of its Hardcover library (§3.3.4)."""
     profiles: Mapping[str, ProfileConfig]
@@ -128,7 +132,7 @@ _services: ContextVar[Services | None] = ContextVar("syncshelf_services", defaul
 
 
 def services() -> Services:
-    """The running app's database and clock, for the tool being called."""
+    """The running app's database, clock and refresh-grace cache, for the tool being called."""
     bound = _services.get()
     if bound is None:
         # Tools run only inside a call, after the lifespan has bound the server.
