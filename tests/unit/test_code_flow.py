@@ -420,8 +420,8 @@ async def test_a_form_with_a_charset_is_accepted(
         ({"code_verifier": "x" * 42 + "+"}, "invalid_request"),
         ({"grant_type": "client_credentials"}, "unsupported_grant_type"),
         ({"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer"}, "unsupported_grant_type"),
-        # Refresh rotation is #68; until then refresh_token is refused like any other.
-        ({"grant_type": "refresh_token"}, "unsupported_grant_type"),
+        # A refresh with no refresh_token: the code's parameters don't make it an exchange.
+        ({"grant_type": "refresh_token"}, "invalid_request"),
     ],
 )
 async def test_a_bad_request_is_refused_before_the_code_is_spent(

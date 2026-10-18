@@ -32,9 +32,10 @@ JWT for the signed email), or it is refused with a redirect. It then stores a co
 the signed request and redirects with ``code``, ``state`` and ``iss``.
 
 ``POST /token`` (§3.2.4) redeems a code for a grant and its tokens
-(:func:`syncshelf.auth.tokens.exchange_code`). It takes form-encoded bodies only, never
-fetches a client document (the client is bound on the code), and marks every response
-uncacheable. Its errors are :func:`token_error` responses.
+(:func:`syncshelf.auth.tokens.exchange_code`), and rotates a refresh token
+(:func:`syncshelf.auth.tokens.refresh_tokens`). It takes form-encoded bodies only, never
+fetches a client document (the client is bound on the code or grant), and marks every
+response uncacheable. Its errors are :func:`token_error` responses.
 
 :func:`oauth_routes` are the authorization server's own routes, served only when
 ``server.auth_mode`` is ``oauth``. :func:`protected_resource_route` belongs to the resource
@@ -81,8 +82,12 @@ from syncshelf.auth.tokens import (
     SCOPE,
     CodeExchange,
     ExchangeRefused,
+    IssuedTokens,
+    RefreshExchange,
+    RefreshGrace,
     exchange_code,
     insert_code,
+    refresh_tokens,
 )
 from syncshelf.config import Config, ServerConfig
 from syncshelf.db import Database
@@ -145,6 +150,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})  # the redirect policy's
 _B64URL = re.compile(r"[A-Za-z0-9_-]+")  # unpadded base64url, the consent blob's two parts
 _VERIFIER = re.compile(r"[A-Za-z0-9._~-]{43,128}")  # RFC 7636 §4.1's code_verifier
 _FORM = "application/x-www-form-urlencoded"
+_GRANT_TYPES = frozenset({"authorization_code", "refresh_token"})  # as the metadata lists
 _TOKEN_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}  # every /token answer
 
 _WELL_KNOWN_METHODS = ["GET", "OPTIONS"]
@@ -219,6 +225,7 @@ def oauth_routes(
     config: Config,
     clients: ClientDocuments,
     access: AccessVerifier,
+    grace: RefreshGrace,
     *,
     clock: Callable[[], float] = time.time,
 ) -> list[Route]:
@@ -227,7 +234,9 @@ def oauth_routes(
     dev mode disables them (§3.2.5).
 
     ``clients`` fetches and caches the client documents ``/authorize`` checks against, and
-    ``access`` verifies the Cloudflare Access login. ``clock`` gives epoch seconds.
+    ``access`` verifies the Cloudflare Access login. ``grace`` holds each refresh's new pair
+    for a retry, and is the one the tools drop revoked grants from. ``clock`` gives epoch
+    seconds.
     """
     server = config.server
     if server.oauth is None:
@@ -341,14 +350,23 @@ def oauth_routes(
         grant_type = args.get("grant_type")
         if grant_type is None:
             return _token_refused("invalid_request", "grant_type_missing")
-        if grant_type != "authorization_code":
-            # The refresh_token grant arrives with refresh rotation (#68); until then it is
-            # refused like any other grant type.
+        if grant_type not in _GRANT_TYPES:
             return _token_refused("unsupported_grant_type", "grant_type_unsupported")
         # The gate only: /token never fetches a client document (§3.2.4).
         client_id = args.get("client_id")
         if client_id is None or not client_allowed(client_id):
             return _token_refused("invalid_client", "client_not_allowed", status_code=401)
+        resource = args.get("resource")
+        if resource is not None:
+            resource = canonical_resource(resource) or resource
+        db: Database = request.app.state.db
+        if grant_type == "refresh_token":
+            return await refresh(db, args, client_id, resource)
+        return await exchange(db, args, client_id, resource)
+
+    async def exchange(
+        db: Database, args: dict[str, str], client_id: str, resource: str | None
+    ) -> Response:
         code, redirect_uri, verifier = (
             args.get("code"),
             args.get("redirect_uri"),
@@ -358,29 +376,18 @@ def oauth_routes(
             return _token_refused("invalid_request", "parameter_missing")
         if not _VERIFIER.fullmatch(verifier):
             return _token_refused("invalid_request", "bad_code_verifier")
-        resource = args.get("resource")
         exchange = CodeExchange(
             code=code,
             client_id=client_id,
             client_label=CLIENT_LABELS[client_id],
             redirect_uri=redirect_uri,
             code_verifier=verifier,
-            resource=None if resource is None else canonical_resource(resource) or resource,
+            resource=resource,
         )
-        db: Database = request.app.state.db
         outcome = await db.write(exchange_code, exchange, int(clock()))
         if isinstance(outcome, ExchangeRefused):
             if outcome.revoked_grant is not None:
-                log.warning(
-                    "revoked grant %d: its code was replayed",
-                    outcome.revoked_grant,
-                    extra={
-                        "event": "grant_revoked",
-                        "grant_id": outcome.revoked_grant,
-                        "client_label": exchange.client_label,
-                        "reason": "code_replay",
-                    },
-                )
+                _revoked(outcome.revoked_grant, "code_replay", exchange.client_label, grace)
             return _token_refused(outcome.error, outcome.reason, exchange.client_label)
         log.info(
             "created grant %d for %s",
@@ -392,15 +399,34 @@ def oauth_routes(
                 "client_label": outcome.client_label,
             },
         )
-        body: dict[str, Any] = {
-            "access_token": outcome.access_token,
-            "token_type": "Bearer",
-            "expires_in": ACCESS_TOKEN_TTL,
-        }
-        if outcome.refresh_token is not None:
-            body["refresh_token"] = outcome.refresh_token
-        body["scope"] = " ".join(outcome.scopes)
-        return JSONResponse(body, headers=_TOKEN_HEADERS)
+        return _issued(outcome)
+
+    async def refresh(
+        db: Database, args: dict[str, str], client_id: str, resource: str | None
+    ) -> Response:
+        presented = args.get("refresh_token")
+        if presented is None:
+            return _token_refused("invalid_request", "parameter_missing")
+        label = CLIENT_LABELS[client_id]
+        rotation = RefreshExchange(presented, client_id, resource)
+        outcome = await db.write(refresh_tokens, rotation, grace, int(clock()))
+        if isinstance(outcome, ExchangeRefused):
+            if outcome.revoked_grant is not None:
+                revoked_label = outcome.revoked_label or label
+                _revoked(outcome.revoked_grant, "refresh_reuse", revoked_label, grace)
+            return _token_refused(outcome.error, outcome.reason, label)
+        event = "refresh_retried" if outcome.retried else "refresh_rotated"
+        log.info(
+            "%s grant %d's refresh token",
+            "re-sent the rotation of" if outcome.retried else "rotated",
+            outcome.grant_id,
+            extra={
+                "event": event,
+                "grant_id": outcome.grant_id,
+                "client_label": outcome.client_label,
+            },
+        )
+        return _issued(outcome)
 
     return [
         _well_known(METADATA_PATH, authorization_server_metadata(server)),
@@ -521,6 +547,35 @@ def token_error(error: str, *, status_code: int = 400) -> JSONResponse:
     """A ``/token`` error response (RFC 6749 §5.2): ``{"error": error}``, uncacheable like
     every ``/token`` response. Only the code is sent, so nothing from the request is echoed."""
     return JSONResponse({"error": error}, status_code=status_code, headers=_TOKEN_HEADERS)
+
+
+def _issued(issued: IssuedTokens) -> JSONResponse:
+    """The success response for tokens a code exchange or refresh issued (§3.2.4)."""
+    body: dict[str, Any] = {
+        "access_token": issued.access_token,
+        "token_type": "Bearer",
+        "expires_in": ACCESS_TOKEN_TTL,
+    }
+    if issued.refresh_token is not None:
+        body["refresh_token"] = issued.refresh_token
+    body["scope"] = " ".join(issued.scopes)
+    return JSONResponse(body, headers=_TOKEN_HEADERS)
+
+
+def _revoked(grant_id: int, reason: str, client_label: str, grace: RefreshGrace) -> None:
+    """Log a grant the token endpoint revoked, and forget its held refresh pairs."""
+    grace.drop_grants({grant_id})
+    log.warning(
+        "revoked grant %d: %s",
+        grant_id,
+        reason,
+        extra={
+            "event": "grant_revoked",
+            "grant_id": grant_id,
+            "client_label": client_label,
+            "reason": reason,
+        },
+    )
 
 
 def _token_refused(
