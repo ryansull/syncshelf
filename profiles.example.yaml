@@ -1,0 +1,31 @@
+# SyncShelf configuration (SPEC §2.3)
+#
+# Copy to profiles.yaml (git-ignored) and point SYNCSHELF_CONFIG at it; the container default
+# is /config/profiles.yaml. Secrets never go in this file. Write each one as a reference:
+#
+#   key: ${ENV_VAR}           expanded from SyncShelf's own environment
+#   key_file: /run/secrets/x  read from a file
+#
+# A missing variable or file stops startup with a message naming the key.
+#
+# This example covers what phase 1 reads. Later phases add keys (service URLs, cadence,
+# per-profile tokens) as they ship; SPEC §2.3 shows the full shape. Sections for phases that
+# aren't built yet may be present or absent.
+
+server:
+  # The issuer URL, with no trailing slash. Phase 1 has no auth, so startup refuses any host
+  # other than localhost or 127.0.0.1. From phase 2 this is the public URL, for example
+  # https://shelf.example.com
+  public_url: http://localhost
+  # Addresses or networks (comma-separated) trusted to set X-Forwarded-* headers: the Traefik
+  # network in production, or 127.0.0.1 when running locally without a proxy.
+  forwarded_allow_ips: 192.0.2.0/24
+  # DEBUG | INFO | WARNING | ERROR (default INFO)
+  log_level: INFO
+
+profiles:
+  # Profile names match ^[a-z][a-z0-9_]{0,31}$. Emails are lowercased and must be unique.
+  alice:
+    email: alice@example.com
+  bob:
+    email: bob@example.com

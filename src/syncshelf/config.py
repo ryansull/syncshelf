@@ -1,0 +1,441 @@
+"""Load ``profiles.yaml``, expand its secret references, and validate it (SPEC §2.3).
+
+The file path comes from ``SYNCSHELF_CONFIG`` (default ``/config/profiles.yaml``). Secrets
+are never written in the file: each secret key ``k`` is either ``k: ${VAR}``, expanded from
+SyncShelf's own environment, or ``k_file: <path>``, read from that file.
+
+Every failure raises :class:`ConfigError` with a message that names the key at fault. No
+message ever contains a secret value, so startup errors are safe to paste anywhere.
+
+Validation covers what phase 1 reads (§2.3: "a key becomes required when the phase that
+reads it ships"). Keys and sections for later phases may be present or absent, and are
+ignored here apart from secret expansion, which covers every secret key the spec names so
+that the log scrubber (§2.7) knows every configured secret from the first phase.
+"""
+
+import ipaddress
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from urllib.parse import SplitResult, urlsplit
+
+import yaml
+
+CONFIG_ENV = "SYNCSHELF_CONFIG"
+"""The environment variable that holds the config file path."""
+
+DEFAULT_CONFIG_PATH = "/config/profiles.yaml"
+"""Where the config file is read from when ``SYNCSHELF_CONFIG`` is unset."""
+
+PROFILE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,31}")
+"""A profile name, matched in full (§1.1)."""
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+"""The levels §2.7 defines for ``server.log_level``."""
+
+AUTH_MODES = ("oauth", "dev")
+"""The values of ``server.auth_mode``."""
+
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
+"""The only ``server.public_url`` hosts phase 1 accepts. It has no auth, so it must never be
+reachable from outside the machine (§3.1, Appendix D4)."""
+
+SERVICE_ALIASES: Mapping[str, str] = {
+    "hardcover_url": "hardcover",
+    "abs_url": "abs",
+    "chaptarr_url": "chaptarr",
+    "browser_ws": "browser",
+}
+"""Each ``services`` URL key and the alias its host is logged as (§2.7)."""
+
+# Every secret the spec names (§2.3), as key paths inside their section. A profile's paths
+# are relative to ``profiles.<name>``.
+_SERVER_SECRETS = (("dev", "token"), ("access", "aud"), ("consent_hmac_key",))
+_SERVICE_SECRETS = (("chaptarr_api_key",),)
+_PROFILE_SECRETS = (
+    ("hardcover_token",),
+    ("ingest_secret",),
+    ("goodreads", "rss_key"),
+    ("goodreads", "email"),
+    ("goodreads", "password"),
+    ("abs", "token"),
+)
+
+_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_DURATION = re.compile(r"([0-9]+)([mh])")
+_DURATION_UNITS = {"m": 60, "h": 3600}
+
+
+class ConfigError(Exception):
+    """The config can't be used. The message names the key, and never a secret value."""
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    """The ``server`` section keys that phase 1 reads."""
+
+    public_url: str
+    """The issuer URL, with no trailing slash."""
+    forwarded_allow_ips: str
+    """Comma-separated addresses or networks, passed to uvicorn's ``--forwarded-allow-ips``."""
+    log_level: str = "INFO"
+    auth_mode: str | None = None
+    """``oauth`` or ``dev``, or ``None`` when absent. Phase 1 only reports it."""
+    access_team_domain: str | None = None
+
+    @property
+    def public_host(self) -> str:
+        """The host of ``public_url``, lowercased, without the port."""
+        return urlsplit(self.public_url).hostname or ""
+
+    @property
+    def mcp_url(self) -> str:
+        """The MCP endpoint URL: ``public_url`` + ``/mcp`` (§2.3)."""
+        return self.public_url + "/mcp"
+
+
+@dataclass(frozen=True)
+class ServicesConfig:
+    """The service URLs from the ``services`` section, each ``None`` when absent."""
+
+    hardcover_url: str | None = None
+    abs_url: str | None = None
+    chaptarr_url: str | None = None
+    browser_ws: str | None = None
+
+
+@dataclass(frozen=True)
+class CadenceConfig:
+    """The ``cadence`` durations, in seconds, with the §2.3 defaults.
+
+    The other cadence keys (``csv_interval_days``, ``csv_window``,
+    ``hardcover_daily_reserve``) are validated by the phases that read them.
+    """
+
+    rss_interval: int = 60 * 60
+    abs_interval: int = 15 * 60
+    chaptarr_pending_interval: int = 2 * 60
+    mirror_ttl: int = 10 * 60
+
+
+@dataclass(frozen=True)
+class ProfileConfig:
+    """One profile's identity keys that are validated so far."""
+
+    name: str
+    email: str | None = None
+    """Lowercased. Unique across profiles."""
+
+
+@dataclass(frozen=True)
+class Config:
+    """The loaded, validated config."""
+
+    server: ServerConfig
+    services: ServicesConfig
+    cadence: CadenceConfig
+    profiles: dict[str, ProfileConfig]
+    secrets: Mapping[str, str] = field(repr=False)
+    """Every configured secret, by its dotted key path without ``_file``
+    (``profiles.alice.abs.token``). Kept out of ``repr`` so a logged config shows none."""
+
+    def secret_values(self) -> frozenset[str]:
+        """Every configured secret value, for the log scrubber to replace with ``***``."""
+        return frozenset(self.secrets.values())
+
+    def host_aliases(self) -> dict[str, str]:
+        """Each configured service host (lowercased, without the port) mapped to its alias.
+
+        Only services that are configured appear. If two services share a host, the later
+        one in ``SERVICE_ALIASES`` order wins.
+        """
+        aliases: dict[str, str] = {}
+        for key, alias in SERVICE_ALIASES.items():
+            url = getattr(self.services, key)
+            if url and (host := urlsplit(url).hostname):
+                aliases[host] = alias
+        return aliases
+
+    def other_hosts(self) -> frozenset[str]:
+        """Configured hosts that aren't services: ``server.public_url`` and, when set,
+        ``server.access.team_domain``. §2.7 says these are aliased too but names no alias."""
+        hosts = {self.server.public_host}
+        if self.server.access_team_domain:
+            hosts.add(urlsplit(self.server.access_team_domain).hostname or "")
+        hosts.discard("")
+        return frozenset(hosts)
+
+
+def config_path(environ: Mapping[str, str] | None = None) -> Path:
+    """The config file path: ``SYNCSHELF_CONFIG``, or ``/config/profiles.yaml``."""
+    env = os.environ if environ is None else environ
+    return Path(env.get(CONFIG_ENV) or DEFAULT_CONFIG_PATH)
+
+
+def load_config(
+    path: str | os.PathLike[str] | None = None, environ: Mapping[str, str] | None = None
+) -> Config:
+    """Read, expand and validate the config file.
+
+    ``path`` defaults to :func:`config_path`. ``${VAR}`` references expand from
+    ``environ``, which defaults to the process environment. Raises :class:`ConfigError`.
+    """
+    env = os.environ if environ is None else environ
+    file = Path(path) if path is not None else config_path(env)
+    raw = _read_yaml(file)
+
+    server_raw = _section(raw, "server", required=True)
+    services_raw = _section(raw, "services")
+    profiles_raw = _section(raw, "profiles")
+
+    secrets: dict[str, str] = {}
+    _expand_secrets(server_raw, "server", _SERVER_SECRETS, env, secrets)
+    _expand_secrets(services_raw, "services", _SERVICE_SECRETS, env, secrets)
+    profiles = _profiles(profiles_raw, env, secrets)
+
+    return Config(
+        server=_server(server_raw),
+        services=_services(services_raw),
+        cadence=_cadence(_section(raw, "cadence")),
+        profiles=profiles,
+        secrets=secrets,
+    )
+
+
+def parse_duration(text: str) -> int:
+    """Parse a ``<n>m`` or ``<n>h`` duration into seconds. Raises ``ValueError``."""
+    match = _DURATION.fullmatch(text)
+    if match is None:
+        raise ValueError("a duration is written <n>m or <n>h")
+    return int(match.group(1)) * _DURATION_UNITS[match.group(2)]
+
+
+# --- reading ----------------------------------------------------------------------------
+
+
+def _read_yaml(file: Path) -> dict[str, Any]:
+    try:
+        text = file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"cannot read the config file {file} ({type(exc).__name__})") from None
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        # The parser's own message quotes the file, which may hold an email or a pasted
+        # secret, so only its position is reported.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1})" if mark is not None else ""
+        raise ConfigError(f"the config file {file} is not valid YAML{where}") from None
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ConfigError("the config file must be a mapping of sections")
+    return data
+
+
+def _section(raw: Mapping[str, Any], key: str, *, required: bool = False) -> dict[str, Any]:
+    value = raw.get(key)
+    if value is None:
+        if required:
+            raise ConfigError(f"{key}: required")
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{key}: must be a mapping")
+    return value
+
+
+# --- secrets ----------------------------------------------------------------------------
+
+
+def _expand_secrets(
+    section: Mapping[str, Any],
+    prefix: str,
+    paths: tuple[tuple[str, ...], ...],
+    env: Mapping[str, str],
+    out: dict[str, str],
+) -> None:
+    for path in paths:
+        parent: Any = section
+        where = prefix
+        for part in path[:-1]:
+            parent = parent.get(part)
+            where = f"{where}.{part}"
+            if parent is None:
+                break
+            if not isinstance(parent, dict):
+                raise ConfigError(f"{where}: must be a mapping")
+        if parent is None:
+            continue
+        key = f"{where}.{path[-1]}"
+        value = _secret(parent, path[-1], key, env)
+        if value is not None:
+            out[key] = value
+
+
+def _secret(parent: Mapping[str, Any], name: str, key: str, env: Mapping[str, str]) -> str | None:
+    inline, from_file = name in parent, f"{name}_file" in parent
+    if inline and from_file:
+        raise ConfigError(f"{key}: set either {name} or {name}_file, not both")
+    if inline:
+        return _from_env(parent[name], key, env)
+    if from_file:
+        return _from_file(parent[f"{name}_file"], f"{key}_file")
+    return None
+
+
+def _from_env(value: Any, key: str, env: Mapping[str, str]) -> str:
+    match = _REFERENCE.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        # Never echo the value: it is most likely the secret itself.
+        raise ConfigError(
+            f"{key}: a secret must be a ${{VAR}} reference or set through {key}_file, "
+            "never written in the file"
+        )
+    var = match.group(1)
+    expanded = env.get(var)
+    if not expanded:
+        raise ConfigError(f"{key}: environment variable {var} is not set or is empty")
+    return expanded
+
+
+def _from_file(value: Any, key: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{key}: must be a file path")
+    try:
+        text = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"{key}: cannot read {value} ({type(exc).__name__})") from None
+    # Secret files conventionally end in a newline that isn't part of the secret.
+    secret = text.rstrip("\r\n")
+    if not secret:
+        raise ConfigError(f"{key}: the file is empty")
+    return secret
+
+
+# --- sections ---------------------------------------------------------------------------
+
+
+def _url(value: Any, key: str, schemes: tuple[str, ...]) -> SplitResult:
+    if not isinstance(value, str):
+        raise ConfigError(f"{key}: must be a URL")
+    try:
+        parts = urlsplit(value)
+        _ = parts.port  # raises on a malformed port
+    except ValueError:
+        raise ConfigError(f"{key}: must be a URL") from None
+    if parts.scheme not in schemes or not parts.hostname:
+        raise ConfigError(f"{key}: must be a {' or '.join(schemes)} URL with a host")
+    return parts
+
+
+def _server(raw: Mapping[str, Any]) -> ServerConfig:
+    if "public_url" not in raw:
+        raise ConfigError("server.public_url: required")
+    public_url = raw["public_url"]
+    parts = _url(public_url, "server.public_url", ("http", "https"))
+    if parts.query or parts.fragment or public_url.endswith("/"):
+        raise ConfigError("server.public_url: must have no trailing slash, query or fragment")
+    if parts.hostname not in LOCAL_HOSTS:
+        raise ConfigError(
+            "server.public_url: phase 1 has no auth, so its host must be localhost or 127.0.0.1"
+        )
+
+    if "forwarded_allow_ips" not in raw:
+        raise ConfigError("server.forwarded_allow_ips: required")
+    forwarded = raw["forwarded_allow_ips"]
+    if not _is_ip_list(forwarded):
+        raise ConfigError(
+            "server.forwarded_allow_ips: must be comma-separated IP addresses or networks"
+        )
+
+    log_level = raw.get("log_level", "INFO")
+    if log_level not in LOG_LEVELS:
+        raise ConfigError(f"server.log_level: must be one of {', '.join(LOG_LEVELS)}")
+
+    auth_mode = raw.get("auth_mode")
+    if auth_mode is not None and auth_mode not in AUTH_MODES:
+        raise ConfigError(f"server.auth_mode: must be one of {', '.join(AUTH_MODES)}")
+
+    team_domain = None
+    access = raw.get("access")
+    if isinstance(access, dict) and access.get("team_domain") is not None:
+        team_domain = access["team_domain"]
+        _url(team_domain, "server.access.team_domain", ("https",))
+
+    return ServerConfig(
+        public_url=public_url,
+        forwarded_allow_ips=forwarded,
+        log_level=log_level,
+        auth_mode=auth_mode,
+        access_team_domain=team_domain,
+    )
+
+
+def _is_ip_list(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    entries = [entry.strip() for entry in value.split(",")]
+    try:
+        for entry in entries:
+            ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def _services(raw: Mapping[str, Any]) -> ServicesConfig:
+    urls: dict[str, str] = {}
+    for key in SERVICE_ALIASES:
+        value = raw.get(key)
+        if value is None:
+            continue
+        schemes = ("ws", "wss") if key == "browser_ws" else ("http", "https")
+        _url(value, f"services.{key}", schemes)
+        urls[key] = value
+    return ServicesConfig(**urls)
+
+
+def _cadence(raw: Mapping[str, Any]) -> CadenceConfig:
+    durations: dict[str, int] = {}
+    for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            if not isinstance(value, str):
+                raise ValueError
+            durations[key] = parse_duration(value)
+        except ValueError:
+            raise ConfigError(f"cadence.{key}: must be a duration written <n>m or <n>h") from None
+    return CadenceConfig(**durations)
+
+
+def _profiles(
+    raw: Mapping[str, Any], env: Mapping[str, str], secrets: dict[str, str]
+) -> dict[str, ProfileConfig]:
+    profiles: dict[str, ProfileConfig] = {}
+    owners: dict[str, str] = {}
+    for name, body in raw.items():
+        if not isinstance(name, str) or not PROFILE_NAME_PATTERN.fullmatch(name):
+            # The name itself is only a profile key, but it may be someone's real name.
+            raise ConfigError("profiles: a profile name must match ^[a-z][a-z0-9_]{0,31}$")
+        prefix = f"profiles.{name}"
+        if not isinstance(body, dict):
+            raise ConfigError(f"{prefix}: must be a mapping")
+        _expand_secrets(body, prefix, _PROFILE_SECRETS, env, secrets)
+
+        email = body.get("email")
+        if email is not None:
+            if not isinstance(email, str) or not email.strip():
+                raise ConfigError(f"{prefix}.email: must be an email address")
+            email = email.strip().lower()
+            if email in owners:
+                raise ConfigError(
+                    f"{prefix}.email: the same email is already used by profiles.{owners[email]}"
+                )
+            owners[email] = name
+        profiles[name] = ProfileConfig(name=name, email=email)
+    return profiles
