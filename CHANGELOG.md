@@ -6,6 +6,10 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
+Phase 1: Skeleton.
+
 ### Added
 
 - The `syncshelf` package (Python 3.14, `src/` layout) with a locked dependency set.
@@ -17,8 +21,8 @@ All notable changes to SyncShelf are recorded here. The format follows
 - Weekly dependabot updates for `uv` and GitHub Actions.
 - Config loading from `SYNCSHELF_CONFIG` (default `/config/profiles.yaml`), with `${VAR}` and
   `*_file` secret references and fail-fast validation whose errors name the key, never a
-  secret (a config or secret file that isn't UTF-8 included). New config keys: `server.public_url` (required; phase 1 accepts only `localhost` or
-  `127.0.0.1`), `server.forwarded_allow_ips` (required), `server.log_level` (default `INFO`),
+  secret (a config or secret file that isn't UTF-8 included). New config keys:
+  `server.public_url` (required; phase 1 accepts only `localhost` or `127.0.0.1`), `server.forwarded_allow_ips` (required), `server.log_level` (default `INFO`),
   `server.auth_mode`, the `cadence` durations (`rss_interval`, `abs_interval`,
   `chaptarr_pending_interval`, `mirror_ttl`), the `services` URLs, and `profiles.<name>.email`.
   See `profiles.example.yaml`.
@@ -38,7 +42,8 @@ All notable changes to SyncShelf are recorded here. The format follows
   auth mode.
 - An MCP endpoint at `/mcp` with no tools yet: stateless Streamable HTTP that answers 421 to
   any Host other than the public host or loopback. A default port written in
-  `server.public_url` (`:80` for http, `:443` for https) is ignored, as clients omit it. `/register` is 404.
+  `server.public_url` (`:80` for http, `:443` for https) is ignored, as clients omit it.
+  `/register` is 404.
 - `GET /healthz`: 200 `{"status":"ok","version":…}` while the database answers, 503 otherwise.
 - A container image (`Dockerfile`): `python:3.14-slim`, running as `10001:10001`, with a
   `/data` volume, config read from `/config/profiles.yaml`, and a `HEALTHCHECK` on
