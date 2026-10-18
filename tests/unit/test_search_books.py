@@ -195,3 +195,40 @@ async def test_limit_is_1_to_25(connect: Any, limit: int) -> None:
     async with connect() as mcp:
         result = await mcp.call_tool("search_books", {"query": "dune", "limit": limit})
     assert result.is_error
+
+
+async def test_an_author_of_only_backticks_is_nothing_to_search_for(connect: Any) -> None:
+    async with connect() as mcp:
+        result = await mcp.call_tool("search_books", {"author": "``"})
+    assert result.is_error
+
+
+async def test_an_unknown_release_year_is_null(connect: Any, fake: FakeHardcover) -> None:
+    fake.add_search_doc(9, "Undated", release_year=0)
+    async with connect() as mcp:
+        [row] = (await search(mcp, query="undated"))["books"]
+    assert row["release_year"] is None
+
+
+async def test_a_later_page_failing_keeps_what_earlier_pages_found(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    for n in range(100, 140):
+        fake.add_search_doc(n, f"Fantasy {n}", genres=["Fantasy"])
+        if n < 120:
+            fake.add_user_book(ALICE, n, status_id=1)
+    fake.fail_next("Search", "unavailable", after=1)  # page 1 answers, page 2 fails
+    async with connect() as mcp:
+        page = await search(mcp, genre="Fantasy", limit=10)
+    # Page 1 is A Wizard of Earthsea and 100–123, of which 100–119 are shelved.
+    assert [b["book_id"] for b in page["books"]] == [4, 120, 121, 122, 123]
+    assert page["incomplete"] is True
+
+
+async def test_with_nothing_left_out_only_the_limit_is_asked_for(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    async with connect() as mcp:
+        await search(mcp, query="dune", limit=1, exclude_shelved=False)
+    [(_, variables)] = [r for r in fake.requests if r[0] == "Search"]
+    assert variables["per"] == 1

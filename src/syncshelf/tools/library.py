@@ -1397,6 +1397,8 @@ class SearchPage(TypedDict):
     """Books Hardcover matched, before any were left out."""
     excluded_shelved: int
     """Matches left out because they're already shelved (among those looked at)."""
+    incomplete: NotRequired[bool]
+    """True when Hardcover failed partway through looking past shelved books."""
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
@@ -1436,45 +1438,63 @@ async def search_books(
     community_rating (Hardcover's average), pages, has_audiobook and has_ebook (whether
     Hardcover lists those editions), genres (top 3) and a short description, plus status
     (statuses per profile on household answers). found is Hardcover's total match count.
+    incomplete is true when Hardcover failed while looking past shelved books; the books
+    found so far are still returned.
     """
-    query, author, genre = (_text(query), _text(author), _text(genre))
+    # Backticks quote Typesense filter values, so they can't be part of one.
+    author = _text(author.replace("`", "")) if author else None
+    genre = _text(genre.replace("`", "")) if genre else None
+    query = _text(query)
     if not (query or author or genre):
         raise ToolError("Give at least one of query, author or genre to search for.")
     caller = current_profile()
     bound = services()
     names = resolve_profiles(profile, caller, bound.profiles)
     freshness = await _refresh(bound.mirror, names, caller)
-    shelves = {name: await bound.db.read(_shelf_statuses, name) for name in names}
     variables: dict[str, Any] = {
         "q": query or "*",
         "filter": _search_filter(author, genre),
         "sort": SEARCH_SORTS[sort],
-        "per": SEARCH_PAGE,
+        # Only a search that leaves books out may need more than the hits asked for.
+        "per": SEARCH_PAGE if exclude_shelved else limit,
         "page": 1,
     }
     client = bound.hardcover[names[0]]
     books: list[SearchHit] = []
     found = excluded = 0
+    incomplete = False
     for page in range(1, SEARCH_PAGES + 1):
         variables["page"] = page
-        result = await client.execute(SEARCH, variables)
+        try:
+            result = await client.execute(SEARCH, variables)
+        except HardcoverError:
+            if page == 1:
+                raise
+            incomplete = True  # keep what earlier pages found
+            break
         results = (result.data.get("search") or {}).get("results") or {}
         found = int(results.get("found") or 0)
-        hits = results.get("hits") or []
-        for hit in hits:
-            hit_book = _search_hit(hit.get("document") or {}, names, shelves)
-            if hit_book is None:
+        docs = [h.get("document") or {} for h in results.get("hits") or []]
+        page_ids = tuple(i for d in docs if (i := _doc_id(d)) is not None)
+        shelves = {name: await bound.db.read(_statuses, name, page_ids) for name in names}
+        for doc in docs:
+            book_id = _doc_id(doc)
+            if book_id is None:
                 continue
-            on_a_shelf = any(shelves[n].get(hit_book["book_id"]) for n in names)
-            if exclude_shelved and on_a_shelf:
+            if exclude_shelved and any(book_id in shelves[n] for n in names):
                 excluded += 1
                 continue
-            books.append(hit_book)
+            books.append(_search_hit(doc, book_id, names, shelves))
             if len(books) == limit:
                 break
-        if len(books) == limit or len(hits) < SEARCH_PAGE or not exclude_shelved:
+        if len(books) == limit or len(docs) < variables["per"] or not exclude_shelved:
             break
-    return SearchPage(books=books, found=found, excluded_shelved=excluded, **_freshness(freshness))
+    answer = SearchPage(
+        books=books, found=found, excluded_shelved=excluded, **_freshness(freshness)
+    )
+    if incomplete:
+        answer["incomplete"] = True
+    return answer
 
 
 def _text(value: str | None) -> str | None:
@@ -1493,33 +1513,31 @@ def _search_filter(author: str | None, genre: str | None) -> str | None:
     return " && ".join(parts) or None
 
 
-def _shelf_statuses(conn: sqlite3.Connection, profile: str) -> dict[int, str]:
-    """Every book the profile has shelved, with its status slug, from the mirror."""
-    rows = conn.execute(
-        "SELECT hc_book_id, status_id FROM mirror_user_books WHERE profile = ?", (profile,)
-    )
-    return {book_id: STATUSES.get(status, str(status)) for book_id, status in rows}
+def _doc_id(doc: dict[str, Any]) -> int | None:
+    """A Typesense document's book id (sent as a string), or ``None`` when unusable."""
+    try:
+        return int(doc["id"])
+    except KeyError, TypeError, ValueError:
+        return None
 
 
 def _search_hit(
-    doc: dict[str, Any], names: tuple[str, ...], shelves: dict[str, dict[int, str]]
-) -> SearchHit | None:
-    """A compact row from a Typesense document, or ``None`` when it has no usable id."""
-    try:
-        book_id = int(doc["id"])
-    except KeyError, TypeError, ValueError:
-        return None
+    doc: dict[str, Any], book_id: int, names: tuple[str, ...], shelves: dict[str, dict[int, str]]
+) -> SearchHit:
+    """A compact row from a Typesense document, with each profile's shelf status."""
     featured = doc.get("featured_series") or {}
     series = featured.get("series") or {}
     description = doc.get("description") or None
-    if description and len(description) > DESCRIPTION_CHARS:
-        description = description[:DESCRIPTION_CHARS].rsplit(" ", 1)[0] + "…"
+    if description:
+        description = " ".join(description.split())  # newlines and runs of spaces
+        if len(description) > DESCRIPTION_CHARS:
+            description = description[:DESCRIPTION_CHARS].rsplit(None, 1)[0] + "…"
     hit = SearchHit(
         book_id=book_id,
         title=doc.get("title") or "",
         subtitle=doc.get("subtitle") or None,
         author=(doc.get("author_names") or [None])[0],
-        release_year=doc.get("release_year"),
+        release_year=doc.get("release_year") or None,  # 0 means unknown
         series=Series(name=series["name"], position=featured.get("position"))
         if series.get("name")
         else None,
