@@ -26,7 +26,16 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from syncshelf.clients.hardcover import BOOK, GOALS, SHELF, SIMILAR, HardcoverClient, HardcoverError
+from syncshelf.clients.hardcover import (
+    BOOK,
+    GOALS,
+    SERIES,
+    SERIES_BY_NAME,
+    SHELF,
+    SIMILAR,
+    HardcoverClient,
+    HardcoverError,
+)
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
 from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
@@ -40,6 +49,7 @@ __all__ = [
     "BookRecord",
     "Stats",
     "get_book",
+    "series_progress",
     "get_my_library",
     "reading_stats",
 ]
@@ -1107,3 +1117,246 @@ def _statuses(conn: sqlite3.Connection, profile: str, book_ids: tuple[int, ...])
         (profile, *book_ids),
     )
     return {book_id: STATUSES.get(status, str(status)) for book_id, status in rows}
+
+
+# --- series_progress ----------------------------------------------------------------------
+
+STARTED = frozenset({2, 3})
+"""Statuses that mean a series is under way: currently reading or read."""
+READ = 3
+SERIES_PER_REQUEST = 20
+"""Series fetched per live request when listing every started series."""
+_SHOWN_FIRST = (3, 2, 4, 1, 5, 6)
+"""When several books share a position, the status shown for it: read wins, then reading."""
+
+
+class SeriesBook(TypedDict):
+    """One position in a series' reading order, shown as its most-read book."""
+
+    position: float
+    book_id: int
+    title: str
+    status: NotRequired[str | None]
+    """The profile's shelf at this position (any edition counts), on one-profile answers."""
+    statuses: NotRequired[dict[str, str | None]]
+    """The same, per profile, on answers for several."""
+
+
+class SeriesProgress(TypedDict):
+    """How far one profile is through a series."""
+
+    profile: str
+    read: int
+    """Whole-number positions read."""
+    next: SeriesBook | None
+    """The first whole-number position not read, or null once all are."""
+
+
+class SeriesAnswer(TypedDict):
+    """One series: its main-entry count, each profile's progress, and its order if asked."""
+
+    series_id: int
+    name: str
+    books: int
+    """Whole-number positions: the main entries, not novellas (#128)."""
+    progress: list[SeriesProgress]
+    order: NotRequired[list[SeriesBook]]
+    """The full reading order, novellas included, when one series was asked for."""
+
+
+class SeriesPage(TypedDict):
+    """``series_progress``'s answer: series by name, with the copy's freshness."""
+
+    series: list[SeriesAnswer]
+    as_of: str
+    stale: bool
+    stale_reason: NotRequired[str]
+
+
+@dataclass(frozen=True)
+class _Position:
+    position: float
+    book_ids: frozenset[int]
+    shown: tuple[int, str]  # (book_id, title) of the most-read book at the position
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def series_progress(series: str | None = None, profile: str = ME) -> SeriesPage:
+    """Show where the user is in their book series, and what to read next.
+
+    Use this for "which series am I partway through?", "what's next in X?" and "what's the
+    reading order of X?".
+
+    Arguments:
+    - series: leave it out for every series the user has started (a book in it read or being
+      read) but not finished, each with the next book to read. Give a series name, or its
+      Hardcover series id, for that series' full reading order with the user's status for
+      each book. A name is matched exactly (ignoring case) against the user's own series,
+      then exactly on Hardcover (where case matters), then as part of one of the user's own
+      series' names.
+    - profile: "me" (the default), another profile's name, or "household".
+
+    Each series has series_id, name, books (main entries in it) and progress: per profile,
+    read (main entries read) and next (the first main entry not read: position, book_id,
+    title and the profile's status for it; null when finished). With a series asked for, order
+    lists every position, novellas (fractional positions such as 1.5) included, each shown as
+    its most-read edition with the profile's status (status, or statuses per profile). Any
+    edition or translation shelved as read counts for its position. Box sets and entries with
+    no position are left out. Series lists come from Hardcover live; shelf status from
+    SyncShelf's copy (as_of, stale as in get_my_library).
+    """
+    caller = current_profile()
+    bound = services()
+    names = resolve_profiles(profile, caller, bound.profiles)
+    freshness = await _refresh(bound.mirror, names, caller)
+    shelves = {name: await bound.db.read(_series_shelf, name) for name in names}
+    client = bound.hardcover[names[0]]
+    series = (series or "").strip() or None  # a blank name means every started series
+    if series is None:
+        started = sorted({s for shelf in shelves.values() for s in shelf.started})
+        found: list[dict[str, Any]] = []
+        # In chunks: a series' rows include every edition and translation, so one request
+        # for a long reader's every series could be tens of thousands of rows.
+        for at in range(0, len(started), SERIES_PER_REQUEST):
+            chunk = started[at : at + SERIES_PER_REQUEST]
+            found += await _fetch_series(client, SERIES, {"ids": chunk})
+    else:
+        found = await _find_series(client, series, shelves)
+    found.sort(key=lambda d: ((d.get("name") or "").casefold(), d["id"]))
+    answers: list[SeriesAnswer] = []
+    for data in found:
+        order = _order(data.get("book_series") or [])
+        whole = [p for p in order if p.position.is_integer()]
+        progress = [_progress(name, whole, shelves[name].status) for name in names]
+        if series is None:
+            # Only what is under way and unfinished, for some profile asked about.
+            progress = [
+                p
+                for p in progress
+                if p["next"] is not None and data["id"] in shelves[p["profile"]].started
+            ]
+            if not progress:
+                continue
+        answer = SeriesAnswer(
+            series_id=data["id"], name=data.get("name") or "", books=len(whole), progress=progress
+        )
+        if series is not None:
+            answer["order"] = [_entry(p, names, shelves) for p in order]
+        answers.append(answer)
+    return SeriesPage(series=answers, **_freshness(freshness))
+
+
+@dataclass(frozen=True)
+class _SeriesShelf:
+    status: dict[int, int]
+    """book_id → status_id, for every shelved book."""
+    started: frozenset[int]
+    """Featured series ids of books read or being read."""
+    names: dict[int, str]
+    """Featured series ids → names, for matching a ``series`` argument."""
+
+
+def _series_shelf(conn: sqlite3.Connection, profile: str) -> _SeriesShelf:
+    status: dict[int, int] = {}
+    started: set[int] = set()
+    names: dict[int, str] = {}
+    for book_id, status_id, series_id, series_name in conn.execute(
+        "SELECT ub.hc_book_id, ub.status_id, b.series_id, b.series_name "
+        "FROM mirror_user_books ub LEFT JOIN mirror_books b "
+        "ON b.profile = ub.profile AND b.hc_book_id = ub.hc_book_id WHERE ub.profile = ?",
+        (profile,),
+    ):
+        status[book_id] = status_id
+        if series_id is not None:
+            names[series_id] = series_name or ""
+            if status_id in STARTED:
+                started.add(series_id)
+    return _SeriesShelf(status, frozenset(started), names)
+
+
+async def _fetch_series(
+    client: HardcoverClient, query: str, variables: dict[str, Any]
+) -> list[dict[str, Any]]:
+    result = await client.execute(query, variables)
+    return list(result.data.get("series") or [])
+
+
+async def _find_series(
+    client: HardcoverClient, wanted: str, shelves: dict[str, _SeriesShelf]
+) -> list[dict[str, Any]]:
+    """The series ``wanted`` names, tried in order: an exact (case-insensitive) name among the
+    profiles' own series; a Hardcover series id, for a number; an exact name on Hardcover
+    (case-sensitive there); then a name among their own series that contains it."""
+    known = {i: n for shelf in shelves.values() for i, n in shelf.names.items()}
+    folded = wanted.casefold()
+    exact = sorted(i for i, n in known.items() if n.casefold() == folded)
+    if exact:
+        return await _fetch_series(client, SERIES, {"ids": exact})
+    numeric = wanted.isascii() and wanted.isdigit()
+    if numeric and (found := await _fetch_series(client, SERIES, {"ids": [int(wanted)]})):
+        return found
+    if found := await _fetch_series(client, SERIES_BY_NAME, {"name": wanted}):
+        return found
+    partial = sorted(i for i, n in known.items() if folded in n.casefold())
+    if partial:
+        return await _fetch_series(client, SERIES, {"ids": partial})
+    raise ToolError(
+        f"No series matches {wanted!r}. Try its exact name, or find a book in it with "
+        "search_books and pass the series id from get_book."
+    )
+
+
+def _order(book_series: list[dict[str, Any]]) -> list[_Position]:
+    """One entry per position, box sets and unpositioned rows left out (#128)."""
+    at: dict[float, list[dict[str, Any]]] = {}
+    for row in book_series:
+        book = row.get("book") or {}
+        if row.get("position") is None or book.get("compilation") or "id" not in book:
+            continue
+        at.setdefault(float(row["position"]), []).append(book)
+    order: list[_Position] = []
+    for position in sorted(at):
+        books = at[position]
+        top = max(books, key=lambda b: (b.get("users_count") or 0, -b["id"]))
+        order.append(
+            _Position(
+                position, frozenset(b["id"] for b in books), (top["id"], top.get("title") or "")
+            )
+        )
+    return order
+
+
+def _status_at(position: _Position, shelf: dict[int, int]) -> int | None:
+    held = {shelf[b] for b in position.book_ids if b in shelf}
+    return next((s for s in _SHOWN_FIRST if s in held), None)
+
+
+def _series_book(position: _Position) -> SeriesBook:
+    book_id, title = position.shown
+    return SeriesBook(position=position.position, book_id=book_id, title=title)
+
+
+def _progress(name: str, whole: list[_Position], shelf: dict[int, int]) -> SeriesProgress:
+    done = [p for p in whole if _status_at(p, shelf) == READ]
+    upcoming = next((p for p in whole if _status_at(p, shelf) != READ), None)
+    nxt: SeriesBook | None = None
+    if upcoming is not None:
+        nxt = _series_book(upcoming)
+        status = _status_at(upcoming, shelf)
+        nxt["status"] = STATUSES.get(status) if status else None
+    return SeriesProgress(profile=name, read=len(done), next=nxt)
+
+
+def _entry(
+    position: _Position, names: tuple[str, ...], shelves: dict[str, _SeriesShelf]
+) -> SeriesBook:
+    entry = _series_book(position)
+    status = {
+        name: (STATUSES.get(s) if (s := _status_at(position, shelves[name].status)) else None)
+        for name in names
+    }
+    if len(names) == 1:
+        entry["status"] = status[names[0]]
+    else:
+        entry["statuses"] = status
+    return entry

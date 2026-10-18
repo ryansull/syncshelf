@@ -46,6 +46,9 @@ class FakeHardcover:
         self.user_books: dict[int, list[dict[str, Any]]] = {}
         self.lists: dict[int, list[dict[str, Any]]] = {}
         self.goals: dict[int, list[dict[str, Any]]] = {}
+        self.series: dict[int, dict[str, Any]] = {}
+        """Series by id, each ``{id, name, book_series: [{position, book}]}``; see
+        :meth:`add_series`."""
         self.catalog: dict[int, dict[str, Any]] = {}
         """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
         library query's. Shelving a book adds it."""
@@ -97,6 +100,30 @@ class FakeHardcover:
                 **row["book"],
             }
         return row
+
+    def add_series(
+        self, series_id: int, name: str, entries: list[tuple[float | None, int, str]], **more: Any
+    ) -> None:
+        """A series and its ``book_series`` rows: ``(position, book_id, title)`` each, with
+        ``more`` giving ``users_count`` / ``compilation`` per book id (``{book_id: value}``)."""
+        users = more.get("users_count", {})
+        compilations = more.get("compilation", {})
+        self.series[series_id] = {
+            "id": series_id,
+            "name": name,
+            "book_series": [
+                {
+                    "position": position,
+                    "book": {
+                        "id": book_id,
+                        "title": title,
+                        "users_count": users.get(book_id, 100),
+                        "compilation": compilations.get(book_id, False),
+                    },
+                }
+                for position, book_id, title in entries
+            ],
+        }
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
         """Put an unshelved book in the catalog, with ``fields`` over the defaults."""
@@ -188,6 +215,12 @@ class FakeHardcover:
             "Book": self._book,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
+            "Series": lambda _u, v: {
+                "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
+            },
+            "SeriesByName": lambda _u, v: {
+                "series": [s for s in self.series.values() if s["name"] == v["name"]][:5]
+            },
         }
 
     def _ok(self, data: dict[str, Any]) -> httpx2.Response:

@@ -22,6 +22,7 @@ from syncshelf.clients.hardcover import (  # noqa: E402
     GOALS,
     LIBRARY,
     ME,
+    SERIES,
     SHELF,
     SIMILAR,
     HardcoverClient,
@@ -70,6 +71,12 @@ async def record_hardcover(token: str, limit: int) -> None:
         shelf = await client.execute(SHELF, ids)
         similar_ids = (book.data["books"][0]["cached_similar_book_ids"] or [])[:10]
         similar = await client.execute(SIMILAR, {"ids": similar_ids})
+        series_ids = [
+            s["series"]["id"]
+            for ub in shelved
+            if (s := ub["book"]["cached_featured_series"]) and s.get("series")
+        ][:2]
+        series = await client.execute(SERIES, {"ids": series_ids})
     finally:
         await client.aclose()
     out = FIXTURES / "hardcover"
@@ -80,6 +87,7 @@ async def record_hardcover(token: str, limit: int) -> None:
         "book": book.data,
         "similar": similar.data,
         "shelf": shelf.data,
+        "series": series.data,
     }
     for name, data in recorded.items():
         write_fixture(

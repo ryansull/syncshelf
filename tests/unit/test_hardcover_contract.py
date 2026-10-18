@@ -15,7 +15,16 @@ from typing import Any
 
 import pytest
 
-from syncshelf.clients.hardcover import BOOK, GOALS, LIBRARY, ME, SHELF, SIMILAR, HardcoverClient
+from syncshelf.clients.hardcover import (
+    BOOK,
+    GOALS,
+    LIBRARY,
+    ME,
+    SERIES,
+    SHELF,
+    SIMILAR,
+    HardcoverClient,
+)
 
 from fakes.hardcover import URL, FakeHardcover
 
@@ -131,3 +140,10 @@ async def test_shelf_matches_the_recording(fake: FakeHardcover) -> None:
     client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     result = await client.execute(SHELF, {"book_id": 7, "user_id": 42})
     assert_same_shape(shape({"data": result.data}), recorded("shelf"))
+
+
+async def test_series_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.add_series(9, "Dune", [(1, 7, "Dune"), (1.5, 70, "Novella"), (None, 71, "Box")])
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(SERIES, {"ids": [9]})
+    assert_same_shape(shape({"data": result.data}), recorded("series"))
