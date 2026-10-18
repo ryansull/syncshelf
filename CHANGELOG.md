@@ -103,9 +103,20 @@ All notable changes to SyncShelf are recorded here. The format follows
   redirect and resource) for an hour-long access token and, when Claude asked for
   `offline_access`, a refresh token, which creates the connection `my_connections` lists.
   Every `/token` response carries `Cache-Control: no-store` and `Pragma: no-cache`. A code
-  used twice is refused and the connection it created is revoked (`code_replay`). Refreshing
-  isn't built yet: `grant_type=refresh_token` gets `unsupported_grant_type`. New log events:
-  `code_issued`, `grant_created`, `token_request_refused`, and `grant_revoked` for a replay.
+  used twice is refused and the connection it created is revoked (`code_replay`). New log
+  events: `code_issued`, `grant_created`, `token_request_refused`, and `grant_revoked` for a
+  replay.
+- With `server.auth_mode: oauth`, Claude keeps a connection alive by refreshing
+  (`grant_type=refresh_token` at `POST /token`, with the connection's own `client_id` and,
+  if sent, `resource`). Each refresh replaces the refresh token, issues a new access token,
+  and pushes the connection's 90-day expiry forward, so a connection used at least every 90
+  days never expires. A retry with the old refresh token within 60 seconds gets the same new
+  pair back, in case the first response was lost; reuse after that revokes the whole
+  connection (`refresh_reuse`). A retry after a restart within those 60 seconds is refused
+  without revoking, and Claude signs in again. An expired, revoked or unknown refresh token,
+  or one whose profile was removed, gets `invalid_grant`. Revoking a connection
+  (`revoke_connection`, or a replayed code) also forgets its held pairs. New log events:
+  `refresh_rotated`, `refresh_retried`, and `grant_revoked` for a reuse.
 - New config keys, required with `server.auth_mode: oauth`: `server.access.aud` (a secret,
   e.g. `${ACCESS_AUD}`: the AUD tag of the Access app guarding `/authorize`) and
   `server.consent_hmac_key` (a secret, e.g. `${CONSENT_HMAC_KEY}`: signs the consent form,
