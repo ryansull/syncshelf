@@ -29,6 +29,7 @@ from syncshelf.sync.apply import (
     NotShelved,
     OpenReadExists,
     ReadOp,
+    ReadStillOpen,
     Start,
     Target,
 )
@@ -143,6 +144,12 @@ async def update_book(
         raise ToolError(
             f"A read is already open, started {exc.started_on}: change its start with "
             "correct_read instead; nothing was changed."
+        ) from None
+    except ReadStillOpen as exc:
+        raise ToolError(
+            f"A read is still open, started {exc.started_on}, and this finish wouldn't "
+            "complete it (it started later, or reread was asked). Finish that read, or change "
+            "it with correct_read first; nothing was changed."
         ) from None
     except FormatNeeded:
         raise ToolError(

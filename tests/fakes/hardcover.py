@@ -387,6 +387,7 @@ class FakeHardcover:
         reads = row["user_book_reads"]
         if row["status_id"] == 2:
             self._add_read(row, self.today, None, row.get("edition_id"))
+            row["first_started_reading_date"] = row.get("first_started_reading_date") or self.today
         elif row["status_id"] == 3:
             open_read = next((r for r in reads if r["started_at"] and not r["finished_at"]), None)
             if open_read is not None:

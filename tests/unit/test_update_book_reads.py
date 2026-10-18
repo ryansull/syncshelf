@@ -289,3 +289,98 @@ async def test_contradictions_are_refused(
     async with connect() as mcp:
         await refused(mcp, book_id=7, **arguments)
     assert fake.writes == []
+
+
+# --- review: replays, editions, dangling reads ----------------------------------------------
+
+
+async def test_a_status_write_that_fails_leaves_nothing_to_replay(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)
+    fake.fail_next("UpdateUserBook", "unavailable")
+    async with connect() as mcp:
+        await refused(mcp, book_id=7, status="read")
+        row = fake.user_books[ALICE][0]
+        row["user_book_reads"].append(  # the user logs a read in Hardcover meanwhile
+            {"id": 900, "started_at": "2099-05-01", "finished_at": "2099-05-09", "paused_at": None,
+             "edition_id": None, "progress_pages": None, "progress_seconds": None, "edition": None}
+        )  # fmt: skip
+        await edit(mcp, book_id=7, rating=3.0)
+    assert state(fake)[1] == [("2099-05-01", "2099-05-09", None)]
+
+
+async def test_a_different_call_after_a_partial_failure_leaves_new_reads_alone(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)
+    fake.fail_next("DeleteRead", "unavailable")
+    async with connect() as mcp:
+        await refused(mcp, book_id=7, status="read")  # partly done, never retried
+        await edit(mcp, book_id=7, finished_on="2099-05-09", format="print")
+    _, reads = state(fake)
+    assert (None, "2099-05-09", PHYSICAL) in reads  # the new read is there, nothing deleted
+
+
+async def test_a_retried_start_is_judged_against_the_reads_before_it(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)
+    fake.fail_next("DeleteRead", "unavailable")
+    async with connect() as mcp:
+        await refused(mcp, book_id=7, started_on="2099-12-05", format="audio")
+        result = await edit(mcp, book_id=7, started_on="2099-12-05", format="audio")
+    assert state(fake) == (2, [("2099-12-05", None, AUDIO)])
+    assert no_today(fake)
+    assert result["changes"][0] == {"field": "status", "before": "want-to-read",
+                                    "after": "currently-reading"}  # fmt: skip
+
+
+async def test_a_read_hardcover_opened_on_another_edition_isnt_taken_as_asked(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)  # the shelf entry's own edition is neither default
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, started_on=TODAY, format="audio")
+    assert state(fake) == (2, [(TODAY, None, AUDIO)])
+
+
+async def test_an_invented_first_start_date_is_cleared(connect: Any, fake: FakeHardcover) -> None:
+    shelve(fake, 1)
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, status="currently-reading")
+    assert fake.user_books[ALICE][0]["first_started_reading_date"] is None
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"finished_on": "2099-11-20", "format": "print"},  # before the open read started
+        {"finished_on": "2099-12-20", "format": "print", "reread": True},
+    ],
+)
+async def test_a_finish_that_would_leave_a_read_open_is_refused(
+    connect: Any, fake: FakeHardcover, arguments: dict[str, Any]
+) -> None:
+    shelve(fake, 2, read(1, "2099-12-01", None, AUDIO))
+    async with connect() as mcp:
+        assert "still open" in await refused(mcp, book_id=7, **arguments)
+    assert fake.writes == []
+
+
+async def test_an_explicit_format_wins_over_the_open_reads_edition(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 2, read(1, "2099-12-01", None, PHYSICAL))
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, finished_on="2099-12-20", format="audio")
+    assert state(fake) == (3, [("2099-12-01", "2099-12-20", AUDIO)])
+
+
+async def test_a_stamped_open_read_is_finished_in_one_write(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 2, read(1, "2099-12-01", None, AUDIO))
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, finished_on="2099-12-20")
+    assert sum(w[0] == "update_user_book_read" for w in fake.writes) == 1
