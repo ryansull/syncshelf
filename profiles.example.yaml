@@ -16,7 +16,8 @@
 server:
   # The issuer URL, with no trailing slash. Phase 1 has no auth, so startup refuses any host
   # other than localhost or 127.0.0.1. From phase 2 this is the public URL, for example
-  # https://shelf.example.com
+  # https://shelf.example.com. Log lines show its host as public, and the team_domain host
+  # below as access.
   public_url: http://localhost
   # oauth | dev. Phase 1 only logs it.
   auth_mode: dev

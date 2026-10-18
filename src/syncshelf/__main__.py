@@ -26,7 +26,7 @@ log = logging.getLogger("syncshelf")
 
 def configure_logging(config: Config) -> None:
     """Set up JSON logging at ``server.log_level``, scrubbing every configured secret and
-    aliasing every configured service host."""
+    aliasing every configured host: the public and Access hosts and each service's."""
     slog.configure(
         level=config.server.log_level,
         secrets=config.secret_values(),
