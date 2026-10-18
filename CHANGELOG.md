@@ -38,6 +38,12 @@ All notable changes to SyncShelf are recorded here. The format follows
   hour), when it or its connection is revoked, or when its profile is removed. Nothing issues
   tokens yet (the sign-in flow follows). Only token hashes are stored and raw tokens are never
   logged. A refused token logs a DEBUG `token_refused` line with the `grant_id` and reason.
+- Tools `my_connections` and `revoke_connection`, for every profile: list the caller's own
+  Claude connections (which client, when connected and last used, and which one is making
+  the call), and revoke one by its `grant_id`, `"all_others"`, or `"all"`, which also ends the
+  current session. Only the caller's own connections can be revoked. Each revocation logs an
+  INFO `grant_revoked` line with the `grant_id`. In dev mode no connection is current, and
+  the dev token keeps working (#97).
 
 ### Changed
 
