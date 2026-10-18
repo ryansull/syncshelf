@@ -124,7 +124,7 @@ async def test_the_library_returns_every_user_book_and_the_lists(fake: FakeHardc
     library = await client_for(fake).library()
     assert [ub["book_id"] for ub in library.user_books] == [7, 8]
     assert library.user_books[0]["rating"] == 4.5
-    assert library.lists[0]["list_books"] == [{"book_id": 7}]
+    assert [b["book_id"] for b in library.lists[0]["list_books"]] == [7]
     assert library.cost == 2
 
 
@@ -134,7 +134,7 @@ async def test_the_library_pages_until_a_short_page(fake: FakeHardcover) -> None
     library = await client_for(fake).library(page_size=2)
     assert [ub["book_id"] for ub in library.user_books] == [1, 2, 3, 4, 5]
     assert [op for op, _ in fake.requests] == ["Me", "Library", "LibraryMore", "LibraryMore"]
-    assert [v["offset"] for _, v in fake.requests[1:]] == [0, 2, 4]
+    assert [v["after"] for _, v in fake.requests[1:]] == [0, 2, 4]  # the last id seen
     assert library.cost == 2 + 1 + 1
 
 
@@ -158,7 +158,8 @@ async def test_a_page_size_over_the_cap_is_clamped_so_no_rows_are_lost(
 async def test_the_fake_caps_a_page_at_1000_rows_without_saying_so(fake: FakeHardcover) -> None:
     for book_id in range(1, 1102):
         fake.add_user_book(42, book_id)
-    result = await client_for(fake).execute(LIBRARY, {"user_id": 42, "limit": 5000, "offset": 0})
+    variables = {"user_id": 42, "limit": 5000, "after": 0, "lists_after": 0}
+    result = await client_for(fake).execute(LIBRARY, variables)
     assert len(result.data["user_books"]) == 1000
 
 
@@ -246,3 +247,27 @@ async def test_a_mutation_refused_with_200_raises_through_check_mutation(
 def test_check_mutation_returns_a_clean_result() -> None:
     data = {"update_user_book": {"id": 5, "error": None}}
     assert check_mutation(data, "update_user_book") == {"id": 5, "error": None}
+
+
+async def test_paging_by_keyset_survives_a_row_removed_between_pages(fake: FakeHardcover) -> None:
+    for book_id in range(1, 6):
+        fake.add_user_book(42, book_id)
+    client = client_for(fake)
+    first = await client.execute(LIBRARY, {"user_id": 42, "limit": 2, "after": 0, "lists_after": 0})
+    del fake.user_books[42][0]  # removed in Hardcover after page 1 was read
+    rest = await client.execute(
+        LIBRARY_MORE, {"user_id": 42, "limit": 10, "after": first.data["user_books"][-1]["id"]}
+    )
+    seen = [ub["book_id"] for ub in first.data["user_books"] + rest.data["user_books"]]
+    assert seen == [1, 2, 3, 4, 5]  # offset paging would have skipped book 3
+
+
+async def test_lists_and_their_books_are_paged_past_the_cap(fake: FakeHardcover) -> None:
+    for n in range(5):
+        fake.add_list(42, f"List {n}", list(range(100, 105)))
+    library = await client_for(fake).library(page_size=2)
+    assert len(library.lists) == 5
+    assert all([b["book_id"] for b in lst["list_books"]] == list(range(100, 105))
+               for lst in library.lists)  # fmt: skip
+    ops = [op for op, _ in fake.requests]
+    assert ops.count("ListsMore") == 2 and ops.count("ListBooksMore") == 10
