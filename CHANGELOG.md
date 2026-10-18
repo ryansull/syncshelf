@@ -33,6 +33,11 @@ All notable changes to SyncShelf are recorded here. The format follows
   logs a `dev_mode` warning. With `server.auth_mode` absent, no token is accepted (#73).
 - Each caller sees only the tools its profile's permissions allow, and a call to any other
   tool is refused as a tool error.
+- With `server.auth_mode: oauth`, `/mcp` accepts SyncShelf's own access tokens (`ssat_…`),
+  checked against the token store: a token is refused with 401 once it has expired (after an
+  hour), when it or its connection is revoked, or when its profile is removed. Nothing issues
+  tokens yet (the sign-in flow follows). Only token hashes are stored and raw tokens are never
+  logged. A refused token logs a DEBUG `token_refused` line with the `grant_id` and reason.
 
 ### Changed
 

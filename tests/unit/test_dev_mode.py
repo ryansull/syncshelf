@@ -66,8 +66,8 @@ class TestVerifier:
     async def test_outside_dev_mode_the_dev_token_is_refused(
         self, tmp_path: Path, mode: str | None
     ) -> None:
-        # The OAuth branch arrives with the token store (#62); until then it accepts nothing,
-        # and neither does a config without server.auth_mode (#73).
+        # The OAuth branch only looks up ssat_ tokens in the store, and a config without
+        # server.auth_mode accepts nothing (#73).
         config = make_config(tmp_path)
         config = replace(config, server=replace(config.server, auth_mode=mode))
         assert await TokenVerifier(config).verify_token(DEV_TOKEN) is None
