@@ -30,7 +30,9 @@ The authorization server's routes (:func:`syncshelf.auth.oauth.oauth_routes`) ar
 when ``server.auth_mode`` is ``oauth``: dev mode disables them (§3.2.5), and with the key
 absent no token is accepted (#73), so there is nothing to sign in to. ``/authorize`` checks
 clients against their documents (:class:`syncshelf.auth.cimd.ClientDocuments`), which the
-lifespan also binds to the database, with the HTTP client that fetches them.
+lifespan also binds to the database, with the HTTP client that fetches them, and checks the
+Cloudflare Access login (:class:`syncshelf.auth.access.AccessVerifier`), whose key fetches
+get an HTTP client from the lifespan too.
 """
 
 import logging
@@ -53,6 +55,7 @@ from starlette.routing import Mount, Route
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
+from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import TokenVerifier
@@ -121,8 +124,9 @@ def create_app(
 
     ``registry`` holds the tools served, :data:`syncshelf.tools.REGISTRY` by default.
 
-    ``http_transport`` carries the app's outbound HTTP calls (the client-document fetch and
-    Hardcover) in place of the network; tests pass a ``MockTransport`` (§2.9).
+    ``http_transport`` carries the app's outbound HTTP calls (the client-document fetch, the
+    Access key fetch and Hardcover) in place of the network; tests pass a ``MockTransport``
+    (§2.9).
 
     ``limiter_clock`` paces the Hardcover limiters (it sleeps as well as tells the time); the
     real clock by default.
@@ -133,8 +137,15 @@ def create_app(
     if data_dir is None:
         data_dir = default_data_dir()
     verifier = TokenVerifier(config, clock=clock)
-    oauth = config.server.auth_mode == "oauth"
+    oauth = config.server.oauth
     clients = ClientDocuments(clock=clock, transport=http_transport)
+    access = (
+        AccessVerifier(
+            oauth.access_team_domain, oauth.access_aud, clock=clock, transport=http_transport
+        )
+        if oauth is not None
+        else None
+    )
     mcp = SyncShelfServer(
         registry,
         config.profiles,
@@ -176,8 +187,9 @@ def create_app(
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             mcp.bind(Services(db, clock, mirror))
             async with AsyncExitStack() as stack:
-                if oauth:  # only /authorize fetches client documents
+                if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
+                    await stack.enter_async_context(access.running())
                 await stack.enter_async_context(mcp.session_manager.run())
                 yield
         finally:
@@ -192,7 +204,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            *(oauth_routes(config.server, clients) if oauth else []),
+            *(oauth_routes(config, clients, access, clock=clock) if access is not None else []),
             protected_resource_route(config.server),
             Mount("/", app=mcp_app),
         ],
