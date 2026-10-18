@@ -6,6 +6,18 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `my_connections`' description now says that a local dev-mode session isn't a connection,
+  so it isn't listed and an empty list is normal there.
+
+### Fixed
+
+- The consent page is served with `Referrer-Policy: same-origin` instead of `no-referrer`, so
+  a browser's **Allow** click sends the real `Origin` and passes the POST's Origin check.
+  Under `no-referrer` browsers send `Origin: null` and every sign-in would be refused (#114).
+  Error pages and redirects still send no referrer.
+
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
