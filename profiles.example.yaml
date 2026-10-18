@@ -30,6 +30,10 @@ server:
   # Addresses or networks (comma-separated) trusted to set X-Forwarded-* headers: the Traefik
   # network in production, or 127.0.0.1 when running locally without a proxy.
   forwarded_allow_ips: 192.0.2.0/24
+  # Where the service listens, as host:port (an IPv6 address in brackets, e.g. [::]:8000).
+  # Default 0.0.0.0:8000, every interface. In the container, keep port 8000: the image's
+  # health check probes 127.0.0.1:8000.
+  listen: 0.0.0.0:8000
   # DEBUG | INFO | WARNING | ERROR (default INFO)
   log_level: INFO
 

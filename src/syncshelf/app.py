@@ -32,12 +32,10 @@ from starlette.routing import Mount, Route
 
 from syncshelf import __version__
 from syncshelf.config import Config, ServerConfig
+from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 
-__all__ = ["DATA_DIR", "DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
-
-DATA_DIR = Path("/data")
-"""Where the database, its snapshots and the Goodreads cookie jars live (§2.3)."""
+__all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
 
 DB_FILENAME = "syncshelf.db"
 """The database file inside the data directory."""
@@ -74,12 +72,17 @@ def allowed_hosts(server: ServerConfig) -> list[str]:
     return [public, *LOOPBACK_HOSTS]
 
 
-def create_app(config: Config, *, data_dir: Path = DATA_DIR) -> Starlette:
+def create_app(config: Config, *, data_dir: Path | None = None) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
+
+    ``data_dir`` holds the database, its snapshots and the Goodreads cookie jars (§2.3). It
+    defaults to :func:`syncshelf.config.data_dir`: ``SYNCSHELF_DATA_DIR``, or ``/data``.
 
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
     """
+    if data_dir is None:
+        data_dir = default_data_dir()
     mcp = MCPServer("syncshelf", version=__version__)
     # streamable_http_app() creates the session manager, so it must run before the lifespan.
     mcp_app = mcp.streamable_http_app(

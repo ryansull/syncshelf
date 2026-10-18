@@ -83,9 +83,11 @@ class TestDockerfile:
         command = healthcheck_command()
         assert command[:2] == ["python", "-c"]
         assert HEALTH_URL in command[2]
-        # If #51 moves the bind address or port, the health check must move with it.
+        # The health check runs inside the container, so loopback reaches the default bind
+        # on every interface. If the default port moves, the health check must move with it.
         served = entry.server_config(_no_app, load_config(CI_CONFIG, environ={}))
-        assert f"http://{served.host}:{served.port}/healthz" == HEALTH_URL
+        assert (served.host, served.port) == ("0.0.0.0", 8000)
+        assert f"http://127.0.0.1:{served.port}/healthz" == HEALTH_URL
 
     def test_dockerignore_keeps_secrets_and_local_config_out(self) -> None:
         lines = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()

@@ -186,6 +186,13 @@ class TestLifespan:
                 pass
         assert not (data_dir / "syncshelf.db").exists()
 
+    async def test_the_data_dir_comes_from_syncshelf_data_dir(
+        self, tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SYNCSHELF_DATA_DIR", str(data_dir))
+        async with running(create_app(make_config(tmp_path))):
+            assert (data_dir / "syncshelf.db").is_file()
+
     async def test_a_missing_data_dir_fails_naming_the_path(self, tmp_path: Path) -> None:
         missing = tmp_path / "nowhere" / "data"
         app = create_app(make_config(tmp_path), data_dir=missing)
