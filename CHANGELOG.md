@@ -22,6 +22,17 @@ All notable changes to SyncShelf are recorded here. The format follows
 - New config key `profiles.<name>.permissions`: a list of permissions, of which `chaptarr` is
   the only one. An absent key grants none for now (#71).
 - New config key `profiles.<name>.household_visible`: `true` or `false`, default `false`.
+- `/mcp` requires a bearer token. A request without an accepted one gets 401 with
+  `WWW-Authenticate: Bearer resource_metadata="<public_url>/.well-known/oauth-protected-resource/mcp"`,
+  and that protected-resource metadata is served.
+- Dev mode (`server.auth_mode: dev`): `/mcp` accepts the static token in the new config key
+  `server.dev.token` (a secret, e.g. `${SYNCSHELF_DEV_TOKEN}`) as the profile named by the new
+  key `server.dev.profile`, for Claude Code or MCP Inspector against a local instance. Both
+  keys are required in dev mode, and the profile must be in `profiles`. Startup refuses dev
+  mode unless `server.public_url` is on `localhost` or `127.0.0.1`, and every dev-mode start
+  logs a `dev_mode` warning. With `server.auth_mode` absent, no token is accepted (#73).
+- Each caller sees only the tools its profile's permissions allow, and a call to any other
+  tool is refused as a tool error.
 
 ### Changed
 

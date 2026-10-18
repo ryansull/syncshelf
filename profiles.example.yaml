@@ -14,16 +14,23 @@
 # phase 1 on, so leave a secret commented out until its variable or file exists.
 
 server:
-  # The issuer URL, with no trailing slash. Phase 1 has no auth, so startup refuses any host
-  # other than localhost or 127.0.0.1. From phase 2 this is the public URL, for example
-  # https://shelf.example.com. Log lines show its host as public, and the team_domain host
-  # below as access.
+  # The issuer URL, with no trailing slash. Until OAuth sign-in is complete, startup refuses
+  # any host other than localhost or 127.0.0.1, and dev mode always will. Once it is, this is
+  # the public URL in oauth mode, for example https://shelf.example.com. Log lines show its
+  # host as public, and the team_domain host below as access.
   public_url: http://localhost
-  # oauth | dev. Phase 1 only logs it.
+  # oauth | dev. Every /mcp request needs a bearer token, and with this key absent none is
+  # accepted. dev accepts one static token, for Claude Code or MCP Inspector against a local
+  # instance, and logs a warning at every start. oauth is how Claude connects once it is
+  # complete.
   auth_mode: dev
-  # dev:                                    # only read when auth_mode: dev
-  #   token: ${SYNCSHELF_DEV_TOKEN}
-  #   profile: alice
+  # Only read when auth_mode: dev. Its token is still expanded in any mode, so comment the
+  # section out when you switch to oauth and don't set SYNCSHELF_DEV_TOKEN.
+  dev:
+    # Any long random string, e.g. from: openssl rand -hex 32. Clients send it as
+    # "Authorization: Bearer <token>".
+    token: ${SYNCSHELF_DEV_TOKEN}
+    profile: alice                          # the profile the token acts as
   access:                                   # Cloudflare Access app guarding /authorize
     team_domain: https://example.cloudflareaccess.com   # an https URL
     # aud: ${ACCESS_AUD}

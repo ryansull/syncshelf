@@ -235,9 +235,55 @@ def test_log_level_rejects_anything_else(tmp_path: Path) -> None:
     assert "server.log_level" in load_error(tmp_path, MINIMAL + "  log_level: LOUD\n")
 
 
-@pytest.mark.parametrize("mode", ["oauth", "dev"])
-def test_auth_mode_accepts_oauth_and_dev(tmp_path: Path, mode: str) -> None:
-    assert load(tmp_path, MINIMAL + f"  auth_mode: {mode}\n").server.auth_mode == mode
+DEV = MINIMAL + "  auth_mode: dev\n  dev:\n    token: ${DEV_TOKEN}\n    profile: alice\n"
+DEV_ENV = {"DEV_TOKEN": SECRET}
+
+
+def test_auth_mode_accepts_oauth(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL + "  auth_mode: oauth\n").server.auth_mode == "oauth"
+
+
+def test_auth_mode_may_be_absent_for_now(tmp_path: Path) -> None:
+    # #73 asks whether phase 2 makes it required; absent accepts no token meanwhile.
+    assert load(tmp_path, MINIMAL).server.auth_mode is None
+
+
+def test_dev_mode_reads_the_dev_token_and_profile(tmp_path: Path) -> None:
+    config = load(tmp_path, DEV, DEV_ENV)
+    assert config.server.auth_mode == "dev"
+    assert config.server.dev is not None
+    assert (config.server.dev.token, config.server.dev.profile) == (SECRET, "alice")
+    assert SECRET not in repr(config)
+
+
+@pytest.mark.parametrize("key", ["token", "profile"])
+def test_dev_mode_requires_its_keys(tmp_path: Path, key: str) -> None:
+    text = "\n".join(line for line in DEV.splitlines() if f"    {key}:" not in line) + "\n"
+    assert f"server.dev.{key}" in load_error(tmp_path, text, DEV_ENV)
+
+
+def test_dev_mode_requires_the_dev_section(tmp_path: Path) -> None:
+    assert "server.dev.token" in load_error(tmp_path, MINIMAL + "  auth_mode: dev\n")
+
+
+@pytest.mark.parametrize("profile", ["bob", "[alice]", '""'])
+def test_the_dev_profile_must_be_a_configured_profile(tmp_path: Path, profile: str) -> None:
+    text = DEV.replace("profile: alice", f"profile: {profile}")
+    assert "server.dev.profile" in load_error(tmp_path, text, DEV_ENV)
+
+
+def test_oauth_mode_does_not_read_the_dev_section(tmp_path: Path) -> None:
+    text = DEV.replace("auth_mode: dev", "auth_mode: oauth").replace("profile: alice", "profile: x")
+    config = load(tmp_path, text, DEV_ENV)
+    assert config.server.dev is None
+    assert SECRET in config.secret_values(), "a configured dev token is still scrubbed"
+
+
+@pytest.mark.parametrize("url", ["https://shelf.example.com", "http://192.0.2.10", "http://[::1]"])
+def test_dev_mode_refuses_a_public_url_that_is_not_localhost(tmp_path: Path, url: str) -> None:
+    message = load_error(tmp_path, DEV.replace("http://localhost", url), DEV_ENV)
+    assert "server.public_url" in message
+    assert "dev mode" in message
 
 
 def test_auth_mode_rejects_anything_else(tmp_path: Path) -> None:
@@ -585,14 +631,17 @@ def test_service_url_without_a_host_is_rejected(tmp_path: Path, key: str) -> Non
 # --- the committed example --------------------------------------------------------------
 
 
+EXAMPLE_ENV = {"SYNCSHELF_DEV_TOKEN": SECRET}
+
+
 def test_committed_example_loads(tmp_path: Path) -> None:
-    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
     assert config.server.public_host in {"localhost", "127.0.0.1"}
     assert set(config.profiles) == {"alice", "bob"}
 
 
 def test_committed_example_sets_every_key_phase_1_validates() -> None:
-    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
     assert config.server.auth_mode is not None
     assert config.server.access_team_domain is not None
     assert all(vars(config.services).values()), "every services URL key is shown"
@@ -603,9 +652,10 @@ def test_committed_example_sets_every_key_phase_1_validates() -> None:
 
 
 def test_committed_example_sets_the_profile_keys_phase_2_validates() -> None:
-    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
     for profile in config.profiles.values():
         assert profile.permissions == frozenset({"chaptarr"})
+    assert config.server.dev is not None and config.server.dev.profile in config.profiles
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
     assert raw.count("\n    household_visible: ") == len(config.profiles)
 

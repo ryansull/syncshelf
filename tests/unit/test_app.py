@@ -3,28 +3,21 @@ allowlist, and ``/healthz``. Everything goes through the real ASGI app."""
 
 import logging
 import sqlite3
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, closing
+from contextlib import closing
 from pathlib import Path
-from textwrap import dedent
 
-import httpx2
 import pytest
-from mcp import Client
-from mcp.client.streamable_http import streamable_http_client
-from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
 from syncshelf import __version__
 from syncshelf.app import StartupError, allowed_hosts, create_app
-from syncshelf.config import Config, load_config
+from syncshelf.tools import ToolRegistry
 
 from clock import FakeClock
+from serving import MCP_HEADERS, SECRET, make_config, mcp_client, running
 
 pytestmark = pytest.mark.anyio
 
-SECRET = "fake-consent-key"
-BASE_URL = "http://localhost:8000"  # "localhost:*" only matches a Host with a port
 INIT = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -35,45 +28,6 @@ INIT = {
         "clientInfo": {"name": "test", "version": "0"},
     },
 }
-MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
-
-
-def make_config(
-    tmp_path: Path,
-    public_url: str = "http://localhost:8000",
-    profiles: tuple[str, ...] = ("alice",),
-) -> Config:
-    path = tmp_path / "profiles.yaml"
-    path.write_text(
-        dedent(f"""\
-            server:
-              public_url: {public_url}
-              auth_mode: dev
-              forwarded_allow_ips: 127.0.0.1
-              consent_hmac_key: ${{CONSENT}}
-            """)
-        + "profiles:\n"
-        + "".join(f"  {name}: {{}}\n" for name in profiles),
-        encoding="utf-8",
-    )
-    return load_config(path, environ={"CONSENT": SECRET})
-
-
-@pytest.fixture
-def data_dir(tmp_path: Path) -> Path:
-    path = tmp_path / "data"
-    path.mkdir()
-    return path
-
-
-@asynccontextmanager
-async def running(app: Starlette) -> AsyncIterator[httpx2.AsyncClient]:
-    """Run the app's lifespan (ASGITransport doesn't) and yield a client for it."""
-    async with (
-        app.router.lifespan_context(app),
-        httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=BASE_URL) as client,
-    ):
-        yield client
 
 
 class TestRoutes:
@@ -119,14 +73,12 @@ class TestMcpMount:
             )
         assert response.status_code == 421
 
-    async def test_an_allowed_host_reaches_the_server_which_has_no_tools(
-        self, tmp_path: Path, data_dir: Path
-    ) -> None:
-        async with running(create_app(make_config(tmp_path), data_dir=data_dir)) as client:
+    async def test_an_allowed_host_reaches_the_server(self, tmp_path: Path, data_dir: Path) -> None:
+        app = create_app(make_config(tmp_path), data_dir=data_dir, registry=ToolRegistry())
+        async with running(app) as client:
             response = await client.post("/mcp", json=INIT, headers=MCP_HEADERS)
             assert response.status_code == 200
-            transport = streamable_http_client(f"{BASE_URL}/mcp", http_client=client)
-            async with Client(transport) as mcp:
+            async with mcp_client(client) as mcp:
                 assert (await mcp.list_tools()).tools == []
 
     def test_the_allowlist_is_the_public_host_and_loopback(self, tmp_path: Path) -> None:

@@ -9,11 +9,15 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
 2. the data directory and its ``goodreads/`` directory must be writable;
 3. the database is opened and migrated, and the ``profiles`` table is synced with the
    config (:mod:`syncshelf.profiles`);
-4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret;
+4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret,
+   and dev mode logs a warning at every start (§3.2.5);
 5. the MCP session manager runs for as long as the app does.
 
-On shutdown the database is closed. Phase 1 serves MCP with no tools and no auth, which is
-safe only because config refuses a ``server.public_url`` that isn't on loopback.
+On shutdown the database is closed.
+
+The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
+:class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
+protected-resource metadata otherwise (§3.2.1). The SDK serves that metadata on the mount.
 """
 
 import logging
@@ -25,7 +29,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from mcp.server import MCPServer
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -33,10 +37,12 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from syncshelf import __version__
+from syncshelf.auth.tokens import TokenVerifier
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
+from syncshelf.tools import REGISTRY, SyncShelfServer, ToolRegistry
 
 __all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
 
@@ -76,7 +82,11 @@ def allowed_hosts(server: ServerConfig) -> list[str]:
 
 
 def create_app(
-    config: Config, *, data_dir: Path | None = None, clock: Callable[[], float] = time.time
+    config: Config,
+    *,
+    data_dir: Path | None = None,
+    clock: Callable[[], float] = time.time,
+    registry: ToolRegistry = REGISTRY,
 ) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
@@ -86,12 +96,29 @@ def create_app(
     ``clock`` gives wall-clock epoch seconds for every timestamp the app writes; tests pass the
     one injectable clock (§2.9).
 
+    ``registry`` holds the tools served, :data:`syncshelf.tools.REGISTRY` by default.
+
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
     """
     if data_dir is None:
         data_dir = default_data_dir()
-    mcp = MCPServer("syncshelf", version=__version__)
+    mcp = SyncShelfServer(
+        registry,
+        config.profiles,
+        "syncshelf",
+        version=__version__,
+        token_verifier=TokenVerifier(config),
+        # Validated from strings so the SDK keeps the issuer's exact form: AnyHttpUrl() alone
+        # would add a trailing slash, and issuer comparison is exact (RFC 8414, RFC 9207).
+        auth=AuthSettings.model_validate(
+            {
+                "issuer_url": config.server.public_url,
+                "resource_server_url": config.server.mcp_url,
+                "validate_token_resource": True,
+            }
+        ),
+    )
     # streamable_http_app() creates the session manager, so it must run before the lifespan.
     mcp_app = mcp.streamable_http_app(
         stateless_http=True,
@@ -108,6 +135,8 @@ def create_app(
             _log_profile_sync(synced)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
             _log_startup(config, db)
+            if (dev := config.server.dev_mode) is not None:
+                _warn_dev_mode(dev.profile)
             app.state.db = db
             async with mcp.session_manager.run():
                 yield
@@ -172,6 +201,15 @@ def _log_profile_sync(synced: ProfileSync) -> None:
             "restored": synced.restored,
             "revoked_grants": synced.revoked,
         },
+    )
+
+
+def _warn_dev_mode(profile: str) -> None:
+    log.warning(
+        "DEV MODE: /mcp accepts the static dev token as profile %s. "
+        "Never expose this instance beyond this machine.",
+        profile,
+        extra={"event": "dev_mode", "profile": profile},
     )
 
 
