@@ -1,11 +1,10 @@
 # SyncShelf build spec
 
-**Status:** assembled 2026-10-17 from the planning map [Map: SyncShelf — MCP server + sync service](https://github.com/ryansull/syncshelf/issues/1) by [Assemble the SyncShelf build spec](https://github.com/ryansull/syncshelf/issues/21). **Two sections are pending** a decision and are marked ⏳ where they occur:
+**Status:** assembled 2026-10-17 from the planning map [Map: SyncShelf — MCP server + sync service](https://github.com/ryansull/syncshelf/issues/1) by [Assemble the SyncShelf build spec](https://github.com/ryansull/syncshelf/issues/21). **One section is pending** a decision and is marked ⏳ where it occurs:
 
-- ⏳ **Phase 3, direct Hardcover edits**: [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31).
 - ⏳ **Phase 4a, the Goodreads backfill**: [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32).
 
-Everything else is decided. Phases 1 and 2 can be built now. Phase 3 can be built except for `tools/writes.py`. Phase 4a can be built except for the backfill entry point and the first-observation rule.
+Everything else is decided. Phases 1, 2 and 3 can be built now. Phase 4a can be built except for the backfill entry point and the first-observation rule.
 
 ---
 
@@ -346,7 +345,8 @@ src/syncshelf/
     __init__.py          registry, permission filter, profile resolution        [2]
     connections.py       my_connections, revoke_connection                      [2]
     library.py           the six read tools                                     [3]
-    writes.py            direct Hardcover edits  ⏳ #31                         [3]
+    writes.py            update_book, correct_read, remove_book                 [3]
+    confirm.py           preview + confirm-token helper                         [3]
     sync.py              sync_now, sync_status, retry_failed [4a]; dismiss_attention [6]
     matching.py          unmatched_books, resolve_match                         [4a]
     goodreads.py         goodreads_sign_in, goodreads_verify                    [4b]
@@ -803,7 +803,7 @@ Decisions:
 - `sync/limiter.py`, `sync/mirror.py`, `sync/apply.py`.
 - The `matcher` **normalisation and scoring helpers** (§3.4a.5), which `check_books` needs. The chain itself lands in 4a. This brings in `rapidfuzz` here [assembly choice].
 - `tools/library.py`: the six read tools.
-- ⏳ `tools/writes.py`: pending [#31](https://github.com/ryansull/syncshelf/issues/31) (§3.3.9).
+- `tools/writes.py`: `update_book`, `correct_read`, `remove_book` (§3.3.9), and `tools/confirm.py`, the confirm-token helper.
 
 **Tables:** `mirror_state`, `mirror_books`, `mirror_user_books`, `mirror_reads`, `mirror_list_items` (`0003_mirror`).
 
@@ -1004,7 +1004,7 @@ Reads logged by hand in Hardcover keep whatever the user picked. ⏳ Which editi
 
 #### 3.3.6 The write procedure: "make Hardcover match" (`sync/apply.py`)
 
-This is one procedure, used by every SyncShelf write: Goodreads (4a), ABS (5), Chaptarr `want=true` (6), `resolve_match`, and the direct edits (⏳ #31). It comes from diff decision 7, failure-policy decision 2, and the ABS ticket's decisions 3–5.
+This is one procedure, used by every SyncShelf write: Goodreads (4a), ABS (5), Chaptarr `want=true` (6), `resolve_match`, and the direct edits (§3.3.9). It comes from diff decision 7, failure-policy decision 2, and the ABS ticket's decisions 3–5.
 
 **Input:** profile, `hc_book_id`, and a **target** made of any of:
 - `status_id`;
@@ -1036,7 +1036,7 @@ This is one procedure, used by every SyncShelf write: Goodreads (4a), ABS (5), C
    - **`start`** opens a read with the explicit `started_at`.
 6. **`first_started_reading_date`** is set explicitly whenever the earliest read's start changes.
 7. **Never read back** `read_count` / `last_read_date` after a write.
-8. **Never delete** a read, or a user_book, except a read Hardcover created as a side effect of this same write (rule 4).
+8. **Never delete** a read, or a user_book, except a read Hardcover created as a side effect of this same write (rule 4). The only other deletions are Claude's confirmed ones (`remove_book`, `correct_read(delete=true)`, §3.3.9), which run outside this procedure.
 9. **One change, all or nothing, and convergent.** A status write and its read edits are one change. If any step fails, the change fails, and its baseline (4a+) doesn't advance. A replay re-runs the whole procedure: steps already done are skipped as no-ops, and the rest are applied. **Nothing besides baselines ever needs undoing.**
 10. **After success:** write through to the mirror (§3.3.4).
 
@@ -1073,7 +1073,7 @@ All six take `profile = "me" | "<name>" | "household"` (§2.8), are `readOnlyHin
 | Tool | Source | Contract |
 |---|---|---|
 | `get_my_library(status?, query?, author?, genre?, series?, format?, min_rating?, finished_from?, finished_to?, sort?, limit=25, cursor?, profile="me")` | mirror | Compact **library rows** (below). `status` is a slug (`want-to-read` …). `format` is `audio\|ebook\|print\|unknown`. `finished_*` are ISO dates over reads' `finished_on`. `sort` is `date_added\|last_finished\|rating\|title\|author`, default `date_added` desc [assembly choice for the sort keys]. `limit` defaults to 25, max 100. Every response carries `total` and `next_cursor`. When `total` exceeds the page, it also carries **counts by status for the whole filtered set**, so counting questions never need paging. "Highest rated last year" = a date range + `sort=rating`. |
-| `get_book(book: int, profile="me")` | **live**, then written back to the mirror | The full record, keyed by Hardcover `book_id` (resolve titles with `search_books` / `check_books` first) [assembly choice: id only]. It includes: shelf state; every read with dates and format; review + spoiler flag (**own profile only**); all series with positions (`book_series`); contributors with roles, plus narrators from the audio edition; tags (top 5 each of Genre / Mood / Tag); every content warning (≤ 10); lists the book is on (from the mirror); the top 10 similar books as compact rows. About 2 requests (the book or user_book, plus a hydrate of the similar ids). |
+| `get_book(book: int, profile="me")` | **live**, then written back to the mirror | The full record, keyed by Hardcover `book_id` (resolve titles with `search_books` / `check_books` first) [assembly choice: id only]. It includes: shelf state; every read with its `id`, dates and format; review + spoiler flag (**own profile only**); all series with positions (`book_series`); contributors with roles, plus narrators from the audio edition; tags (top 5 each of Genre / Mood / Tag); every content warning (≤ 10); lists the book is on (from the mirror); the top 10 similar books as compact rows. About 2 requests (the book or user_book, plus a hydrate of the similar ids). |
 | `series_progress(series?, profile="me")` | mirror for started series, then **one live batched request** `series(where: {id: {_in: …}})` with `book_series(order_by: {position: asc}) { position book_id }`, depth ≤ 3 | Without `series`: the series started but not finished, each with the **next unread entry** (the lowest position not Read). With `series` (an id or name): the full reading order with per-entry status. Series lists are not cached. |
 | `reading_stats(period, group_by?, profile="me")` | mirror (+ live `me { goals }`, 1 request, omitted on failure) | Books, pages and hours, grouped by `month \| format \| genre \| author \| rating`, plus goal progress. **Aggregates only, never a book list.** Computed locally. `period` is `YYYY`, `YYYY-MM`, `last_30_days`, `last_12_months`, `all` or `YYYY-MM-DD..YYYY-MM-DD` [assembly choice for the period forms]. A read counts in the period by its `finished_on`. Pages come from print/ebook reads, hours from audio reads' `audio_seconds` [assembly choice]. |
 | `search_books(query?, author?, genre?, sort?, exclude_shelved=true, limit=10, profile="me")` | live Typesense; mirror for the annotation | Each hit is a compact row plus a short description, annotated with shelf status. `limit` defaults to 10, max 25. With `exclude_shelved`, every shelved book is dropped (including DNF and Ignored). Author and genre map to `filter_by`, and a filter with no query uses `query: "*"`. `sort` is `relevance\|popular\|rating\|newest` [assembly choice]. This is the general search tool that `resolve_match` relies on. |
@@ -1095,22 +1095,49 @@ All six take `profile = "me" | "<name>" | "household"` (§2.8), are `readOnlyHin
 - **`reading_stats`:** at most 15 buckets per grouping, then `other`, always plus `unknown`.
 - **Deliberately left out:** a timeline/history tool (date filters plus `get_book` cover it), a lists tool (membership shows in `get_book`), and a `fields=` parameter.
 
-#### 3.3.9 ⏳ Direct Hardcover edits (`tools/writes.py`): pending #31
+#### 3.3.9 Direct Hardcover edits (`tools/writes.py`)
 
-**Decided** ([Goodreads to Hardcover diff](https://github.com/ryansull/syncshelf/issues/13), decision 10, and §2.8):
-- Claude's edits write Hardcover **directly**, through the write procedure (§3.3.6) and write-through.
+From [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31), building on [Goodreads to Hardcover diff](https://github.com/ryansull/syncshelf/issues/13) decision 10 and §2.8.
+
+**Ground rules:**
+- Claude's edits write Hardcover **directly**, through the write procedure (§3.3.6), under the apply lock, at interactive limiter priority, then write-through.
 - They **never touch a Goodreads or ABS baseline**. An unchanged source row therefore never clobbers them, and an edit can't be mistaken for a source change.
 - If the source later changes that field, **the last writer wins**: the source change is a fresh act by the user and is pushed.
-- No tool writes to another profile.
+- Own profile only. No tool writes to another profile.
+- **Edits act on the first call.** Only deletions (`remove_book`, `correct_read(delete=true)`) preview and need a confirm token. Claude asks the user in conversation before editing.
+- **Every result returns the prior values** of what it changed (status, rating, review text + spoiler flag, the touched read), so Claude can undo.
+- An insert uses `hardcover_privacy` (§3.3.6 rule 3). There's no per-call override.
 
-**Pending** in [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31):
-- the set of edits and their signatures;
-- dates for status changes from Claude;
-- removal, and its confirmation;
-- the privacy of Claude-made inserts;
-- `abs_library_search`.
+| Tool | Contract |
+|---|---|
+| `update_book(book_id, status?, rating?, review?, review_has_spoilers?, started_on?, finished_on?, format?, reread=false)` | Builds one §3.3.6 target, so it's **one change**. Inserts the user_book if absent. `status` is a slug: `want-to-read \| currently-reading \| read \| paused \| dnf \| ignored`. **Ignored is writable here** (sync never writes it). There's no "none": that's `remove_book` [assembly choice]. `rating` is 0.5–5 in half steps, and `0` clears it. `review=""` clears the review and its spoiler flag [assembly choice]. Dates are ISO dates. `destructiveHint: false` [assembly choice]. |
+| `correct_read(book_id, read_id, started_on?, finished_on?, format?, delete=false, confirm_token?)` | Edits one existing read (ids come from `get_book`) with a full-object `update_user_book_read`, and acts at once. With `delete=true` it's a deletion: a preview without a token, `delete_user_book_read` with one. Sets `first_started_reading_date` per §3.3.6 rule 6. `destructiveHint: true`. |
+| `remove_book(book_id, confirm_token?)` | Without a token, a **preview**: status, rating, whether a review exists, every read with its dates, whether journal rows exist, and any source row still linked to the book. With a token it deletes the user_book **and calls `delete_reading_journals_for_book`**, then removes the book from the mirror. `destructiveHint: true`. |
 
-Build the rest of phase 3 without `tools/writes.py`.
+**Dates: no date means no read.** Every date written to Hardcover is one the user stated.
+- `status=read` without `finished_on` sets Read and logs **no read**. §3.3.6 rule 4 undoes Hardcover's auto-"today" read. `currently-reading` without `started_on` is the same.
+- For "I just finished it", **Claude passes today's date explicitly**. It resolves "yesterday" or "last Tuesday" to an ISO date in the profile's `timezone`. The tool descriptions say so.
+- **Refused:** `status=read` without `finished_on` on a book with an **open read**. The error (`date_needed`) names the read's start date, so Claude asks. A Read status never sits over a dangling open read.
+- `finished_on` without `status` implies Read, and `started_on` alone implies Currently Reading [assembly choice].
+- **`finished_on`** runs the `finish` operation, **with the ±14-day / open-read adoption** (§3.3.6 rule 5). A finish ABS already logged is adopted, not duplicated. `reread=true` skips adoption and inserts a new read.
+- **`started_on` alone** runs `start`. It's refused if an open read already exists (use `correct_read`) [assembly choice].
+- Paused and DNF leave reads alone [assembly choice].
+
+**Format, when the user doesn't say.** It's used only when a read is written. The tool takes the first of these that applies:
+1. the explicit `format`;
+2. the open read being finished (its edition);
+3. the **single** format shown by the user's links and source rows for that book (an ABS row gives audio, a Kindle Goodreads row gives ebook).
+
+Otherwise it's refused with `format_needed`, and Claude asks. **It never guesses.** The edition then follows §3.3.5.
+
+**Deletions and the confirm token** (`tools/confirm.py`, landing here and reused by `chaptarr_request` in phase 6 [assembly choice]):
+- The token lives **10 minutes**, in memory, and is bound to (profile, tool, `book_id`, `read_id`?, a snapshot of the user_book and reads).
+- **On confirm, the server re-checks** the snapshot. If anything changed, it returns a fresh preview and does nothing.
+- These are the only deletions SyncShelf ever makes outside §3.3.6 rule 4 (rule 8 is amended accordingly).
+- A removed book is **not re-added** by sync while its source row's baseline is unchanged. A later source change is a fresh act and is pushed (last writer wins). The preview says so when a linked source row exists.
+- This is the confirmed removal `resolve_match` points at for the old user_book after a re-link (§3.4a.11).
+
+**`abs_library_search` is dropped.** `library_status` (phase 6) reports `have` per format from Chaptarr, which sees the files ABS reads. Books added to ABS outside Chaptarr are an accepted gap.
 
 #### 3.3.10 Tests
 
@@ -1128,6 +1155,17 @@ Build the rest of phase 3 without `tools/writes.py`.
 - **Mirror:** TTL refresh, `as_of`, stale-but-flagged on failure, refusal with no mirror, full replace drops deleted rows, write-through, the household refresh using the other profile's token, and the `household_visible` refusal.
 - **Write procedure:** each trap converges, including the fault-injection case "status ok, read fix-up failed → rerun converges", the ±14-day adoption edges (day 14 vs 15, open read, undated never adoptable) and edition choice.
 - **Read tools through the ASGI app** (`authed_client`): caps, paging and counts, the `unknown` bucket, own-profile-only reviews, `check_books` never guessing.
+- **Edit tools through the ASGI app:**
+  - no date means no read, and no auto-"today" read survives;
+  - `date_needed` over an open read;
+  - adoption vs `reread=true`;
+  - the format inference order and `format_needed`;
+  - prior values in every result;
+  - Ignored writable;
+  - baselines untouched;
+  - inserts use `hardcover_privacy`.
+
+  Deletions: a preview writes nothing; a token is bound, expires at 10 minutes, and a changed snapshot returns a fresh preview; `remove_book` also deletes journals (the fake's trap 3); a removed book isn't re-added by an unchanged source row.
 - **Live:**
   - reads on the real tokens;
   - **writes only on `HARDCOVER_TOKEN_TEST`**, restoring what they change. These confirm the status-3-with-`user_date`-only insert and the reconciliation in §3.3.6.
@@ -1540,7 +1578,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
 | `sync_status(profile: "me" \| "household" = "me")` | §3.4a.10. |
 | `retry_failed(change_id: int \| "all")` | Releases the caller's own quarantined change(s) (clears `quarantined_at`, `attempts`, `first_failed_at`) and queues an immediate run of the affected sources. |
 | `unmatched_books(source?: "goodreads" \| "abs", include_ignored=false, refresh=false)` | The caller's queue. Each entry has an opaque `entry_id` (`goodreads:<Book Id>`, `abs:<libraryItemId>`), source, reason and `queued_at`; the input as seen (title, author, ISBN/ASIN, format); the **pending diff in words** ("would mark Read, finished 2026-03-02, rate 4"); and candidates with title, subtitle, authors, release year, Hardcover URL, scores and method. `refresh=true` re-runs matching on the listed entries first. Claude can always propose a book that isn't a candidate, found through `search_books`. |
-| `resolve_match(entry_id, hardcover_book_id: int \| None)` | **With an id:** (1) validate that the book exists and follow `canonical_id`; (2) write a `human` link (shared unless the profile's library contradicts it) and set the row `linked`; (3) **apply that one row's pending diff immediately**, under the source's lock and the apply lock, without a `runs` row (its `change_log` rows have `run_id = NULL`) [assembly choice]; (4) return what was pushed or what failed. On failure the link stays and the baseline doesn't advance. **With `None`:** set the row `ignored`. It works on **any** source row, including linked ones, to correct a wrong automatic link. The old user_book is **left in place and named** in the result ("Book X still has a user_book from the old link"). SyncShelf never deletes it on its own. |
+| `resolve_match(entry_id, hardcover_book_id: int \| None)` | **With an id:** (1) validate that the book exists and follow `canonical_id`; (2) write a `human` link (shared unless the profile's library contradicts it) and set the row `linked`; (3) **apply that one row's pending diff immediately**, under the source's lock and the apply lock, without a `runs` row (its `change_log` rows have `run_id = NULL`) [assembly choice]; (4) return what was pushed or what failed. On failure the link stays and the baseline doesn't advance. **With `None`:** set the row `ignored`. It works on **any** source row, including linked ones, to correct a wrong automatic link. The old user_book is **left in place and named** in the result ("Book X still has a user_book from the old link"). SyncShelf never deletes it on its own. Claude can remove it with `remove_book` (§3.3.9), after the user confirms. |
 
 `attention` is added to all six read tools' results.
 
@@ -2495,7 +2533,9 @@ CREATE INDEX chaptarr_requests_state ON chaptarr_requests(state);
 | `reading_stats(period, group_by?)` | 3 | — | read (mirror) | `profile` param |
 | `search_books(...)` | 3 | — | read (live) | `profile` param |
 | `check_books(candidates)` | 3 | — | read (live + mirror) | `profile` param |
-| ⏳ direct Hardcover edits | 3 | — | write (Hardcover) | own; pending [#31](https://github.com/ryansull/syncshelf/issues/31) |
+| `update_book(book_id, ...)` | 3 | — | write (Hardcover) | own |
+| `correct_read(book_id, read_id, ..., delete, confirm_token?)` | 3 | — | write (Hardcover) | own; `destructiveHint` |
+| `remove_book(book_id, confirm_token?)` | 3 | — | write (Hardcover) | own; `destructiveHint` |
 | `sync_now(source, full)` | 4a | — | action | own |
 | `sync_status(profile)` | 4a | — | read | own (full) or household (health view) |
 | `retry_failed(change_id \| "all")` | 4a | — | action | own |
@@ -2513,7 +2553,8 @@ CREATE INDEX chaptarr_requests_state ON chaptarr_requests(state);
 - `library_has(title, format?)` became `library_status(book_ids[])`.
 - `want_and_grab` became `chaptarr_request(…, want=true)`.
 - There is no `recommend()`.
-- `abs_library_search` is ⏳ #31.
+- `abs_library_search` is **dropped**, because `library_status` reports `have` from Chaptarr.
+- `rate_book` became `update_book(…, rating)`, which carries every shelf edit.
 
 ---
 
@@ -2525,7 +2566,7 @@ Every decision this spec states lives in one of these tickets. They're grouped b
 |---|---|
 | Shared | [Hosting the MCP server, ingest endpoint and scheduler in one process](https://github.com/ryansull/syncshelf/issues/4) · [Public-repo hygiene: licence, secret scanning, config conventions](https://github.com/ryansull/syncshelf/issues/5) · [SQLite schema and repo structure](https://github.com/ryansull/syncshelf/issues/19) · [Testing strategy: fixtures, golden sets and live tests](https://github.com/ryansull/syncshelf/issues/29) · [Observability: sync_status payload, attention, and structured logs](https://github.com/ryansull/syncshelf/issues/30) · [Credentials and sample inputs in place](https://github.com/ryansull/syncshelf/issues/2) |
 | 2 | [Does a Claude custom connector work behind Cloudflare Access?](https://github.com/ryansull/syncshelf/issues/3) · [The front door: auth architecture](https://github.com/ryansull/syncshelf/issues/11) · [Building SyncShelf's OAuth server: SDK provider, Authlib, or hand-rolled?](https://github.com/ryansull/syncshelf/issues/22) · [OAuth policy leftovers: revocation, refresh reuse, absolute cap, scopes](https://github.com/ryansull/syncshelf/issues/23) |
-| 3 | [Hardcover write API: user_book mutations, statuses, rate limit](https://github.com/ryansull/syncshelf/issues/6) · [Hardcover read API: how rich can the reading history get?](https://github.com/ryansull/syncshelf/issues/7) · [Reading history questions: what should Claude be able to answer?](https://github.com/ryansull/syncshelf/issues/17) · [Read-side strategy: live Hardcover queries or a local mirror?](https://github.com/ryansull/syncshelf/issues/18) · [Sync cadence and Hardcover request budget](https://github.com/ryansull/syncshelf/issues/27) · ⏳ [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31) |
+| 3 | [Hardcover write API: user_book mutations, statuses, rate limit](https://github.com/ryansull/syncshelf/issues/6) · [Hardcover read API: how rich can the reading history get?](https://github.com/ryansull/syncshelf/issues/7) · [Reading history questions: what should Claude be able to answer?](https://github.com/ryansull/syncshelf/issues/17) · [Read-side strategy: live Hardcover queries or a local mirror?](https://github.com/ryansull/syncshelf/issues/18) · [Sync cadence and Hardcover request budget](https://github.com/ryansull/syncshelf/issues/27) · [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31) |
 | 4a | [Goodreads CSV and shelf RSS: what fields actually arrive](https://github.com/ryansull/syncshelf/issues/10) · [Canonical book identity across Goodreads, Hardcover, ABS and Chaptarr](https://github.com/ryansull/syncshelf/issues/12) · [Goodreads to Hardcover diff: what 'Goodreads changed it' means](https://github.com/ryansull/syncshelf/issues/13) · [Matching and the unmatched queue: thresholds and resolve_match](https://github.com/ryansull/syncshelf/issues/14) · [Failure policy: retries, quarantine and partial runs](https://github.com/ryansull/syncshelf/issues/28) · ⏳ [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32) |
 | 4b | [Goodreads session and library export: what can SyncShelf automate?](https://github.com/ryansull/syncshelf/issues/24) · [Goodreads acquisition design: starting, storing and reusing a session](https://github.com/ryansull/syncshelf/issues/25) |
 | 5 | [Audiobookshelf API: per-user progress and finished status](https://github.com/ryansull/syncshelf/issues/9) · [Audiobookshelf to Hardcover: what counts as finished](https://github.com/ryansull/syncshelf/issues/16) |
@@ -2574,6 +2615,7 @@ These are the small calls this spec made where no ticket spoke. Each is the bori
 | D18 | §3.6.2 | Chaptarr per-format state derivation and precedence | The state names were decided, and the derivation wasn't. |
 | D19 | §3.6.4 | A no-op request is recorded as `noop` | The `noop` state exists in the schema, and this gives `requested_by` history. |
 | D20 | §3.7 | `docs/runbook.md` and `deploy/compose.example.yaml` | Paths only. |
+| D21 | §3.3.9 | Edit tool details: status slugs with no "none"; `rating=0` and `review=""` clear; a lone date implies its status; `started_on` is refused over an open read; Paused/DNF leave reads alone; `get_book` returns read ids; `update_book` isn't `destructiveHint`; the confirm-token helper lands in phase 3 | #31 decided the tools and their rules, not these enumerations. |
 
 ---
 
