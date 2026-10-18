@@ -1,0 +1,15 @@
+# gitleaks: the default rules, plus the placeholders SPEC §2.6 tells us to use everywhere.
+# Used by the pre-commit hook and by CI.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SPEC §2.6 placeholders"
+regexTarget = "match"
+regexes = [
+  '''(?i)[a-z0-9.-]*\bexample\.(?:com|net|org)\b''',
+  '''(?i)[a-z0-9.-]*\.home\.arpa\b''',
+  '''\b192\.0\.2\.\d{1,3}\b''',
+  '''(?i)\b(?:alice|bob)@example\.com\b''',
+]
