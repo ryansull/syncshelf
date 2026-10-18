@@ -42,6 +42,9 @@ All notable changes to SyncShelf are recorded here. The format follows
   finished, each with the next book to read, or one series' full reading order with the
   user's status for each book. Series orders come live from Hardcover in one request; any
   edition or translation read counts for its place.
+- MCP tool `search_books(query?, author?, genre?, sort?, exclude_shelved?, limit?, profile?)`:
+  Hardcover's book search, live, sorted by relevance, popularity, rating or newest, leaving
+  out books already shelved (any status) unless asked, with a short description per book.
 - New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
   zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
   names resolve on any system.

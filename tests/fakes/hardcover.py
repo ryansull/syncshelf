@@ -11,11 +11,14 @@ traps (auto "today" reads, upsert resetting omitted fields, journals left by a d
 aggregates).
 """
 
+import copy
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from itertools import count
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -49,6 +52,9 @@ class FakeHardcover:
         self.series: dict[int, dict[str, Any]] = {}
         """Series by id, each ``{id, name, book_series: [{position, book}]}``; see
         :meth:`add_series`."""
+        self.search_index: list[dict[str, Any]] = []
+        """Typesense documents ``Search`` answers from, in relevance order; see
+        :meth:`add_search_doc`."""
         self.catalog: dict[int, dict[str, Any]] = {}
         """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
         library query's. Shelving a book adds it."""
@@ -124,6 +130,24 @@ class FakeHardcover:
                 for position, book_id, title in entries
             ],
         }
+
+    def add_search_doc(self, book_id: int, title: str, **fields: Any) -> dict[str, Any]:
+        """Index a book for ``Search``, in the recorded document's exact shape: every key
+        Hardcover sends, with ``fields`` over the template's scrubbed values."""
+        doc = copy.deepcopy(_search_template()["document"])
+        defaults = {
+            "author_names": [],
+            "genres": [],
+            "series_names": [],
+            "users_count": 0,
+            "rating": 0.0,
+            "featured_series": None,
+            "subtitle": None,
+            "description": None,
+        }
+        doc.update({**defaults, **fields, "id": str(book_id), "title": title})
+        self.search_index.append(doc)
+        return doc
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
         """Put an unshelved book in the catalog, with ``fields`` over the defaults."""
@@ -213,6 +237,7 @@ class FakeHardcover:
             "Book": self._book,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
+            "Search": self._search,
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -259,6 +284,33 @@ class FakeHardcover:
     def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         book = self.catalog.get(variables["book_id"])
         return {"books": [book] if book else [], "user_books": self._shelf(user_id, variables)}
+
+    def _search(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        """Typesense, roughly: a word match on title or author unless the query is ``*``,
+        ``author_names`` / ``genres`` filters joined by ``&&``, an optional sort, pages."""
+        docs = list(self.search_index)
+        q = variables["q"].strip().casefold()
+        if q != "*":
+            words = q.split()
+            text = {id(d): " ".join([d["title"], *d["author_names"]]).casefold() for d in docs}
+            docs = [d for d in docs if all(w in text[id(d)] for w in words)]
+        for clause in (variables.get("filter") or "").split("&&"):
+            if m := re.fullmatch(r"\s*(author_names|genres):=\[`([^`]*)`\]\s*", clause):
+                docs = [d for d in docs if m.group(2) in d[m.group(1)]]
+            elif clause.strip():
+                raise AssertionError(f"FakeHardcover can't filter by {clause!r}")
+        if sort := variables.get("sort"):
+            field, _, direction = sort.partition(":")
+            docs.sort(key=lambda d: d.get(field) or 0, reverse=direction == "desc")
+        per, page = min(variables["per"], 25), variables["page"]
+        shown = docs[(page - 1) * per : page * per]
+        hits = []
+        for d in shown:
+            hit = copy.deepcopy(_search_template())
+            hit["document"] = d
+            hits.append(hit)
+        results = {**_search_results(), "found": len(docs), "page": page, "hits": hits}
+        return {"search": {"ids": [int(d["id"]) for d in shown], "results": results}}
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.
@@ -311,6 +363,25 @@ def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
             "default_physical_edition": {"id": book_id * 10, "pages": 300},
         },
     }
+
+
+_FIXTURES = Path(__file__).parents[1] / "fixtures" / "hardcover"
+
+
+@cache
+def _recorded_search() -> dict[str, Any]:
+    return json.loads((_FIXTURES / "search.json").read_text(encoding="utf-8"))["body"]
+
+
+def _search_template() -> dict[str, Any]:
+    """A recorded hit: every key Hardcover sends with one, scrubbed."""
+    return _recorded_search()["data"]["search"]["results"]["hits"][0]
+
+
+def _search_results() -> dict[str, Any]:
+    """The recorded ``results`` envelope, without its hits."""
+    results = _recorded_search()["data"]["search"]["results"]
+    return {k: v for k, v in results.items() if k != "hits"}
 
 
 def book_extras() -> dict[str, Any]:
