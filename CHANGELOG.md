@@ -6,10 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-18
-
-Phase 2: Front door and profiles.
-
 ### Added
 
 - New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
@@ -23,6 +19,13 @@ Phase 2: Front door and profiles.
   `cadence.hardcover_daily_reserve` (a whole number, default 1000): below that many requests
   left for the day, syncs wait for the daily reset (a `hardcover_reserve` warning), while
   Claude's calls carry on until none are left.
+
+## [0.2.0] - 2026-10-18
+
+Phase 2: Front door and profiles.
+
+### Added
+
 - New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.
