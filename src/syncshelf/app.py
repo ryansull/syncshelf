@@ -28,7 +28,9 @@ production tool modules are imported here, where the registry is served.
 
 The authorization server's routes (:func:`syncshelf.auth.oauth.oauth_routes`) are served only
 when ``server.auth_mode`` is ``oauth``: dev mode disables them (§3.2.5), and with the key
-absent no token is accepted (#73), so there is nothing to sign in to.
+absent no token is accepted (#73), so there is nothing to sign in to. ``/authorize`` checks
+clients against their documents (:class:`syncshelf.auth.cimd.ClientDocuments`), which the
+lifespan also binds to the database, with the HTTP client that fetches them.
 """
 
 import logging
@@ -36,10 +38,11 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx2
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
@@ -49,6 +52,7 @@ from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
+from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import TokenVerifier
 from syncshelf.config import Config, ServerConfig
@@ -100,6 +104,7 @@ def create_app(
     data_dir: Path | None = None,
     clock: Callable[[], float] = time.time,
     registry: ToolRegistry = REGISTRY,
+    http_transport: httpx2.AsyncBaseTransport | None = None,
 ) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
@@ -111,12 +116,17 @@ def create_app(
 
     ``registry`` holds the tools served, :data:`syncshelf.tools.REGISTRY` by default.
 
+    ``http_transport`` carries the app's outbound HTTP calls (so far only the client-document
+    fetch) in place of the network; tests pass a ``MockTransport`` (§2.9).
+
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
     """
     if data_dir is None:
         data_dir = default_data_dir()
     verifier = TokenVerifier(config, clock=clock)
+    oauth = config.server.auth_mode == "oauth"
+    clients = ClientDocuments(clock=clock, transport=http_transport)
     mcp = SyncShelfServer(
         registry,
         config.profiles,
@@ -154,7 +164,10 @@ def create_app(
             app.state.db = db
             verifier.bind(db)
             mcp.bind(Services(db, clock))
-            async with mcp.session_manager.run():
+            async with AsyncExitStack() as stack:
+                if oauth:  # only /authorize fetches client documents
+                    await stack.enter_async_context(clients.running(db))
+                await stack.enter_async_context(mcp.session_manager.run())
                 yield
         finally:
             mcp.bind(None)
@@ -164,7 +177,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            *(oauth_routes(config.server) if config.server.auth_mode == "oauth" else []),
+            *(oauth_routes(config.server, clients) if oauth else []),
             protected_resource_route(config.server),
             Mount("/", app=mcp_app),
         ],
