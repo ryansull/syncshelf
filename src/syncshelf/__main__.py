@@ -38,11 +38,12 @@ def server_config(app: ASGIApp, config: Config) -> uvicorn.Config:
     """The uvicorn settings SyncShelf serves with.
 
     ``workers=1`` is passed explicitly because uvicorn otherwise reads ``WEB_CONCURRENCY``.
-    The listen address and port are left at uvicorn's defaults, ``127.0.0.1:8000``, until #51
-    decides them.
+    The address and port come from ``server.listen``, default ``0.0.0.0:8000`` (#51).
     """
     return uvicorn.Config(
         app,
+        host=config.server.listen_host,
+        port=config.server.listen_port,
         workers=1,
         proxy_headers=True,
         forwarded_allow_ips=config.server.forwarded_allow_ips,

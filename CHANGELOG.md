@@ -6,8 +6,18 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
+  `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
+  65535 stops startup with a message naming the key.
+- `SYNCSHELF_DATA_DIR` overrides the data directory, default `/data`.
+
 ### Changed
 
+- The service listens on `0.0.0.0:8000` by default instead of uvicorn's `127.0.0.1:8000`, so
+  a published port (`docker run -p`) or Traefik reaches it. The image's health check still
+  probes `127.0.0.1:8000`.
 - uvicorn's access log line no longer includes the client address (IP and port), so it reads
   `"GET /healthz HTTP/1.1" 200`. Traefik and Cloudflare already log callers (#46).
 - Log lines and stored error strings now show the `server.public_url` host as `public` and

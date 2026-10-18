@@ -7,10 +7,13 @@ import pytest
 
 from syncshelf.config import (
     CONFIG_ENV,
+    DATA_DIR_ENV,
     DEFAULT_CONFIG_PATH,
+    DEFAULT_DATA_DIR,
     Config,
     ConfigError,
     config_path,
+    data_dir,
     load_config,
     parse_duration,
 )
@@ -59,6 +62,18 @@ def test_load_config_without_a_path_reads_syncshelf_config(tmp_path: Path) -> No
     assert config.server.public_url == "http://localhost"
 
 
+def test_data_dir_defaults_to_data() -> None:
+    assert data_dir({}) == Path(DEFAULT_DATA_DIR) == Path("/data")
+
+
+def test_data_dir_comes_from_syncshelf_data_dir() -> None:
+    assert data_dir({DATA_DIR_ENV: "/srv/shelf"}) == Path("/srv/shelf")
+
+
+def test_an_empty_syncshelf_data_dir_means_the_default() -> None:
+    assert data_dir({DATA_DIR_ENV: ""}) == Path("/data")
+
+
 def test_missing_file_names_the_path(tmp_path: Path) -> None:
     missing = tmp_path / "nope.yaml"
     with pytest.raises(ConfigError, match="nope.yaml"):
@@ -99,6 +114,7 @@ def test_minimal_file_loads_with_defaults(tmp_path: Path) -> None:
     assert config.server.forwarded_allow_ips == "192.0.2.0/24"
     assert config.server.log_level == "INFO"
     assert config.server.auth_mode is None
+    assert (config.server.listen_host, config.server.listen_port) == ("0.0.0.0", 8000)
     assert config.profiles == {}
     assert config.cadence.rss_interval == 60 * 60
     assert config.cadence.abs_interval == 15 * 60
@@ -203,6 +219,50 @@ def test_auth_mode_accepts_oauth_and_dev(tmp_path: Path, mode: str) -> None:
 
 def test_auth_mode_rejects_anything_else(tmp_path: Path) -> None:
     assert "server.auth_mode" in load_error(tmp_path, MINIMAL + "  auth_mode: none\n")
+
+
+@pytest.mark.parametrize(
+    ("value", "host", "port"),
+    [
+        ("0.0.0.0:8000", "0.0.0.0", 8000),
+        ("127.0.0.1:9000", "127.0.0.1", 9000),
+        ("localhost:1", "localhost", 1),
+        ("syncshelf:65535", "syncshelf", 65535),
+        ("[::]:8000", "::", 8000),
+        ("[::1]:8080", "::1", 8080),
+    ],
+)
+def test_listen_is_a_host_and_port(tmp_path: Path, value: str, host: str, port: int) -> None:
+    server = load(tmp_path, MINIMAL + f'  listen: "{value}"\n').server
+    assert (server.listen_host, server.listen_port) == (host, port)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "8000",
+        '"8000"',
+        '":8000"',
+        '"0.0.0.0"',
+        '"0.0.0.0:"',
+        '"0.0.0.0:0"',
+        '"0.0.0.0:65536"',
+        '"0.0.0.0:http"',
+        '"0.0.0.0:+80"',
+        '"0.0.0.0: 80"',
+        '"0.0.0.0:08000"',
+        '"::1:8000"',
+        '"[localhost]:8000"',
+        '"[::1]8000"',
+        '"bad host:8000"',
+        '"-bad:8000"',
+        '"http://localhost:8000"',
+        '"999.0.0.1:8000"',
+        "null",
+    ],
+)
+def test_listen_rejects_anything_else(tmp_path: Path, value: str) -> None:
+    assert "server.listen" in load_error(tmp_path, MINIMAL + f"  listen: {value}\n")
 
 
 # --- durations --------------------------------------------------------------------------
@@ -477,6 +537,7 @@ def test_committed_example_sets_every_key_phase_1_validates() -> None:
     assert config.server.access_team_domain is not None
     assert all(vars(config.services).values()), "every services URL key is shown"
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert "\n  listen: " in raw, "server.listen is shown"
     for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
         assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
 

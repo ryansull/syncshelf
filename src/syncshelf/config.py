@@ -30,6 +30,17 @@ CONFIG_ENV = "SYNCSHELF_CONFIG"
 DEFAULT_CONFIG_PATH = "/config/profiles.yaml"
 """Where the config file is read from when ``SYNCSHELF_CONFIG`` is unset."""
 
+DATA_DIR_ENV = "SYNCSHELF_DATA_DIR"
+"""The environment variable that overrides the data directory (#51)."""
+
+DEFAULT_DATA_DIR = "/data"
+"""The data directory when ``SYNCSHELF_DATA_DIR`` is unset: the container's volume (§2.3)."""
+
+DEFAULT_LISTEN_HOST = "0.0.0.0"
+DEFAULT_LISTEN_PORT = 8000
+"""``server.listen``'s default, ``0.0.0.0:8000`` (#51). Every interface, so Traefik and a
+published port reach it, and so does the container health check on ``127.0.0.1:8000``."""
+
 PROFILE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,31}")
 """A profile name, matched in full (§1.1)."""
 
@@ -41,7 +52,8 @@ AUTH_MODES = ("oauth", "dev")
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
 """The only ``server.public_url`` hosts phase 1 accepts. It has no auth, so it must never be
-reachable from outside the machine (§3.1, Appendix D4)."""
+served under a public name (§3.1, Appendix D4). This guards the configured name only: with
+``server.listen``'s default ``0.0.0.0`` bind, anything that can reach the port reaches it."""
 
 SERVICE_ALIASES: Mapping[str, str] = {
     "hardcover_url": "hardcover",
@@ -67,6 +79,9 @@ _PROFILE_SECRETS = (
 _REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _DURATION = re.compile(r"([0-9]+)([mh])")
 _DURATION_UNITS = {"m": 60, "h": 3600}
+# server.listen: a bracketed IPv6 address or a bare host, then a port with no leading zero.
+_LISTEN = re.compile(r"(?:\[(?P<ipv6>[^\]]+)\]|(?P<host>[^:\[\]]+)):(?P<port>[1-9][0-9]{0,4})")
+_HOSTNAME_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
 class ConfigError(Exception):
@@ -85,6 +100,10 @@ class ServerConfig:
     auth_mode: str | None = None
     """``oauth`` or ``dev``, or ``None`` when absent. Phase 1 only reports it."""
     access_team_domain: str | None = None
+    listen_host: str = DEFAULT_LISTEN_HOST
+    """The address uvicorn binds, from ``server.listen``. An IPv6 address has no brackets."""
+    listen_port: int = DEFAULT_LISTEN_PORT
+    """The port uvicorn binds, from ``server.listen``."""
 
     @property
     def public_host(self) -> str:
@@ -173,6 +192,16 @@ def config_path(environ: Mapping[str, str] | None = None) -> Path:
     """The config file path: ``SYNCSHELF_CONFIG``, or ``/config/profiles.yaml``."""
     env = os.environ if environ is None else environ
     return Path(env.get(CONFIG_ENV) or DEFAULT_CONFIG_PATH)
+
+
+def data_dir(environ: Mapping[str, str] | None = None) -> Path:
+    """The data directory: ``SYNCSHELF_DATA_DIR``, or ``/data``.
+
+    An env var rather than a config key (#51), so a developer can run outside a container
+    without a ``/data`` on the current drive.
+    """
+    env = os.environ if environ is None else environ
+    return Path(env.get(DATA_DIR_ENV) or DEFAULT_DATA_DIR)
 
 
 def load_config(
@@ -371,12 +400,57 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
         team_domain = access["team_domain"]
         _url(team_domain, "server.access.team_domain", ("https",))
 
+    listen_host, listen_port = DEFAULT_LISTEN_HOST, DEFAULT_LISTEN_PORT
+    if "listen" in raw:
+        listen_host, listen_port = _listen(raw["listen"])
+
     return ServerConfig(
         public_url=public_url,
         forwarded_allow_ips=forwarded,
         log_level=log_level,
         auth_mode=auth_mode,
         access_team_domain=team_domain,
+        listen_host=listen_host,
+        listen_port=listen_port,
+    )
+
+
+def _listen(value: Any) -> tuple[str, int]:
+    """Split ``server.listen`` into the host and port uvicorn binds."""
+    error = ConfigError(
+        "server.listen: must be host:port, with an IP address or hostname "
+        "(an IPv6 address in brackets) and a port from 1 to 65535"
+    )
+    match = _LISTEN.fullmatch(value) if isinstance(value, str) else None
+    if match is None or int(match["port"]) > 65535:
+        raise error
+    if match["ipv6"] is not None:
+        try:
+            ipaddress.IPv6Address(match["ipv6"])
+        except ValueError:
+            raise error from None
+        return match["ipv6"], int(match["port"])
+    host = match["host"]
+    if not _is_ipv4(host) and not _is_hostname(host):
+        raise error
+    return host, int(match["port"])
+
+
+def _is_ipv4(host: str) -> bool:
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_hostname(host: str) -> bool:
+    # All-digit labels are left to _is_ipv4, so 999.0.0.1 isn't taken for a hostname.
+    labels = host.split(".")
+    return (
+        len(host) <= 253
+        and not labels[-1].isdigit()
+        and all(_HOSTNAME_LABEL.fullmatch(label) for label in labels)
     )
 
 

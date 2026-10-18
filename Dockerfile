@@ -34,8 +34,8 @@ ENV PATH=/app/.venv/bin:$PATH \
 WORKDIR /app
 VOLUME /data
 USER 10001:10001
-# No EXPOSE: the service listens on uvicorn's default 127.0.0.1:8000 until #51 decides the
-# bind address and port. The health check runs inside the container, so loopback reaches it.
+# server.listen defaults to 0.0.0.0:8000 (#51), so Traefik and a published port reach the
+# service, and so does this health check, which runs inside the container on loopback.
 # urlopen raises on a refused connection and on any non-2xx (the 503), so the check exits 1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]

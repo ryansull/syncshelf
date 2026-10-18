@@ -70,6 +70,22 @@ def test_main_serves_one_worker_with_proxy_headers_from_config(
     assert config.proxy_headers is True
     assert config.forwarded_allow_ips == "192.0.2.0/24,127.0.0.1"
     assert config.log_config is None  # syncshelf.logging owns logging, uvicorn's included
+    assert (config.host, config.port) == ("0.0.0.0", 8000)  # server.listen's default
+
+
+def test_main_listens_where_server_listen_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_server: type[FakeServer]
+) -> None:
+    path = write_config(tmp_path)
+    path.write_text(
+        path.read_text(encoding="utf-8") + '  listen: "127.0.0.1:9000"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("SYNCSHELF_CONFIG", str(path))
+
+    assert entry.main() == 0
+
+    [config] = fake_server.configs
+    assert (config.host, config.port) == ("127.0.0.1", 9000)
 
 
 def test_main_refuses_a_public_url_that_is_not_localhost(

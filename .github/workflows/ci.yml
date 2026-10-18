@@ -87,6 +87,7 @@ jobs:
         run: |
           docker volume create syncshelf-data
           docker run -d --name syncshelf \
+            -p 127.0.0.1:8000:8000 \
             -v syncshelf-data:/data \
             -v "$PWD/tests/image/config.yaml:/config/profiles.yaml:ro" \
             "$IMAGE"
@@ -103,10 +104,9 @@ jobs:
           docker inspect --format '{{json .State.Health}}' syncshelf || true
           exit 1
       - name: /healthz is 200
-        # The service listens on loopback inside the container (#51), so probe from inside.
-        run: |
-          docker exec syncshelf python -c \
-            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).read().decode())"
+        # From the runner through the published port, which proves server.listen's default
+        # 0.0.0.0:8000 binds beyond the container's loopback (#51).
+        run: curl --fail --silent --show-error --max-time 4 http://127.0.0.1:8000/healthz
       - name: Logs are JSON lines with the version and SQLite version
         run: |
           docker logs syncshelf > logs.txt 2>&1

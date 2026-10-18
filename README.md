@@ -14,9 +14,9 @@ The build spec is [`docs/SPEC.md`](docs/SPEC.md).
 ## Status
 
 **Phase 1 (skeleton), released as v0.1.0.** The package, CI and test harness exist.
-`uv run python -m syncshelf` starts the service on `127.0.0.1:8000`, with an MCP endpoint
-that has no tools yet and a `/healthz` liveness check. Its data lives in `/data`. Phases are
-listed in SPEC §3.
+`uv run python -m syncshelf` starts the service on `0.0.0.0:8000` (set by `server.listen`),
+with an MCP endpoint that has no tools yet and a `/healthz` liveness check. Its data lives in
+`/data`, or the existing directory named by `SYNCSHELF_DATA_DIR`. Phases are listed in SPEC §3.
 
 ## Development
 
@@ -57,19 +57,22 @@ Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and 
 for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
 
 - **`/data`** holds the database, its `pre-migration-NNNN.db` snapshots (taken before each
-  upgrade, none on a fresh install) and `goodreads/`. The container runs as `10001:10001`, so
-  a bind-mounted host directory must exist and be owned by that user
+  upgrade, none on a fresh install) and `goodreads/`. `SYNCSHELF_DATA_DIR` names a different
+  directory, which is useful outside a container. The container runs as `10001:10001`, so a
+  bind-mounted host directory must exist and be owned by that user
   (`chown 10001:10001 <dir>`), or startup stops naming the unwritable path. A named volume
   gets the right owner from the image. Startup also stops if the database is newer than the
   image (an older release started on it).
 - **`/config/profiles.yaml`** is the config. Mount it read-only (`:ro`); SyncShelf never
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
-- **Listening.** For now the service listens on `127.0.0.1:8000` inside the container, pending
-  [#51](https://github.com/ryansull/syncshelf/issues/51). Only the container's own health check
-  can reach it, so publishing a port (`-p`) or routing Traefik to it does not work yet.
+- **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or
+  a published port (`-p 8000:8000`) reaches it. Keep port 8000 in the container: the image's
+  health check probes `127.0.0.1:8000`. Phase 1 has no auth, so publish the port on loopback
+  only (`-p 127.0.0.1:8000:8000`), as below.
 
 ```sh
 docker run -d --name syncshelf \
+  -p 127.0.0.1:8000:8000 \
   -v <data-dir>:/data \
   -v <config-dir>/profiles.yaml:/config/profiles.yaml:ro \
   ghcr.io/<owner>/syncshelf:<version>
