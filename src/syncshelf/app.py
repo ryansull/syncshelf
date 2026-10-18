@@ -20,7 +20,7 @@ import logging
 import sqlite3
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -75,11 +75,16 @@ def allowed_hosts(server: ServerConfig) -> list[str]:
     return [public, *LOOPBACK_HOSTS]
 
 
-def create_app(config: Config, *, data_dir: Path | None = None) -> Starlette:
+def create_app(
+    config: Config, *, data_dir: Path | None = None, clock: Callable[[], float] = time.time
+) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
     ``data_dir`` holds the database, its snapshots and the Goodreads cookie jars (§2.3). It
     defaults to :func:`syncshelf.config.data_dir`: ``SYNCSHELF_DATA_DIR``, or ``/data``.
+
+    ``clock`` gives wall-clock epoch seconds for every timestamp the app writes; tests pass the
+    one injectable clock (§2.9).
 
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
@@ -99,7 +104,7 @@ def create_app(config: Config, *, data_dir: Path | None = None) -> Starlette:
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
         try:
-            synced = await db.write(sync_profiles, list(config.profiles), int(time.time()))
+            synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
             _log_startup(config, db)
@@ -152,7 +157,7 @@ def _check_writable(path: Path, *, create: bool = False) -> None:
 
 
 def _log_profile_sync(synced: ProfileSync) -> None:
-    if not (synced.added or synced.removed or synced.restored):
+    if not (synced.added or synced.removed or synced.restored or synced.revoked):
         return
     log.info(
         "profiles synced with the config: %d added, %d removed, %d restored, %d grants revoked",

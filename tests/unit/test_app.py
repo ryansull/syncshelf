@@ -19,6 +19,8 @@ from syncshelf import __version__
 from syncshelf.app import StartupError, allowed_hosts, create_app
 from syncshelf.config import Config, load_config
 
+from clock import FakeClock
+
 pytestmark = pytest.mark.anyio
 
 SECRET = "fake-consent-key"
@@ -37,7 +39,9 @@ MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": 
 
 
 def make_config(
-    tmp_path: Path, public_url: str = "http://localhost:8000", profiles: tuple[str, ...] = ()
+    tmp_path: Path,
+    public_url: str = "http://localhost:8000",
+    profiles: tuple[str, ...] = ("alice",),
 ) -> Config:
     path = tmp_path / "profiles.yaml"
     path.write_text(
@@ -173,7 +177,7 @@ class TestLifespan:
         assert SECRET not in everything
 
     async def test_startup_syncs_the_profiles_table_with_the_config(
-        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
     ) -> None:
         caplog.set_level(logging.INFO)
 
@@ -184,11 +188,15 @@ class TestLifespan:
 
         async def start(*profiles: str) -> None:
             config = make_config(tmp_path, profiles=profiles)
-            async with running(create_app(config, data_dir=data_dir)):
+            async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
                 pass
 
         await start("alice", "bob")
         assert rows() == {"alice": False, "bob": False}
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            created = {t for (t,) in conn.execute("SELECT created_at FROM profiles")}
+        assert created == {int(clock.time())}
+        clock.advance(60)
 
         caplog.clear()
         await start("bob")

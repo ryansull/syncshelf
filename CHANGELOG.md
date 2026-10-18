@@ -25,6 +25,9 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ### Changed
 
+- The `profiles` section of the config is now required, since the `profiles` table follows
+  it: a file without it stops startup (`profiles: required`) rather than revoking every
+  connection. `profiles: {}` is still accepted.
 - The service listens on `0.0.0.0:8000` by default instead of uvicorn's `127.0.0.1:8000`, so
   a published port (`docker run -p`) or Traefik reaches it. The image's health check still
   probes `127.0.0.1:8000`.

@@ -23,7 +23,10 @@ pytestmark = pytest.mark.usefixtures("restore_logging")
 def write_config(tmp_path: Path, public_url: str = "http://localhost:8000") -> Path:
     path = tmp_path / "profiles.yaml"
     path.write_text(
+        # profiles first, so that tests can append server keys to the file.
         dedent(f"""\
+            profiles:
+              alice: {{}}
             server:
               public_url: {public_url}
               forwarded_allow_ips: 192.0.2.0/24,127.0.0.1

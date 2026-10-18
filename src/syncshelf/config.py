@@ -226,7 +226,9 @@ def load_config(
 
     server_raw = _section(raw, "server", required=True)
     services_raw = _section(raw, "services")
-    profiles_raw = _section(raw, "profiles")
+    # Required from phase 2: the profiles table follows this section, so a file that lost it
+    # by accident would otherwise revoke every connection at the next start.
+    profiles_raw = _section(raw, "profiles", required=True)
 
     secrets: dict[str, str] = {}
     _expand_secrets(server_raw, "server", _SERVER_SECRETS, env, secrets)
@@ -528,21 +530,26 @@ def _profiles(
         profiles[name] = ProfileConfig(
             name=name,
             email=email,
-            permissions=_permissions(body.get("permissions", []), f"{prefix}.permissions"),
+            permissions=_permissions(body.get("permissions"), f"{prefix}.permissions"),
             household_visible=_household_visible(
-                body.get("household_visible", False), f"{prefix}.household_visible"
+                body.get("household_visible"), f"{prefix}.household_visible"
             ),
         )
     return profiles
 
 
 def _permissions(value: Any, key: str) -> frozenset[str]:
+    # A blank value counts as absent, as it does for email.
+    if value is None:
+        return frozenset()
     if not isinstance(value, list) or not all(p in PERMISSIONS for p in value):
         raise ConfigError(f"{key}: must be a list of permissions from: {', '.join(PERMISSIONS)}")
     return frozenset(value)
 
 
 def _household_visible(value: Any, key: str) -> bool:
+    if value is None:
+        return False
     # YAML reads true/false as a bool; a quoted "true" or a 1 is a typo worth stopping on.
     if not isinstance(value, bool):
         raise ConfigError(f"{key}: must be true or false")

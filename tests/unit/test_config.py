@@ -1,5 +1,6 @@
 """Config loading, secret references and validation (SPEC §2.3, §3.1)."""
 
+import re
 from pathlib import Path
 from textwrap import dedent
 
@@ -12,6 +13,7 @@ from syncshelf.config import (
     DEFAULT_DATA_DIR,
     Config,
     ConfigError,
+    ProfileConfig,
     config_path,
     data_dir,
     load_config,
@@ -30,8 +32,15 @@ SECRET = "s3cr3t-value-never-shown"
 
 
 def write(tmp_path: Path, text: str) -> Path:
+    """Write ``text`` as the config, adding a one-profile ``profiles`` section (required) when
+    the text has a server section but no profiles, so tests of other sections stay short."""
+    text = dedent(text)
+    if re.search(r"^server:", text, re.MULTILINE) and not re.search(
+        r"^profiles:", text, re.MULTILINE
+    ):
+        text += "profiles:\n  alice: {}\n"
     path = tmp_path / "profiles.yaml"
-    path.write_text(dedent(text), encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -115,7 +124,7 @@ def test_minimal_file_loads_with_defaults(tmp_path: Path) -> None:
     assert config.server.log_level == "INFO"
     assert config.server.auth_mode is None
     assert (config.server.listen_host, config.server.listen_port) == ("0.0.0.0", 8000)
-    assert config.profiles == {}
+    assert config.profiles == {"alice": ProfileConfig(name="alice")}
     assert config.cadence.rss_interval == 60 * 60
     assert config.cadence.abs_interval == 15 * 60
     assert config.cadence.chaptarr_pending_interval == 2 * 60
@@ -147,6 +156,20 @@ profiles:
 def test_phase_1_server_keys_are_required(tmp_path: Path, key: str) -> None:
     text = MINIMAL.replace(f"  {key}:", "  unused:")
     assert f"server.{key}" in load_error(tmp_path, text)
+
+
+@pytest.mark.parametrize("text", ["", "profiles:\n"])
+def test_profiles_section_is_required(text: str, tmp_path: Path) -> None:
+    path = tmp_path / "profiles.yaml"
+    path.write_text(dedent(MINIMAL) + text, encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"^profiles: required$"):
+        load_config(path, environ={})
+
+
+def test_blank_permissions_and_household_visible_mean_absent(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    permissions:\n    household_visible:\n"
+    alice = load(tmp_path, text).profiles["alice"]
+    assert (alice.permissions, alice.household_visible) == (frozenset(), False)
 
 
 def test_server_section_is_required(tmp_path: Path) -> None:
