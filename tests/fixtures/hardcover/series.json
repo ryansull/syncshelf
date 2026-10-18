@@ -1,0 +1,646 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "series": [
+        {
+          "id": 0,
+          "name": "Dungeon Crawler Carl",
+          "book_series": [
+            {
+              "position": 0,
+              "book": {
+                "id": 446681,
+                "title": "Dungeon Crawler Carl",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2183949,
+                "title": "Carl, o Explorador de Masmorras",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2612424,
+                "title": "Dungeon Crawler Carl: 3 Books Collection Set",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1969101,
+                "title": "Dungeon Crawler Carl",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2689833,
+                "title": "Carl's Doomsday Scenario",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2035333,
+                "title": "Carl's Doomsday Scenario: Nach der Katastrophe ist vor der Katastrophe",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2128039,
+                "title": "El Juicio Final de Carl",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 446680,
+                "title": "Carl's Doomsday Scenario",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2695139,
+                "title": "Le Livre de recettes de l'anarchiste",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 446730,
+                "title": "The Dungeon Anarchist's Cookbook",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2728320,
+                "title": "Carl y el recetario del anarquista",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2170312,
+                "title": "El libro de cocina del anarquista de la mazmorra",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 446722,
+                "title": "The Gate of the Feral Gods",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2650906,
+                "title": "Le Portail des Dieux Infernaux",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2738650,
+                "title": "La Mascarade du boucher",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 637867,
+                "title": "The Butcher's Masquerade",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2018735,
+                "title": "The Butcher's Masquerade: Dungeon Crawler Carl, Book 5",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2695138,
+                "title": "La Mascarade du boucher",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 818989,
+                "title": "The Eye of the Bedlam Bride",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1464466,
+                "title": "This Inevitable Ruin",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2118756,
+                "title": "A Parade of Horribles",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2475092,
+                "title": "A Parade of Horribles: Dungeon Crawler Carl, Book 8",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1817542,
+                "title": "A Parade of Horribles",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2232478,
+                "title": "A Parade of Horribles",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2892756,
+                "title": "The Beautiful Place",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": null,
+              "book": {
+                "id": 2914407,
+                "title": "Dungeon Crawler Carl",
+                "users_count": 0,
+                "compilation": false
+              }
+            }
+          ]
+        },
+        {
+          "id": 0,
+          "name": "The Empyrean",
+          "book_series": [
+            {
+              "position": 0,
+              "book": {
+                "id": 2794521,
+                "title": "Fjerde ving",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 714600,
+                "title": "Fourth Wing",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1883740,
+                "title": "Dördüncü Kanat",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1978071,
+                "title": "Štvrté krídlo",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2098026,
+                "title": "Fourth Wing",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 3033573,
+                "title": "Fourth Wing",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2228007,
+                "title": "フォース・ウィング-第四騎竜団の戦姫- 上",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2228017,
+                "title": "フォース・ウィング-第四騎竜団の戦姫- 下",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2985012,
+                "title": "Fourth Wing",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1471076,
+                "title": "Czwarte skrzydło",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2345168,
+                "title": "The Empyrean Series, 3 Books Collection Set, Fourth Wing, Iron Flame, Onyx Storm, by Rebecca Yarros",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2389432,
+                "title": "Fourth Wing, Iron Flame",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2516430,
+                "title": "The Empyrean Series 3 Book Set",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2601501,
+                "title": "Ales de sang",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0.0,
+              "book": {
+                "id": 2898212,
+                "title": "Fourth Wing (Part 1 of 2) [Dramatized Adaptation]",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0.0,
+              "book": {
+                "id": 1906591,
+                "title": "Fourth Wing (Part 2 of 2) [Dramatized Adaptation]",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2601474,
+                "title": "Ales de ferro",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1978058,
+                "title": "Železný plameň",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2108535,
+                "title": "Iron Flame - Flammengeküsst: Fourth Wing 2",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2217534,
+                "title": "Flacăra de fier",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2916867,
+                "title": "Alas de Hierro: Edición Coleccionista Enriquecida Y Limitada / Iron Flame",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2410320,
+                "title": "Iron Flame (French Edition): Empyrean, Book 2",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2948617,
+                "title": "Alas de hierro. Edición especial con cantos decorados / Iron Flame. Special Edition with Sprayed Edges",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 747398,
+                "title": "Iron Flame",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2754414,
+                "title": "Iron Flame. Żelazny płomień",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2601518,
+                "title": "Ales de ferro",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2782263,
+                "title": "Geležinė liepsna",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2319533,
+                "title": "Iron Flame. Żelany płomień",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1883737,
+                "title": "Demir Alev",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2593121,
+                "title": "Железное пламя",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0.0,
+              "book": {
+                "id": 2373501,
+                "title": "Iron Flame (Part 1 of 2) [Dramatized Adaptation]",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0.0,
+              "book": {
+                "id": 2902669,
+                "title": "Iron Flame (Part 2 of 2) [Dramatized Adaptation]",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2119922,
+                "title": "Tempestade de Ônix",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2173637,
+                "title": "Onyxová bouře",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2782264,
+                "title": "Onikso audra",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2161287,
+                "title": "Myrskynsilmä",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1197328,
+                "title": "Onyx Storm",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1883739,
+                "title": "Oniks Fırtına",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2601468,
+                "title": "Ales d'ònix",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 2217542,
+                "title": "Furtuna de Onix",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0.0,
+              "book": {
+                "id": 2769384,
+                "title": "Threshing Day",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": 0,
+              "book": {
+                "id": 1061079,
+                "title": "Untitled",
+                "users_count": 0,
+                "compilation": false
+              }
+            },
+            {
+              "position": null,
+              "book": {
+                "id": 2584894,
+                "title": "Threshing Day",
+                "users_count": 0,
+                "compilation": false
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

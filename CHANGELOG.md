@@ -38,6 +38,10 @@ All notable changes to SyncShelf are recorded here. The format follows
   contributors and narrators, series, top tags, content warnings, ten similar books with shelf
   status, and the caller's shelf (reads, lists, and their own review). `household` adds each
   sharing profile's shelf, never their review. What it reads is written back to the copy.
+- MCP tool `series_progress(series?, profile?)`: the series the user has started but not
+  finished, each with the next book to read, or one series' full reading order with the
+  user's status for each book. Series orders come live from Hardcover in one request; any
+  edition or translation read counts for its place.
 - New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
   zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
   names resolve on any system.

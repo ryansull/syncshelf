@@ -37,6 +37,8 @@ __all__ = [
     "Library",
     "RateLimit",
     "Result",
+    "SERIES",
+    "SERIES_BY_NAME",
     "SHELF",
     "SIMILAR",
     "check_mutation",
@@ -123,6 +125,25 @@ query Shelf($book_id: Int!, $user_id: Int!) {{
 }}
 """
 """One user's shelf for one book (cost 1): another profile's, for a household ``get_book``."""
+
+_SERIES_FIELDS = (
+    "id name book_series(order_by: {position: asc}) "
+    "{ position book { id title users_count compilation } }"
+)
+
+SERIES = f"""
+query Series($ids: [Int!]!) {{
+  series(where: {{id: {{_in: $ids}}}}) {{ {_SERIES_FIELDS} }}
+}}
+"""
+"""Each series' full reading order, batched (cost 1, depth 3): ``series_progress`` (§3.3.7)."""
+
+SERIES_BY_NAME = f"""
+query SeriesByName($name: String!) {{
+  series(where: {{name: {{_eq: $name}}}}, limit: 5) {{ {_SERIES_FIELDS} }}
+}}
+"""
+"""Series with exactly this name, for one the profile hasn't started (cost 1)."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {
