@@ -28,6 +28,7 @@ from pydantic import Field
 
 from syncshelf.clients.hardcover import (
     BOOK,
+    BOOKS_BY_ID,
     GOALS,
     SEARCH,
     SEARCH_PAGE,
@@ -39,6 +40,14 @@ from syncshelf.clients.hardcover import (
     HardcoverError,
 )
 from syncshelf.config import ProfileConfig
+from syncshelf.sync.matcher import (
+    Scored,
+    author_score,
+    auto_accepts,
+    is_likely,
+    normalise,
+    title_score,
+)
 from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
 from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
@@ -50,6 +59,7 @@ __all__ = [
     "LibraryRow",
     "BookRecord",
     "Stats",
+    "check_books",
     "get_book",
     "search_books",
     "series_progress",
@@ -1553,3 +1563,186 @@ def _search_hit(
     else:
         hit["statuses"] = {n: shelves[n].get(book_id) for n in names}
     return hit
+
+
+# --- check_books --------------------------------------------------------------------------
+
+MAX_CANDIDATES = 20
+CANDIDATE_HITS = 5
+"""Search hits scored per candidate, as the matcher's fuzzy step takes (§3.4a.5)."""
+
+Match = Literal["exact", "likely", "not_found"]
+
+
+class Candidate(TypedDict, total=False):
+    """A book to check: a title (and, ideally, its author), or a Hardcover book_id."""
+
+    title: str
+    author: str
+    book_id: int
+
+
+class CheckedBook(TypedDict):
+    """One candidate, resolved to at most one book."""
+
+    input: Candidate
+    match: Match
+    book: NotRequired[SearchHit]
+    """The book, when the match is exact or likely; never a closest guess otherwise."""
+    error: NotRequired[str]
+    """Why the candidate couldn't be checked this time (Hardcover failed), with not_found."""
+
+
+class CheckPage(TypedDict):
+    """``check_books``' answer: one row per candidate, in the order given."""
+
+    books: list[CheckedBook]
+    as_of: str
+    stale: bool
+    stale_reason: NotRequired[str]
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def check_books(
+    candidates: Annotated[list[Candidate], Field(min_length=1, max_length=MAX_CANDIDATES)],
+    profile: str = ME,
+) -> CheckPage:
+    """Check specific books against Hardcover: is each a real book, and is it already shelved?
+
+    Use this to verify recommendations before offering them ("three books like X"), or to
+    look up several titles at once. Each candidate resolves to one book or to not_found; it
+    never guesses, so a candidate that isn't clearly one book is not_found rather than the
+    nearest hit. For open-ended discovery, use search_books instead.
+
+    Arguments:
+    - candidates: 1 to 20 items, each {"title": ..., "author": ...} (give the author whenever
+      you know it: without one a match can be likely at best) or {"book_id": ...}.
+    - profile: "me" (the default), another profile's name, or "household" to see everyone's
+      shelf status for each book.
+
+    Each row echoes its input and has match: exact (a book_id given, or the top hit's title and
+    author match closely and nothing else comes near), likely (close, but not enough to be
+    sure: say so), or not_found. A matched row has book: book_id, title, author, release_year,
+    series and position, community_rating, pages, has_audiobook and has_ebook (whether
+    Hardcover lists those editions), genres, and status (statuses on household answers; null
+    when not shelved). A row with error couldn't be checked this time; try it again.
+    """
+    caller = current_profile()
+    bound = services()
+    names = resolve_profiles(profile, caller, bound.profiles)
+    freshness = await _refresh(bound.mirror, names, caller)
+    client = bound.hardcover[names[0]]
+    rows: list[CheckedBook] = []
+    found: dict[int, dict[str, Any]] = {}  # matched book id → its document, for the rows
+    by_id = sorted({c["book_id"] for c in candidates if "book_id" in c})
+    id_books: dict[int, dict[str, Any]] = {}
+    id_error: str | None = None
+    if by_id:
+        try:
+            result = await client.execute(BOOKS_BY_ID, {"ids": by_id})
+            id_books = {b["id"]: b for b in result.data.get("books") or []}
+        except HardcoverError as exc:
+            id_error = str(exc)
+    picks: list[tuple[Candidate, Match, int | None, str | None]] = []
+    for candidate in candidates:
+        if "book_id" in candidate:
+            book_id = candidate["book_id"]
+            if id_error is not None:
+                picks.append((candidate, "not_found", None, id_error))
+            elif book_id in id_books:
+                found[book_id] = _doc_from_book(id_books[book_id])
+                picks.append((candidate, "exact", book_id, None))
+            else:
+                picks.append((candidate, "not_found", None, None))
+            continue
+        title = (candidate.get("title") or "").strip()
+        if not title:
+            raise ToolError("Each candidate needs a title or a book_id.")
+        try:
+            match, doc = await _resolve(client, title, (candidate.get("author") or "").strip())
+        except HardcoverError as exc:
+            picks.append((candidate, "not_found", None, str(exc)))
+            continue
+        if doc is not None and (book_id := _doc_id(doc)) is not None:
+            found[book_id] = doc
+            picks.append((candidate, match, book_id, None))
+        else:
+            picks.append((candidate, "not_found", None, None))
+    ids = tuple(found)
+    shelves = {name: await bound.db.read(_statuses, name, ids) for name in names}
+    for candidate, match, book_id, error in picks:
+        row = CheckedBook(input=candidate, match=match)
+        if book_id is not None:
+            row["book"] = _search_hit(found[book_id], book_id, names, shelves)
+        if error is not None:
+            row["error"] = error
+        rows.append(row)
+    return CheckPage(books=rows, **_freshness(freshness))
+
+
+async def _resolve(
+    client: HardcoverClient, title: str, author: str
+) -> tuple[Match, dict[str, Any] | None]:
+    """Search as the matcher's fuzzy step does (§3.4a.5): by normalised title, filtered to the
+    author when there is one, once more without the filter if that finds nothing; then score
+    the hits. Without an author nothing can be exact."""
+    variables: dict[str, Any] = {
+        "q": normalise(title) or title,
+        "filter": _search_filter(author or None, None),
+        "sort": None,
+        "per": CANDIDATE_HITS,
+        "page": 1,
+    }
+    docs = await _search_docs(client, variables)
+    if not docs and variables["filter"]:
+        variables["filter"] = None
+        docs = await _search_docs(client, variables)
+    scored = sorted(
+        (
+            (
+                Scored(
+                    title_score(title, d.get("title") or ""),
+                    author_score(author, d.get("author_names") or []) if author else 100.0,
+                ),
+                d,
+            )
+            for d in docs
+        ),
+        key=lambda pair: (pair[0].title, pair[0].author),
+        reverse=True,
+    )
+    ranked = [s for s, _ in scored]
+    if author and auto_accepts(ranked):
+        return "exact", scored[0][1]
+    if is_likely(ranked):
+        return "likely", scored[0][1]
+    return "not_found", None
+
+
+async def _search_docs(client: HardcoverClient, variables: dict[str, Any]) -> list[dict[str, Any]]:
+    result = await client.execute(SEARCH, variables)
+    results = (result.data.get("search") or {}).get("results") or {}
+    return [h.get("document") or {} for h in results.get("hits") or []]
+
+
+def _doc_from_book(book: dict[str, Any]) -> dict[str, Any]:
+    """A ``books`` row in the shape of a Typesense document, so one row builder serves both."""
+    people = book.get("cached_contributors") or []
+    return {
+        "id": str(book["id"]),
+        "title": book.get("title"),
+        "subtitle": book.get("subtitle"),
+        "author_names": [
+            c["author"]["name"]
+            for c in people
+            if c.get("contribution") in AUTHOR_ROLES and (c.get("author") or {}).get("name")
+        ],
+        "release_year": book.get("release_year"),
+        "featured_series": book.get("cached_featured_series") or None,
+        "rating": book.get("rating"),
+        "pages": book.get("pages"),
+        "has_audiobook": book.get("default_audio_edition") is not None,
+        "has_ebook": book.get("default_ebook_edition") is not None,
+        "genres": tag_names(book.get("genres")),
+        "description": None,
+    }

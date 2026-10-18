@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from syncshelf.clients.hardcover import (  # noqa: E402
     BOOK,
+    BOOKS_BY_ID,
     GOALS,
     LIBRARY,
     ME,
@@ -77,6 +78,7 @@ async def record_hardcover(token: str, limit: int) -> None:
             if (s := ub["book"]["cached_featured_series"]) and s.get("series")
         ][:2]
         series = await client.execute(SERIES, {"ids": series_ids})
+        by_id = await client.execute(BOOKS_BY_ID, {"ids": [pick["book_id"]]})
         search = await client.execute(
             SEARCH, {"q": "dune", "filter": None, "sort": None, "per": 3, "page": 1}
         )
@@ -92,6 +94,7 @@ async def record_hardcover(token: str, limit: int) -> None:
         "shelf": shelf.data,
         "series": series.data,
         "search": search.data,
+        "books_by_id": by_id.data,
     }
     for name, data in recorded.items():
         write_fixture(

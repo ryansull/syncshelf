@@ -23,6 +23,7 @@ from syncshelf import __version__
 
 __all__ = [
     "BOOK",
+    "BOOKS_BY_ID",
     "GOALS",
     "LIBRARY_PAGE",
     "Gate",
@@ -159,6 +160,18 @@ string."""
 
 SEARCH_PAGE = 25
 """Typesense's largest page."""
+
+BOOKS_BY_ID = """
+query BooksById($ids: [Int!]!) {
+  books(where: {id: {_in: $ids}}) {
+    id title subtitle release_year rating pages cached_contributors cached_featured_series
+    genres: cached_tags(path: "Genre")
+    default_audio_edition { id }
+    default_ebook_edition { id }
+  }
+}
+"""
+"""Compact rows for books named by id, batched (cost 1): ``check_books``' id candidates."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {

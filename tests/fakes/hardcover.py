@@ -244,6 +244,7 @@ class FakeHardcover:
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
             "Search": self._search,
+            "BooksById": self._books_by_id,
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -317,6 +318,14 @@ class FakeHardcover:
             hits.append(hit)
         results = {**_search_results(), "found": len(docs), "page": page, "hits": hits}
         return {"search": {"ids": [int(d["id"]) for d in shown], "results": results}}
+
+    def _books_by_id(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        fields = (
+            "id", "title", "subtitle", "release_year", "rating", "pages", "cached_contributors",
+            "cached_featured_series", "genres", "default_audio_edition", "default_ebook_edition",
+        )  # fmt: skip
+        found = sorted(i for i in variables["ids"] if i in self.catalog)
+        return {"books": [{f: self.catalog[i].get(f) for f in fields} for i in found]}
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.
