@@ -10,6 +10,7 @@ Reads without a format are reported in an explicit ``unknown`` bucket, never gue
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -27,7 +28,7 @@ from pydantic import Field
 
 from syncshelf.clients.hardcover import BOOK, GOALS, SHELF, SIMILAR, HardcoverClient, HardcoverError
 from syncshelf.config import ProfileConfig
-from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror
+from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
 from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
 __all__ = [
@@ -795,6 +796,8 @@ SIMILAR_SHOWN = 10
 
 
 class BookRead(TypedDict):
+    """One read of a book: its Hardcover id (for correct_read), dates and formats."""
+
     read_id: int
     started_on: str | None
     finished_on: str | None
@@ -816,17 +819,23 @@ class Shelf(TypedDict):
 
 
 class SeriesEntry(TypedDict):
+    """A series the book belongs to, and its position there."""
+
     series_id: int
     name: str
     position: float | None
 
 
 class Contributor(TypedDict):
+    """A person credited on the book, with Hardcover's role for them (Author, Illustrator…)."""
+
     name: str
     role: str | None
 
 
 class SimilarBook(TypedDict):
+    """A book Hardcover's readers of this one also read, compactly."""
+
     book_id: int
     title: str
     author: str | None
@@ -837,6 +846,8 @@ class SimilarBook(TypedDict):
 
 
 class BookRecord(TypedDict):
+    """``get_book``'s answer: the book, each requested shelf, and similar books."""
+
     book_id: int
     title: str
     subtitle: str | None
@@ -854,6 +865,8 @@ class BookRecord(TypedDict):
     content_warnings: list[str]
     shelves: list[Shelf]
     similar: list[SimilarBook]
+    unavailable: NotRequired[list[str]]
+    """Extras Hardcover couldn't give this time ("similar", "bob's shelf")."""
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -881,11 +894,17 @@ async def get_book(book: int, profile: str = ME) -> BookRecord:
     status, rating (the user's own, 0.5–5), date_added, every read with its read_id, dates
     and formats (unknown when Hardcover has none), and the lists it's on. The caller's own
     entry also has review and review_has_spoilers; other people's reviews are never shown.
-    Many books shelved as read have no reads logged: say so rather than guess a date.
+    Many books shelved as read have no reads logged: say so rather than guess a date. When
+    Hardcover couldn't give an extra this time, unavailable names it (for example "similar"),
+    and the rest of the record still stands.
     """
     caller = current_profile()
     bound = services()
     names = resolve_profiles(profile, caller, bound.profiles)
+    # Lists and the similar books' shelf status come from the copy, so make it current first
+    # (free within the TTL). A profile with no copy just has no lists to show.
+    with contextlib.suppress(ToolError):
+        await _refresh(bound.mirror, names, caller)
     first = bound.hardcover[names[0]]
     result = await first.execute(BOOK, {"book_id": book, "user_id": await first.me_id()})
     if not result.data.get("books"):
@@ -894,11 +913,23 @@ async def get_book(book: int, profile: str = ME) -> BookRecord:
             "check_books, or with get_my_library for a shelved book."
         )
     data: dict[str, Any] = result.data["books"][0]
-    found = {names[0]: _first(result.data.get("user_books"))}
-    for name in names[1:]:
-        client = bound.hardcover[name]
-        shelf = await client.execute(SHELF, {"book_id": book, "user_id": await client.me_id()})
-        found[name] = _first(shelf.data.get("user_books"))
+    found: dict[str, dict[str, Any] | None] = {names[0]: _first(result.data.get("user_books"))}
+    missing: list[str] = []
+    # The other shelves and the similar books are extras: each is fetched at the same time,
+    # and one that fails is named in `unavailable` rather than costing the whole record.
+    async with asyncio.TaskGroup() as tg:
+        others = {
+            name: tg.create_task(_other_shelf(bound.hardcover[name], book)) for name in names[1:]
+        }
+        similar = tg.create_task(_similar(first, data.get("cached_similar_book_ids") or [], caller))
+    for name, task in others.items():
+        if isinstance(shelf := task.result(), HardcoverError):
+            missing.append(f"{name}'s shelf")
+        else:
+            found[name] = shelf
+    if isinstance(similar_rows := similar.result(), HardcoverError):
+        missing.append("similar")
+        similar_rows = []
     for name, user_book in found.items():
         # The copy catches up with what Hardcover just said (§3.3.4).
         stored = {**user_book, "book": data} if user_book else None
@@ -930,16 +961,28 @@ async def get_book(book: int, profile: str = ME) -> BookRecord:
             for s in data.get("book_series") or []
             if s.get("series")
         ],
-        genres=_tag_names(data.get("genres"))[:TOP_TAGS],
-        moods=_tag_names(data.get("moods"))[:TOP_TAGS],
-        tags=_tag_names(data.get("tags"))[:TOP_TAGS],
-        content_warnings=_tag_names(data.get("warnings"))[:MAX_WARNINGS],
+        genres=tag_names(data.get("genres"))[:TOP_TAGS],
+        moods=tag_names(data.get("moods"))[:TOP_TAGS],
+        tags=tag_names(data.get("tags"))[:TOP_TAGS],
+        content_warnings=tag_names(data.get("warnings"))[:MAX_WARNINGS],
         shelves=shelves,
-        similar=await _similar(first, data.get("cached_similar_book_ids") or [], caller),
+        similar=similar_rows,
     )
     if data.get("canonical_id"):
         record["canonical_id"] = data["canonical_id"]
+    if missing:
+        record["unavailable"] = missing
     return record
+
+
+async def _other_shelf(
+    client: HardcoverClient, book: int
+) -> dict[str, Any] | None | HardcoverError:
+    try:
+        shelf = await client.execute(SHELF, {"book_id": book, "user_id": await client.me_id()})
+    except HardcoverError as exc:
+        return exc
+    return _first(shelf.data.get("user_books"))
 
 
 def _first(rows: list[dict[str, Any]] | None) -> dict[str, Any] | None:
@@ -996,10 +1039,6 @@ def _narrators(narrated: dict[str, Any] | None) -> list[str]:
     ]
 
 
-def _tag_names(cached: Any) -> list[str]:
-    return [t["tag"] for t in cached or [] if isinstance(t, dict) and t.get("tag")]
-
-
 def _hours(seconds: int | None) -> float | None:
     return round(seconds / 3600, 1) if seconds else None
 
@@ -1008,13 +1047,18 @@ def _rounded(value: float | None) -> float | None:
     return round(value, 2) if value is not None else None
 
 
-async def _similar(client: HardcoverClient, ids: list[int], caller: str) -> list[SimilarBook]:
+async def _similar(
+    client: HardcoverClient, ids: list[int], caller: str
+) -> list[SimilarBook] | HardcoverError:
     """The first similar ids, hydrated in one request, in Hardcover's own order, with the
-    caller's shelf status for each."""
+    caller's shelf status for each; the error instead when Hardcover can't answer."""
     wanted = ids[:SIMILAR_SHOWN]
     if not wanted:
         return []
-    result = await client.execute(SIMILAR, {"ids": wanted})
+    try:
+        result = await client.execute(SIMILAR, {"ids": wanted})
+    except HardcoverError as exc:
+        return exc
     by_id = {b["id"]: b for b in result.data.get("books") or []}
     statuses = await services().db.read(_statuses, caller, tuple(by_id))
     rows: list[SimilarBook] = []

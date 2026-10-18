@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from syncshelf.clients.hardcover import BOOK, GOALS, LIBRARY, ME, SIMILAR, HardcoverClient
+from syncshelf.clients.hardcover import BOOK, GOALS, LIBRARY, ME, SHELF, SIMILAR, HardcoverClient
 
 from fakes.hardcover import URL, FakeHardcover
 
@@ -108,7 +108,6 @@ async def test_goals_match_the_recording(fake: FakeHardcover) -> None:
 async def test_the_book_query_matches_the_recording(fake: FakeHardcover) -> None:
     fake.catalog[7].update(
         rating=4.31,
-        users_count=1200,
         cached_similar_book_ids=[8, 9],
         book_series=[{"position": 1.0, "series": {"id": 2, "name": "S"}}],
         warnings=[{"tag": "Violence", "count": 3}],
@@ -125,3 +124,9 @@ async def test_similar_matches_the_recording(fake: FakeHardcover) -> None:
     client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     result = await client.execute(SIMILAR, {"ids": [7, 8]})
     assert_same_shape(shape({"data": result.data}), recorded("similar"))
+
+
+async def test_shelf_matches_the_recording(fake: FakeHardcover) -> None:
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(SHELF, {"book_id": 7, "user_id": 42})
+    assert_same_shape(shape({"data": result.data}), recorded("shelf"))

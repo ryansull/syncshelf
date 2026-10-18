@@ -41,6 +41,8 @@ async def test_get_my_library_answers_from_the_real_library(
         data.mkdir()
         async with running(create_app(config, data_dir=data)) as http, mcp_client(http) as mcp:
             result = await mcp.call_tool("get_my_library", {"limit": 5})
+            first = (result.structured_content or {}).get("books", [{}])[0].get("book_id")
+            book = await mcp.call_tool("get_book", {"book": first}) if first else None
         assert not result.is_error, (var, result.content)
         page = result.structured_content
         assert page is not None
@@ -48,3 +50,8 @@ async def test_get_my_library_answers_from_the_real_library(
         assert len(page["books"]) == min(5, page["total"]), var
         # Real Hardcover credits authors as "Author"; a row without one means that was missed.
         assert all(b["author"] for b in page["books"]), var
+        if book is not None:
+            assert not book.is_error, (var, book.content)
+            record = book.structured_content
+            assert record is not None and record["shelves"], var
+            assert "unavailable" not in record, (var, record.get("unavailable"))

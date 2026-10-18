@@ -104,7 +104,7 @@ query LibraryMore($user_id: Int!, $limit: Int!, $offset: Int!) {{
 BOOK = f"""
 query Book($book_id: Int!, $user_id: Int!) {{
   books(where: {{id: {{_eq: $book_id}}}}) {{{_BOOK_FIELDS}
-      rating users_count cached_similar_book_ids
+      rating cached_similar_book_ids
       book_series(order_by: {{position: asc}}) {{ position series {{ id name }} }}
       warnings: cached_tags(path: "[\\"Content Warning\\"]")
       narrated: default_audio_edition {{ cached_contributors }}

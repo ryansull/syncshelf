@@ -204,3 +204,30 @@ async def test_a_merged_book_names_its_canonical_id(connect: Any, fake: FakeHard
     fake.add_book(55, title="Dupe", canonical_id=7)
     async with connect() as mcp:
         assert (await get_book(mcp, book=55))["canonical_id"] == 7
+
+
+async def test_lists_and_similar_status_are_right_on_a_first_call(connect: Any) -> None:
+    async with connect() as mcp:
+        record = await get_book(mcp, book=7)  # no get_my_library first
+    assert record["shelves"][0]["lists"] == ["Favourites"]
+    assert record["similar"][1]["status"] == "want-to-read"
+
+
+async def test_similar_books_hardcover_cant_give_are_named_not_fatal(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.fail_next("Similar", "unavailable")
+    async with connect() as mcp:
+        record = await get_book(mcp, book=7)
+    assert (record["similar"], record["unavailable"]) == ([], ["similar"])
+    assert record["shelves"][0]["rating"] == 4.5
+
+
+async def test_another_shelf_hardcover_cant_give_is_named_not_fatal(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.fail_next("Shelf", "unavailable", user_id=BOB)
+    async with connect() as mcp:
+        record = await get_book(mcp, book=7, profile="household")
+    assert [s["profile"] for s in record["shelves"]] == ["alice"]
+    assert record["unavailable"] == ["bob's shelf"]

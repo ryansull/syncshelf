@@ -284,7 +284,6 @@ def book_extras() -> dict[str, Any]:
     """The fields ``Book`` answers beyond the library query's book, empty by default."""
     return {
         "rating": None,
-        "users_count": 0,
         "cached_similar_book_ids": [],
         "book_series": [],
         "warnings": [],

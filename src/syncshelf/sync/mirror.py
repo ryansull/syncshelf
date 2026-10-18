@@ -33,6 +33,7 @@ __all__ = [
     "NoMirror",
     "replace_library",
     "store_user_book",
+    "tag_names",
 ]
 
 log = logging.getLogger(__name__)
@@ -269,7 +270,7 @@ def _insert_user_book(conn: sqlite3.Connection, profile: str, ub: Mapping[str, A
             series.get("position"),
             book.get("pages") or physical.get("pages"),
             audio.get("audio_seconds"),
-            json.dumps({c: _tag_names(book.get(c)) for c in TAG_CATEGORIES}),
+            json.dumps({c: tag_names(book.get(c)) for c in TAG_CATEGORIES}),
         ),
     )
 
@@ -286,6 +287,6 @@ def _contributors(cached: Any) -> list[dict[str, str | None]]:
     return out
 
 
-def _tag_names(cached: Any) -> list[str]:
+def tag_names(cached: Any) -> list[str]:
     """The tag names of one ``cached_tags`` category, in Hardcover's order (most used first)."""
     return [t["tag"] for t in cached or [] if isinstance(t, dict) and t.get("tag")]
