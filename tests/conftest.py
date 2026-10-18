@@ -3,6 +3,7 @@
 Later phases add the fakes and ``authed_client`` here (SPEC §2.5).
 """
 
+import logging
 import os
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from syncshelf import logging as slog
 from syncshelf.db import Database, connect
 from syncshelf.db.migrate import migrate
 
@@ -48,6 +50,30 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def anyio_backend() -> str:
     # The service runs on asyncio under uvicorn; trio is not a target.
     return "asyncio"
+
+
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    """``syncshelf.logging.configure`` rewires global logging state; put it back afterwards so
+    tests stay independent."""
+    root = logging.getLogger()
+    saved_root = (root.handlers[:], root.level)
+    names = [*slog.PROPAGATING_LOGGERS, *slog.QUIET_LOGGERS]
+    saved = {
+        n: (lg.handlers[:], lg.filters[:], lg.level, lg.propagate)
+        for n in names
+        for lg in [logging.getLogger(n)]
+    }
+    yield
+    root.handlers[:] = saved_root[0]
+    root.setLevel(saved_root[1])
+    for n, (handlers, filters, level, propagate) in saved.items():
+        lg = logging.getLogger(n)
+        lg.handlers[:] = handlers
+        lg.filters[:] = filters
+        lg.setLevel(level)
+        lg.propagate = propagate
+    slog.configure_redaction()
 
 
 @pytest.fixture

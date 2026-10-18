@@ -13,8 +13,10 @@ The build spec is [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Status
 
-**Phase 1 (skeleton), in progress.** The package, CI and test harness exist. The service does
-nothing useful yet. Phases are listed in SPEC §3.
+**Phase 1 (skeleton), in progress.** The package, CI and test harness exist.
+`uv run python -m syncshelf` starts the service on `127.0.0.1:8000`, with an MCP endpoint
+that has no tools yet and a `/healthz` liveness check. Its data lives in `/data`. Phases are
+listed in SPEC §3.
 
 ## Development
 

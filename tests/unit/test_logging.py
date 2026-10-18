@@ -2,7 +2,6 @@
 
 import json
 import logging
-from collections.abc import Iterator
 from datetime import datetime
 
 import pytest
@@ -13,23 +12,7 @@ SECRET = "fake-secret-value"
 HOSTS = {"abs.home.arpa": "abs", "chaptarr.home.arpa": "chaptarr", "192.0.2.10": "browser"}
 
 
-@pytest.fixture(autouse=True)
-def restore_logging() -> Iterator[None]:
-    """``configure`` rewires global logging state; put it back so tests stay independent."""
-    root = logging.getLogger()
-    saved_root = (root.handlers[:], root.level)
-    names = [*slog.PROPAGATING_LOGGERS, *slog.QUIET_LOGGERS]
-    saved = {n: (logging.getLogger(n).handlers[:], logging.getLogger(n).level) for n in names}
-    saved_propagate = {n: logging.getLogger(n).propagate for n in names}
-    yield
-    root.handlers[:], _ = saved_root
-    root.setLevel(saved_root[1])
-    for n, (handlers, level) in saved.items():
-        lg = logging.getLogger(n)
-        lg.handlers[:] = handlers
-        lg.setLevel(level)
-        lg.propagate = saved_propagate[n]
-    slog.configure_redaction()
+pytestmark = pytest.mark.usefixtures("restore_logging")
 
 
 def lines(capsys: pytest.CaptureFixture[str]) -> list[dict[str, object]]:
@@ -210,6 +193,54 @@ def test_uvicorn_loggers_reach_the_json_handler(capsys: pytest.CaptureFixture[st
     assert access["logger"] == "uvicorn.access"
     assert access["msg"] == '192.0.2.1:5 - "GET /healthz HTTP/1.1" 200'
     assert error["msg"] == "boom ***"
+
+
+def access_record(path: str) -> logging.LogRecord:
+    """An access record built exactly as uvicorn's h11 and httptools protocols build it."""
+    return logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("192.0.2.1:5", "GET", path, "1.1", 200),
+        None,
+    )
+
+
+def test_the_access_log_drops_query_strings(capsys: pytest.CaptureFixture[str]) -> None:
+    slog.configure()
+    logging.getLogger("uvicorn.access").handle(access_record("/healthz?token=abc&x=1"))
+
+    [line] = lines(capsys)
+    assert line["msg"] == '192.0.2.1:5 - "GET /healthz HTTP/1.1" 200'
+
+
+def test_uvicorns_colour_copy_of_the_message_is_dropped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    slog.configure()
+    logging.getLogger("uvicorn.error").info(
+        "Started server process [%d]", 7, extra={"color_message": "Started [\x1b[36m%d\x1b[0m]"}
+    )
+
+    [line] = lines(capsys)
+    assert line["msg"] == "Started server process [7]"
+    assert "color_message" not in line
+
+
+def test_the_query_filter_is_installed_once(capsys: pytest.CaptureFixture[str]) -> None:
+    slog.configure()
+    slog.configure()
+
+    filters = logging.getLogger("uvicorn.access").filters
+    assert sum(isinstance(f, slog.AccessQueryFilter) for f in filters) == 1
+
+
+def test_the_query_filter_leaves_other_records_alone() -> None:
+    record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, "odd %s", ("a?b",), None)
+    assert slog.AccessQueryFilter().filter(record)
+    assert record.getMessage() == "odd a?b"
 
 
 def test_configure_replaces_existing_root_handlers(capsys: pytest.CaptureFixture[str]) -> None:
