@@ -50,7 +50,7 @@ A PR isn't done until the files its change touches are updated in the **same PR*
 | The schema | a **new** migration (never edit a shipped one), its SQL-invariant tests, and a `CHANGELOG.md` line |
 | An external API contract the code relies on | re-record the fixture (`tests/live/record.py`), update the fake, and keep the contract test green |
 | A decision table (diff, matcher, ABS finish, Chaptarr, attention) | the golden YAML file first, then the code |
-| Deployment, ops, health or onboarding | `docs/runbook.md` and `deploy/compose.example.yaml` |
+| Deployment, ops, health or onboarding | `docs/runbook.md` and `deploy/compose.example.yaml`. Phase 7 creates both (SPEC §2.5), so until then update the README's "Configuration and deployment" section instead |
 | Dev setup or a command | `README.md` and the Commands table above |
 | PR, branch, version or docs conventions | SPEC §2.10, `.github/pull_request_template.md` and this file, all together |
 | A new public module, class or function | its docstring. Comments say *why*, not what |
