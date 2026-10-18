@@ -8,6 +8,11 @@ token that would work. The store functions are units of work for
 functions taking the connection first and the time as ``now`` (epoch seconds from the one
 clock). The code exchange and refresh rotation compose them inside one transaction.
 
+**Codes.** ``POST /authorize`` stores a code (:func:`insert_code`) bound to everything the
+consent page showed, and the code exchange redeems it (:func:`exchange_code`). The grant is
+made only on redemption, which records it on the code row, so a replayed code can find and
+revoke the grant it produced (§3.2.4).
+
 **The verifier.** The MCP SDK, as the resource server, hands every bearer token to
 :class:`TokenVerifier`. A token it accepts becomes the request's identity:
 ``get_access_token().subject`` is the profile name, and ``.claims`` carries ``iss``, ``email``
@@ -19,6 +24,7 @@ token is refused (#73).
 Raw tokens are never logged (§2.7): log lines carry the ``grant_id`` only.
 """
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -36,26 +42,37 @@ from syncshelf.db import Database
 __all__ = [
     "ACCESS_PREFIX",
     "ACCESS_TOKEN_TTL",
+    "CODE_TTL",
     "DEV_CLIENT_ID",
     "LAST_USED_INTERVAL",
+    "OFFLINE_ACCESS",
     "REFRESH_PREFIX",
     "REFRESH_WINDOW",
     "SCOPE",
+    "CodeExchange",
+    "ExchangeRefused",
     "Grant",
+    "IssuedTokens",
     "PresentedToken",
     "TokenVerifier",
     "create_grant",
+    "exchange_code",
     "find_access_token",
     "hash_token",
     "insert_access_token",
+    "insert_code",
     "insert_refresh_token",
     "open_grants",
     "revoke_grant",
+    "s256",
     "touch_grant",
 ]
 
 SCOPE = "syncshelf"
 """The scope every accepted token carries (§3.2.2). There is no read/write split."""
+
+OFFLINE_ACCESS = "offline_access"
+"""The scope a client asks for to get a refresh token (§3.2.2)."""
 
 DEV_CLIENT_ID = "dev"
 """The ``client_id`` of the dev token, which belongs to no registered client."""
@@ -68,6 +85,9 @@ REFRESH_PREFIX = "ssrt_"
 
 ACCESS_TOKEN_TTL = 3600
 """An access token's lifetime in seconds (§3.2.4)."""
+
+CODE_TTL = 120
+"""An authorization code's lifetime in seconds (§3.2.4)."""
 
 REFRESH_WINDOW = 90 * 86400
 """The sliding refresh window: a grant's ``refresh_expires_at`` is this far past its creation
@@ -210,6 +230,168 @@ def touch_grant(conn: sqlite3.Connection, grant_id: int, now: int) -> bool:
         (now, grant_id, now - LAST_USED_INTERVAL),
     )
     return cursor.rowcount == 1
+
+
+# --- authorization codes ------------------------------------------------------------------
+
+
+def s256(verifier: str) -> str:
+    """The PKCE S256 challenge for ``verifier``: unpadded base64url of its sha256 (RFC 7636
+    §4.2). Pass a verifier already checked against the RFC's pattern, which is ASCII."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def insert_code(
+    conn: sqlite3.Connection,
+    *,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    resource: str,
+    scopes: Iterable[str],
+    profile: str,
+    email: str,
+    now: int,
+) -> str:
+    """Store a new authorization code, valid for :data:`CODE_TTL` from ``now``, and return it
+    raw: ``token_urlsafe(32)``, of which only the sha256 hex is stored (§3.2.4).
+
+    The row binds it to the client, the exact ``redirect_uri``, the PKCE challenge, the
+    resource, the scopes, the profile and the (lowercased) email. Its grant is made only
+    when :func:`exchange_code` redeems it.
+    """
+    raw = secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO oauth_code (code_hash, client_id, redirect_uri, code_challenge, resource, "
+        "scopes, profile, email, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            hash_token(raw),
+            client_id,
+            redirect_uri,
+            code_challenge,
+            resource,
+            " ".join(scopes),
+            profile,
+            email,
+            now,
+            now + CODE_TTL,
+        ),
+    )
+    return raw
+
+
+@dataclass(frozen=True)
+class CodeExchange:
+    """What a ``grant_type=authorization_code`` request presents, already checked for shape:
+    one of each parameter, a ``client_id`` past the client gate, and a ``code_verifier``
+    matching RFC 7636's pattern."""
+
+    code: str
+    """The raw code, which is only ever hashed."""
+    client_id: str
+    client_label: str
+    """The label of :attr:`client_id`, recorded on the grant."""
+    redirect_uri: str
+    code_verifier: str
+    resource: str | None
+    """The canonical ``resource``, the parameter as sent if it doesn't canonicalise, or
+    ``None`` when the request didn't send one."""
+
+
+@dataclass(frozen=True)
+class IssuedTokens:
+    """A redeemed code's new grant and the raw tokens on it, for the client only."""
+
+    grant_id: int
+    client_label: str
+    access_token: str
+    refresh_token: str | None
+    """Issued only when the grant's scopes include ``offline_access``."""
+    scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExchangeRefused:
+    """Why a code exchange was refused: ``error`` is the OAuth error code for the client,
+    ``reason`` a snake_case code for the log, and ``revoked_grant`` the grant a replayed code
+    had produced, now revoked."""
+
+    error: str
+    reason: str
+    revoked_grant: int | None = None
+
+
+def exchange_code(
+    conn: sqlite3.Connection, exchange: CodeExchange, now: int
+) -> IssuedTokens | ExchangeRefused:
+    """Redeem a code at ``now`` for a new grant, an access token and, when the code's scopes
+    include ``offline_access``, a refresh token (§3.2.4). One unit of work for
+    :meth:`syncshelf.db.Database.write`, so it all happens in one ``BEGIN IMMEDIATE``.
+
+    The code is spent first, by an ``UPDATE`` that only an unused, unexpired code passes, so
+    two exchanges racing with one code can't both succeed. A spent code stays spent even when
+    a later check fails. A code that was already used is a replay: the grant it produced is
+    revoked (``code_replay``) and the exchange refused.
+
+    A refusal is returned rather than raised, because raising would roll back what it must
+    keep: the spent code and a replay's revocation.
+    """
+    code_hash = hash_token(exchange.code)
+    spent = conn.execute(
+        "UPDATE oauth_code SET used_at = ? "
+        "WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
+        (now, code_hash, now),
+    )
+    if spent.rowcount != 1:
+        return _unspendable(conn, code_hash, now)
+    client_id, redirect_uri, challenge, resource, scopes, profile, email, removed = conn.execute(
+        "SELECT c.client_id, c.redirect_uri, c.code_challenge, c.resource, c.scopes, "
+        "c.profile, c.email, p.name IS NULL OR p.removed_at IS NOT NULL "
+        "FROM oauth_code c LEFT JOIN profiles p ON p.name = c.profile WHERE c.code_hash = ?",
+        (code_hash,),
+    ).fetchone()
+    if exchange.client_id != client_id:
+        return ExchangeRefused("invalid_grant", "client_mismatch")
+    if exchange.redirect_uri != redirect_uri:
+        return ExchangeRefused("invalid_grant", "redirect_mismatch")
+    if not hmac.compare_digest(s256(exchange.code_verifier).encode(), challenge.encode()):
+        return ExchangeRefused("invalid_grant", "pkce_mismatch")
+    if exchange.resource is not None and exchange.resource != resource:
+        return ExchangeRefused("invalid_target", "resource_mismatch")
+    if removed:
+        return ExchangeRefused("invalid_grant", "profile_removed")
+    granted = tuple(scopes.split())
+    grant_id = create_grant(
+        conn,
+        profile=profile,
+        email=email,
+        client_id=client_id,
+        client_label=exchange.client_label,
+        resource=resource,
+        scopes=granted,
+        now=now,
+    )
+    conn.execute("UPDATE oauth_code SET grant_id = ? WHERE code_hash = ?", (grant_id, code_hash))
+    access = insert_access_token(conn, grant_id, now)
+    refresh = insert_refresh_token(conn, grant_id, now) if OFFLINE_ACCESS in granted else None
+    return IssuedTokens(grant_id, exchange.client_label, access, refresh, granted)
+
+
+def _unspendable(conn: sqlite3.Connection, code_hash: str, now: int) -> ExchangeRefused:
+    """Why a code couldn't be spent: unknown, expired, or a replay, which revokes its grant."""
+    row = conn.execute(
+        "SELECT used_at, grant_id FROM oauth_code WHERE code_hash = ?", (code_hash,)
+    ).fetchone()
+    if row is None:
+        return ExchangeRefused("invalid_grant", "code_unknown")
+    used_at, grant_id = row
+    if used_at is None:
+        return ExchangeRefused("invalid_grant", "code_expired")
+    # A failed first exchange made no grant, so there may be nothing to revoke.
+    if grant_id is not None and revoke_grant(conn, grant_id, "code_replay", now):
+        return ExchangeRefused("invalid_grant", "code_replay", revoked_grant=grant_id)
+    return ExchangeRefused("invalid_grant", "code_replay")
 
 
 @dataclass(frozen=True)
