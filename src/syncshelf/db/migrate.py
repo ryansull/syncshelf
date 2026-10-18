@@ -2,11 +2,13 @@
 
 Migrations are the numbered files ``migrations/NNNN_<name>.sql``, and ``PRAGMA user_version``
 records the last one applied. Before applying anything, the runner snapshots the database with
-``VACUUM INTO``. Each pending file then runs in its own ``BEGIN IMMEDIATE`` transaction together
-with its ``user_version`` bump, so a failure leaves the database at the last good version and
-the runner stops there. There are no down-migrations.
+``VACUUM INTO``, or reuses the snapshot an earlier failed start already took. Each pending
+file then runs in its own ``BEGIN IMMEDIATE`` transaction together with its ``user_version``
+bump, so a failure leaves the database at the last good version and the runner stops there.
+There are no down-migrations.
 """
 
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -16,6 +18,8 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 """Where the shipped migration files live."""
 
 _FILENAME = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
+
+log = logging.getLogger(__name__)
 
 
 class MigrationError(Exception):
@@ -89,7 +93,9 @@ def migrate(
     ``conn`` must be an autocommit connection from :func:`syncshelf.db.connect` with no
     transaction open; in the service it is the writer. If anything is pending, the database is
     first copied to ``pre-migration-NNNN.db`` in ``snapshot_dir`` (``NNNN`` being the version it
-    is at), and an existing snapshot of that name is never overwritten. Raises
+    is at). If that snapshot already exists, it is kept as it is and reused: the database is
+    still at that version, so the file is its true pre-migration state (left by an earlier
+    start whose first pending migration failed). It is never overwritten. Raises
     :class:`MigrationError` on any failure, after which the database is at the last version
     that applied cleanly.
     """
@@ -100,17 +106,33 @@ def migrate(
         return MigrationResult(current, current)
 
     snapshot = snapshot_path(snapshot_dir, current)
-    try:
-        # VACUUM INTO refuses an existing non-empty file, which keeps an earlier snapshot safe.
-        conn.execute("VACUUM INTO ?", (str(snapshot),))
-    except sqlite3.Error as error:
-        raise MigrationError(f"could not write the pre-migration snapshot {snapshot}") from error
+    if snapshot.exists():
+        log.info(
+            "reusing the existing pre-migration snapshot %s",
+            snapshot,
+            extra={"event": "snapshot_reused", "snapshot": str(snapshot)},
+        )
+    else:
+        _take_snapshot(conn, snapshot)
 
     applied: list[int] = []
     for migration in pending:
         _apply(conn, migration)
         applied.append(migration.version)
     return MigrationResult(current, applied[-1], applied, snapshot)
+
+
+def _take_snapshot(conn: sqlite3.Connection, snapshot: Path) -> None:
+    # Written under a temporary name and renamed once complete, because an existing snapshot
+    # is reused as is: a crash part-way through must never leave a partial file under the
+    # final name. A leftover temporary file is from such a crash, and is always safe to drop.
+    partial = snapshot.with_name(snapshot.name + ".tmp")
+    try:
+        partial.unlink(missing_ok=True)
+        conn.execute("VACUUM INTO ?", (str(partial),))
+        partial.rename(snapshot)
+    except (OSError, sqlite3.Error) as error:
+        raise MigrationError(f"could not write the pre-migration snapshot {snapshot}") from error
 
 
 def _apply(conn: sqlite3.Connection, migration: Migration) -> None:

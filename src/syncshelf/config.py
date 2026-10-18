@@ -161,7 +161,12 @@ class Config:
 
     def other_hosts(self) -> frozenset[str]:
         """Configured hosts that aren't services: ``server.public_url`` and, when set,
-        ``server.access.team_domain``. §2.7 says these are aliased too but names no alias."""
+        ``server.access.team_domain``.
+
+        Not wired into logging yet: §2.7 says these hosts are aliased too but names no alias
+        for them, and #49 (point 5) leaves that open. Until it's decided, nothing calls this
+        and these hosts are logged as they are.
+        """
         hosts = {self.server.public_host}
         if self.server.access_team_domain:
             hosts.add(urlsplit(self.server.access_team_domain).hostname or "")
@@ -221,6 +226,9 @@ def _read_yaml(file: Path) -> dict[str, Any]:
         text = file.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"cannot read the config file {file} ({type(exc).__name__})") from None
+    except UnicodeDecodeError:
+        # The decoder's message quotes the offending bytes, which may be part of a secret.
+        raise ConfigError(f"the config file {file} is not UTF-8 text") from None
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -308,6 +316,9 @@ def _from_file(value: Any, key: str) -> str:
         text = Path(value).read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"{key}: cannot read {value} ({type(exc).__name__})") from None
+    except UnicodeDecodeError:
+        # The decoder's message quotes the offending bytes, which are part of the secret.
+        raise ConfigError(f"{key}: the file {value} is not UTF-8 text") from None
     # Secret files conventionally end in a newline that isn't part of the secret.
     secret = text.rstrip("\r\n")
     if not secret:

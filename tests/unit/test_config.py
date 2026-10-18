@@ -71,6 +71,19 @@ def test_invalid_yaml_reports_the_line_but_not_the_content(tmp_path: Path) -> No
     assert SECRET not in message
 
 
+def test_a_config_file_that_is_not_utf8_names_the_path_but_not_the_content(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "profiles.yaml"
+    path.write_bytes(b"server:\n  public_url: \xff\xfe" + SECRET.encode() + b"\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path, environ={})
+    message = str(excinfo.value)
+    assert "profiles.yaml" in message
+    assert "UTF-8" in message
+    assert SECRET not in message
+
+
 def test_top_level_must_be_a_mapping(tmp_path: Path) -> None:
     assert "mapping" in load_error(tmp_path, "- just\n- a list\n")
 
@@ -342,6 +355,17 @@ def test_missing_file_names_the_key(tmp_path: Path) -> None:
     assert "profiles.alice.abs.token_file" in message
 
 
+def test_a_secret_file_that_is_not_utf8_names_the_key_but_not_the_content(
+    tmp_path: Path,
+) -> None:
+    secret_file = tmp_path / "key"
+    secret_file.write_bytes(b"\xff\xfe" + SECRET.encode())
+    message = load_error(tmp_path, MINIMAL + f"  consent_hmac_key_file: {secret_file.as_posix()}\n")
+    assert "server.consent_hmac_key_file" in message
+    assert "UTF-8" in message
+    assert SECRET not in message
+
+
 def test_empty_file_counts_as_missing(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.write_text("\n", encoding="utf-8")
@@ -435,6 +459,16 @@ def test_committed_example_loads(tmp_path: Path) -> None:
     config = load_config(ROOT / "profiles.example.yaml", environ={})
     assert config.server.public_host in {"localhost", "127.0.0.1"}
     assert set(config.profiles) == {"alice", "bob"}
+
+
+def test_committed_example_sets_every_key_phase_1_validates() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    assert config.server.auth_mode is not None
+    assert config.server.access_team_domain is not None
+    assert all(vars(config.services).values()), "every services URL key is shown"
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
+        assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
 
 
 def test_real_profiles_yaml_is_git_ignored() -> None:

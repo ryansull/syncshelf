@@ -4,12 +4,15 @@
 [extend]
 useDefault = true
 
+# A finding is dropped only when its extracted secret is, in full, one placeholder. The
+# patterns are anchored and tested against the secret, not the whole match or line, so a real
+# credential next to a placeholder host, or with one appended, is still reported.
 [[allowlists]]
 description = "SPEC §2.6 placeholders"
-regexTarget = "match"
+regexTarget = "secret"
 regexes = [
-  '''(?i)[a-z0-9.-]*\bexample\.(?:com|net|org)\b''',
-  '''(?i)[a-z0-9.-]*\.home\.arpa\b''',
-  '''\b192\.0\.2\.\d{1,3}\b''',
-  '''(?i)\b(?:alice|bob)@example\.com\b''',
+  '''(?i)^(?:[a-z0-9-]+\.)*example\.(?:com|net|org)$''',
+  '''(?i)^(?:[a-z0-9-]+\.)+home\.arpa$''',
+  '''^192\.0\.2\.\d{1,3}$''',
+  '''(?i)^(?:alice|bob)@example\.com$''',
 ]
