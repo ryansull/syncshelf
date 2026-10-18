@@ -23,6 +23,7 @@ from syncshelf.clients.hardcover import (
     HardcoverUnavailable,
 )
 from syncshelf.sync.apply import (
+    READ_FIELDS,
     UNSET,
     Applied,
     DateNeeded,
@@ -40,8 +41,17 @@ from syncshelf.sync.apply import (
 )
 from syncshelf.sync.limiter import ServeStale
 from syncshelf.tools import REGISTRY, current_profile, services
+from syncshelf.tools.confirm import Redeemed, snapshot_of
 
-__all__ = ["STATUS_IDS", "Edit", "correct_read", "update_book"]
+__all__ = [
+    "STATUS_IDS",
+    "Edit",
+    "ReadEdit",
+    "Removal",
+    "correct_read",
+    "remove_book",
+    "update_book",
+]
 
 STATUS_IDS = {
     "want-to-read": 1,
@@ -54,6 +64,7 @@ STATUS_IDS = {
 """``update_book``'s status slugs and Hardcover's status ids (§3.3.9)."""
 
 _SLUGS = {v: k for k, v in STATUS_IDS.items()}
+_FORMAT_NAMES = {1: "print", 2: "audio", 3: "both", 4: "ebook"}
 
 StatusSlug = Literal["want-to-read", "currently-reading", "read", "paused", "dnf", "ignored"]
 Format = Literal["audio", "ebook", "print"]
@@ -75,6 +86,46 @@ class Edit(TypedDict):
     """True when the book wasn't on the shelf and was added."""
     changes: list[FieldChange]
     """Empty when everything already matched."""
+
+
+class ShownRead(TypedDict):
+    """One read: its id, dates and format."""
+
+    read_id: int
+    started_on: str | None
+    finished_on: str | None
+    format: str | None
+
+
+class ReadEdit(Edit):
+    """What correct_read did, or, for a deletion not yet confirmed, what it would delete."""
+
+    deleted: bool
+    preview: ShownRead | None
+    """The read a deletion would remove, until it's confirmed."""
+    confirm_token: str | None
+    """For a deletion's preview: pass it back to delete, within 10 minutes."""
+    note: str | None
+
+
+class Removal(TypedDict):
+    """What remove_book found on the shelf, and whether it removed it."""
+
+    book_id: int
+    title: str | None
+    removed: bool
+    status: str | None
+    rating: float | None
+    has_review: bool
+    review_has_spoilers: bool
+    reads: list[ShownRead]
+    has_journal: bool
+    """Whether Hardcover holds reading-journal rows (its activity history) for the book."""
+    linked_source_rows: list[str]
+    """Goodreads or Audiobookshelf rows still linked to the book: none until those syncs land."""
+    confirm_token: str | None
+    """For a preview: pass it back to remove the book, within 10 minutes."""
+    note: str
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(destructive_hint=False))
@@ -177,8 +228,11 @@ async def correct_read(
     started_on: date | None = None,
     finished_on: date | None = None,
     format: Format | None = None,  # noqa: A002 - the spec's argument name
-) -> Edit:
-    """Fix one read already logged on the caller's Hardcover shelf: its dates or its format.
+    delete: bool = False,
+    confirm_token: str | None = None,
+) -> ReadEdit:
+    """Fix one read already logged on the caller's Hardcover shelf: its dates or its format,
+    or delete it.
 
     Use this when the user says a logged read is wrong ("I actually finished it on the 3rd",
     "that was the audiobook"), or to change the start of a read still open. It acts at once,
@@ -196,9 +250,21 @@ async def correct_read(
 
     The result gives the read before and after (read_id, dates, format), so you can undo it
     with another correct_read. A value the read already had isn't written.
+
+    Deleting: delete=true alone (no dates or format) first returns a preview of the read and a
+    confirm_token, and deletes nothing. Show the user what will go; once they agree, call again
+    with delete=true and that confirm_token, within 10 minutes. If the book changed since the
+    preview, or the token is stale, you get a fresh preview instead, and nothing is deleted.
+    A deleted read can be logged again with update_book, from the values the result returns.
     """
+    if delete:
+        if started_on is not None or finished_on is not None or format is not None:
+            raise ToolError("delete goes alone: leave out started_on, finished_on and format.")
+        return await _delete_read(book_id, read_id, confirm_token)
+    if confirm_token is not None:
+        raise ToolError("Edits act at once: confirm_token goes only with delete=true.")
     if started_on is None and finished_on is None and format is None:
-        raise ToolError("Nothing to change: give started_on, finished_on or format.")
+        raise ToolError("Nothing to change: give started_on, finished_on or format, or delete.")
     if started_on is not None and finished_on is not None and started_on > finished_on:
         raise ToolError("started_on is after finished_on; give the earlier date first.")
     try:
@@ -223,7 +289,164 @@ async def correct_read(
             f"The read would start on {exc.started_on}, after it finished on "
             f"{exc.finished_on}: give both dates. Nothing was changed."
         ) from None
-    return _edit(book_id, applied)
+    except Incomplete as exc:
+        raise ToolError(
+            f"Partly done: the read changed, but Hardcover failed updating the book's first "
+            f"start date ({exc}). Call correct_read again with the same values to finish it."
+        ) from None
+    return ReadEdit(
+        **_edit(book_id, applied), deleted=False, preview=None, confirm_token=None, note=None
+    )
+
+
+async def _delete_read(book_id: int, read_id: int, token: str | None) -> ReadEdit:
+    profile, tokens = current_profile(), services().confirm
+    subject = (book_id, read_id)
+    outcome: list[Redeemed] = []
+
+    def confirm(user_book: dict[str, Any]) -> bool:
+        if token is None:
+            return False
+        outcome.append(tokens.redeem(token, profile, "correct_read", subject, _snapshot(user_book)))
+        return outcome[0] is Redeemed.OK
+
+    try:
+        with _hardcover_errors():
+            seen, read, deleted = await services().applier.delete_read(
+                profile, book_id, read_id, confirm
+            )
+    except NotShelved:
+        raise ToolError(f"Book {book_id} isn't on the shelves, so it has no reads.") from None
+    except ReadNotFound:
+        raise ToolError(
+            f"Read {read_id} isn't one of book {book_id}'s reads: get_book lists them with "
+            "their read_ids. Nothing was deleted."
+        ) from None
+    except Incomplete as exc:
+        raise ToolError(
+            f"The read was deleted, but Hardcover failed updating the book's first start date "
+            f"({exc}). A correct_read on another of its reads sets it again."
+        ) from None
+    shown = _shown_read(read)
+    if deleted:
+        change = FieldChange(field="read", before=shown, after=None)
+        return ReadEdit(
+            book_id=book_id,
+            added_to_shelf=False,
+            changes=[change],
+            deleted=True,
+            preview=None,
+            confirm_token=None,
+            note="Deleted. To log it again, use update_book with its dates.",
+        )
+    fresh = tokens.issue(profile, "correct_read", subject, _snapshot(seen))
+    return ReadEdit(
+        book_id=book_id,
+        added_to_shelf=False,
+        changes=[],
+        deleted=False,
+        preview=shown,
+        confirm_token=fresh,
+        note=_preview_note(outcome, "deleted"),
+    )
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def remove_book(book_id: int, confirm_token: str | None = None) -> Removal:
+    """Take a book off the caller's Hardcover shelves entirely: its status, rating, review,
+    every logged read, and its reading-journal history.
+
+    Use this only when the user asks to remove a book, not to change its shelf (that's
+    update_book). It takes two calls:
+    1. Without confirm_token, it previews what would go and returns a confirm_token, removing
+       nothing. Show the user the preview (status, rating, whether there's a review, each read
+       with its dates, whether there's journal history).
+    2. Once they agree, call again with that confirm_token, within 10 minutes. If the book
+       changed since the preview, or the token is stale, you get a fresh preview instead, and
+       nothing is removed.
+
+    Removal can't be undone from here, but the result keeps every value the book had, so
+    update_book can shelve it again with its status, rating, review and reads (not its journal
+    history). Only the caller's own shelves can be changed.
+    """
+    profile, tokens = current_profile(), services().confirm
+    outcome: list[Redeemed] = []
+
+    def confirm(user_book: dict[str, Any], has_journal: bool) -> bool:
+        if confirm_token is None:
+            return False
+        snapshot = _snapshot(user_book, has_journal)
+        outcome.append(tokens.redeem(confirm_token, profile, "remove_book", book_id, snapshot))
+        return outcome[0] is Redeemed.OK
+
+    try:
+        with _hardcover_errors():
+            removal = await services().applier.remove_book(profile, book_id, confirm)
+    except NotShelved:
+        raise ToolError(
+            f"Book {book_id} isn't on the shelves; there's nothing to remove."
+        ) from None
+    ub = removal.user_book
+    if removal.removed:
+        token = None
+        note = "Removed."
+        if removal.journal_error is not None:
+            note += (
+                " Hardcover failed deleting its journal history, which stays (it shows only on "
+                f"Hardcover): {removal.journal_error}"
+            )
+    else:
+        token = tokens.issue(profile, "remove_book", book_id, _snapshot(ub, removal.has_journal))
+        note = _preview_note(outcome, "removed")
+    return Removal(
+        book_id=book_id,
+        title=(ub.get("book") or {}).get("title"),
+        removed=removal.removed,
+        status=_SLUGS.get(ub.get("status_id") or 0),
+        rating=ub.get("rating"),
+        has_review=bool(ub.get("has_review") or ub.get("review_raw")),
+        review_has_spoilers=bool(ub.get("review_has_spoilers")),
+        reads=[_shown_read(r) for r in ub.get("user_book_reads") or []],
+        has_journal=removal.has_journal,
+        linked_source_rows=[],
+        confirm_token=token,
+        note=note,
+    )
+
+
+def _preview_note(outcome: list[Redeemed], done: str) -> str:
+    """What a deletion's preview tells Claude, after a token that didn't confirm, if any."""
+    ask = (
+        f"Show the user what would be {done}; once they agree, call again with this "
+        "confirm_token within 10 minutes."
+    )
+    if not outcome:
+        return f"Preview only: nothing was {done}. {ask}"
+    if outcome[0] is Redeemed.CHANGED:
+        return f"The book changed since that preview, so nothing was {done}. This is it now. {ask}"
+    return (
+        f"That confirm_token is expired, used or for something else, so nothing was {done}. {ask}"
+    )
+
+
+def _snapshot(user_book: dict[str, Any], has_journal: bool | None = None) -> str:
+    """What a confirm token is bound to: everything on the shelf a deletion would lose."""
+    keys = ("id", "status_id", "rating", "review_raw", "review_has_spoilers", "edition_id")
+    reads = [
+        {k: r.get(k) for k in ("id", *READ_FIELDS)} for r in user_book.get("user_book_reads") or []
+    ]
+    shelf = {k: user_book.get(k) for k in keys}
+    return snapshot_of({**shelf, "reads": reads, "journal": has_journal})
+
+
+def _shown_read(read: dict[str, Any]) -> ShownRead:
+    format_id = (read.get("edition") or {}).get("reading_format_id")
+    return ShownRead(
+        read_id=read["id"],
+        started_on=(read.get("started_at") or "")[:10] or None,
+        finished_on=(read.get("finished_at") or "")[:10] or None,
+        format=_FORMAT_NAMES.get(format_id or 0),
+    )
 
 
 @contextmanager

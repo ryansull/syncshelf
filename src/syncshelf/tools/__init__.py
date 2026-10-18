@@ -39,6 +39,7 @@ from syncshelf.db import Database
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.limiter import interactive
 from syncshelf.sync.mirror import Mirror
+from syncshelf.tools.confirm import ConfirmTokens
 
 # ME and HOUSEHOLD live in config, which refuses them as profile names (#74), and are
 # re-exported here, where the profile argument is resolved.
@@ -125,6 +126,8 @@ class Services:
     """Each profile's Hardcover client, for the live calls a tool makes (§3.3.7)."""
     applier: Applier
     """The write procedure every edit goes through (§3.3.6)."""
+    confirm: ConfirmTokens
+    """The confirm tokens a deletion's preview hands out (§3.3.9)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)

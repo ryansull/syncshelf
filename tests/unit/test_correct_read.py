@@ -164,7 +164,9 @@ async def test_the_first_start_follows_the_earliest_read(connect: Any, fake: Fak
 
 
 async def test_a_value_the_read_already_has_isnt_written(connect: Any, fake: FakeHardcover) -> None:
-    shelve(fake, 3, read(1, "2099-05-01", "2099-05-09", AUDIO))
+    shelve(
+        fake, 3, read(1, "2099-05-01", "2099-05-09", AUDIO), first_started_reading_date="2099-05-01"
+    )
     async with connect() as mcp:
         result = await correct(mcp, book_id=7, read_id=1, finished_on="2099-05-09")
     assert result["changes"] == []
@@ -276,3 +278,17 @@ async def test_a_correction_replayed_after_it_landed_changes_nothing(
     fake.writes.clear()
     assert (await applier.apply("alice", 7, target)).changes == []
     assert fake.writes == []
+
+
+async def test_a_first_start_that_failed_is_set_by_the_same_call_again(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(
+        fake, 3, read(1, "2099-05-01", "2099-05-09", AUDIO), first_started_reading_date="2099-05-01"
+    )
+    fake.fail_next("UpdateUserBook", "unavailable")
+    async with connect() as mcp:
+        assert "Partly done" in await refused(mcp, book_id=7, read_id=1, started_on="2099-04-20")
+        assert reads(fake) == [("2099-04-20", "2099-05-09", AUDIO)]
+        await correct(mcp, book_id=7, read_id=1, started_on="2099-04-20")
+    assert row(fake)["first_started_reading_date"] == "2099-04-20"
