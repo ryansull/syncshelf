@@ -58,10 +58,11 @@ Configuration goes in `profiles.yaml` (git-ignored), modelled on
 `${VAR}` reference to the environment (see `.env.example`) or a `*_file` path. Startup stops on
 bad config with a message naming the key. From phase 3, `services.hardcover_url` and each
 profile's `hardcover_token` (the Hardcover API token, without its `Bearer ` prefix) are
-required. `cadence.hardcover_daily_reserve` (default 1000) is how many of
-each profile's 5000 daily Hardcover requests the syncs leave for Claude. The file is the only source of profiles: at each
-start, a profile removed from it is marked removed and its Claude connections are revoked, and
-a name added back is restored.
+required. `cadence.hardcover_daily_reserve` (default 1000) is how many of each profile's 5000
+daily Hardcover requests the syncs leave for Claude, and each profile's `hardcover_privacy`
+(public, followers or private, the default) is who sees books SyncShelf adds to its shelves.
+The file is the only source of profiles: at each start, a profile removed from it is marked
+removed and its Claude connections are revoked, and a name added back is restored.
 
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says
 where tokens come from:

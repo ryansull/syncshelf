@@ -60,6 +60,7 @@ from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.writes  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
@@ -70,6 +71,7 @@ from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
+from syncshelf.sync.apply import Applier
 from syncshelf.sync.limiter import Clock, HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
@@ -209,6 +211,7 @@ def create_app(
                     mirror=mirror,
                     profiles=config.profiles,
                     hardcover=hardcover,
+                    applier=Applier(hardcover, mirror, config.profiles),
                 )
             )
             async with AsyncExitStack() as stack:

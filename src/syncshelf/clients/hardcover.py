@@ -22,6 +22,9 @@ import httpx2
 from syncshelf import __version__
 
 __all__ = [
+    "USER_BOOK",
+    "UPDATE_USER_BOOK",
+    "INSERT_USER_BOOK",
     "BOOK",
     "BOOKS_BY_ID",
     "GOALS",
@@ -197,6 +200,29 @@ query BooksById($ids: [Int!]!) {
 }
 """
 """Compact rows for books named by id, batched (cost 1): ``check_books``' id candidates."""
+
+USER_BOOK = f"""
+query UserBook($book_id: Int!, $user_id: Int!) {{
+  user_books(where: {{user_id: {{_eq: $user_id}}, book_id: {{_eq: $book_id}}}}) {{
+    {_USER_BOOK_FIELDS}  }}
+}}
+"""
+"""One shelved book in the library query's shape, book included (cost 1): the fresh state a
+write starts from, and what it writes through to the mirror after (§3.3.6)."""
+
+INSERT_USER_BOOK = """
+mutation InsertUserBook($object: UserBookCreateInput!) {
+  insert_user_book(object: $object) { id error }
+}
+"""
+"""Shelves a book; for one already shelved, Hardcover upserts on (user, book) (§3.3.1)."""
+
+UPDATE_USER_BOOK = """
+mutation UpdateUserBook($id: Int!, $object: UserBookUpdateInput!) {
+  update_user_book(id: $id, object: $object) { id error }
+}
+"""
+"""Changes a shelved book's status, rating or review: only the fields in ``object``."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {

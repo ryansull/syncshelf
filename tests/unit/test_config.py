@@ -966,3 +966,27 @@ def test_without_a_timezone_the_containers_tz_variable_is_followed(
     assert str(ProfileConfig("alice").tzinfo()) == "America/New_York"
     monkeypatch.setenv("TZ", "not a zone")
     assert ProfileConfig("alice").tzinfo() is not None  # falls back to the clock's offset
+
+
+def test_hardcover_privacy_defaults_to_private(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).profiles["alice"].hardcover_privacy == 3
+
+
+@pytest.mark.parametrize(("value", "setting"), [("public", 1), ("followers", 2), ("private", 3)])
+def test_hardcover_privacy_maps_to_hardcovers_setting(
+    tmp_path: Path, value: str, setting: int
+) -> None:
+    text = MINIMAL + f"profiles:\n  alice:\n    hardcover_privacy: {value}\n"
+    assert load(tmp_path, text).profiles["alice"].hardcover_privacy == setting
+
+
+@pytest.mark.parametrize("value", ["secret", "1", "true", "Private"])
+def test_hardcover_privacy_must_be_a_known_value(tmp_path: Path, value: str) -> None:
+    text = MINIMAL + f"profiles:\n  alice:\n    hardcover_privacy: {value}\n"
+    message = load_error(tmp_path, text)
+    assert message == "profiles.alice.hardcover_privacy: must be one of public, followers, private"
+
+
+def test_committed_example_sets_hardcover_privacy() -> None:
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert "\n    hardcover_privacy: private" in raw
