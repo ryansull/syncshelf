@@ -1,12 +1,14 @@
-"""Build and drive the real ASGI app in tests: a dev-mode config, a running lifespan, and an
-MCP client that presents a bearer token.
+"""Build and drive the real ASGI app in tests: a config, a running lifespan, and an MCP
+client that presents a bearer token, either the dev token or an OAuth one from the store.
 
-Everything goes through the production app and verifier (SPEC §2.9). The OAuth
-``authed_client(profile)`` fixture arrives with the token store (#62).
+Everything goes through the production app and verifier (SPEC §2.9): :func:`authed` puts a
+grant and a token hash straight into the store, and the request is checked like any other.
 """
 
-from collections.abc import AsyncIterator, Iterable
-from contextlib import asynccontextmanager
+import sqlite3
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
 
@@ -15,14 +17,19 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from starlette.applications import Starlette
 
+from syncshelf.auth.tokens import SCOPE, create_grant, insert_access_token
 from syncshelf.config import Config, load_config
+from syncshelf.db import Database
 
 SECRET = "fake-consent-key"
 DEV_TOKEN = "fake-dev-token-for-tests"
 BASE_URL = "http://localhost:8000"  # "localhost:*" only matches a Host with a port
+MCP_URL = f"{BASE_URL}/mcp"
 ENVIRON = {"CONSENT": SECRET, "DEV_TOKEN": DEV_TOKEN}
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 """The headers a raw Streamable HTTP POST to ``/mcp`` needs."""
+CLAUDE_CODE = "https://claude.ai/oauth/claude-code-client-metadata"
+"""The Claude Code ``client_id`` (§3.2.1), which test grants are issued to."""
 
 
 def make_config(
@@ -32,26 +39,27 @@ def make_config(
     profiles: Iterable[str] = ("alice",),
     dev_profile: str | None = None,
     profile_yaml: dict[str, str] | None = None,
+    auth_mode: str = "dev",
 ) -> Config:
-    """A dev-mode config acting as ``dev_profile`` (default: the first profile).
+    """A config in ``auth_mode``: ``dev`` acting as ``dev_profile`` (default: the first
+    profile), or ``oauth``.
 
     ``profile_yaml`` gives a profile's body as one line of flow YAML, ``{}`` by default.
     """
     profiles = list(profiles)
     bodies = profile_yaml or {}
     dev = dev_profile or (profiles[0] if profiles else "alice")
+    dev_block = f"  dev:\n    token: ${{DEV_TOKEN}}\n    profile: {dev}\n"
     path = tmp_path / "profiles.yaml"
     path.write_text(
         dedent(f"""\
             server:
               public_url: {public_url}
-              auth_mode: dev
-              dev:
-                token: ${{DEV_TOKEN}}
-                profile: {dev}
+              auth_mode: {auth_mode}
               forwarded_allow_ips: 127.0.0.1
               consent_hmac_key: ${{CONSENT}}
             """)
+        + (dev_block if auth_mode == "dev" else "")
         + "profiles:\n"
         + "".join(f"  {name}: {bodies.get(name, '{}')}\n" for name in profiles),
         encoding="utf-8",
@@ -78,5 +86,56 @@ async def running(
 @asynccontextmanager
 async def mcp_client(http: httpx2.AsyncClient) -> AsyncIterator[Client]:
     """The SDK's MCP client over ``http``, connected to ``/mcp``."""
-    async with Client(streamable_http_client(f"{BASE_URL}/mcp", http_client=http)) as client:
+    async with Client(streamable_http_client(MCP_URL, http_client=http)) as client:
         yield client
+
+
+async def grant_token(
+    db: Database, profile: str, now: int, *, resource: str = MCP_URL
+) -> tuple[int, str]:
+    """Put a Claude Code grant for ``profile``, and one access token on it, into the store as
+    the code exchange would, at ``now``. Returns the grant id and the raw token."""
+
+    def issue(conn: sqlite3.Connection) -> tuple[int, str]:
+        grant_id = create_grant(
+            conn,
+            profile=profile,
+            email=f"{profile}@example.com",
+            client_id=CLAUDE_CODE,
+            client_label="Claude Code",
+            resource=resource,
+            scopes=[SCOPE, "offline_access"],
+            now=now,
+        )
+        return grant_id, insert_access_token(conn, grant_id, now)
+
+    return await db.write(issue)
+
+
+@dataclass(frozen=True)
+class Authed:
+    """A signed-in MCP session from :func:`authed`, and what is behind it."""
+
+    mcp: Client
+    http: httpx2.AsyncClient
+    """The raw client, already sending the token, for requests the MCP client can't make."""
+    db: Database
+    grant_id: int
+    token: str
+    """The raw access token the session presents."""
+
+
+@asynccontextmanager
+async def authed(app: Starlette, profile: str, now: int) -> AsyncIterator[Authed]:
+    """Run ``app`` (an ``oauth``-mode app) and sign in to its ``/mcp`` as ``profile`` with a
+    grant and access token issued at ``now``. The ``authed_client`` fixture drives this."""
+    async with running(app, token=None) as http:
+        db: Database = app.state.db
+        grant_id, token = await grant_token(db, profile, now)
+        http.headers["authorization"] = f"Bearer {token}"
+        async with mcp_client(http) as client:
+            yield Authed(client, http, db, grant_id, token)
+
+
+type AuthedClient = Callable[..., AbstractAsyncContextManager[Authed]]
+"""The ``authed_client`` fixture's type: ``authed_client(profile, **options)``."""

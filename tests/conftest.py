@@ -1,22 +1,26 @@
-"""Shared test wiring: the anyio backend, the injectable clock, temp SQLite and live gating.
+"""Shared test wiring: the anyio backend, the injectable clock, temp SQLite, live gating and
+``authed_client``.
 
-Later phases add the fakes and ``authed_client`` here (SPEC §2.5).
+Later phases add the fakes here (SPEC §2.5).
 """
 
 import logging
 import os
 import sqlite3
-from collections.abc import AsyncIterator, Iterator
-from contextlib import closing
+from collections.abc import AsyncIterator, Iterable, Iterator
+from contextlib import AbstractAsyncContextManager, closing
 from pathlib import Path
 
 import pytest
 
 from syncshelf import logging as slog
+from syncshelf.app import create_app
 from syncshelf.db import Database, connect
 from syncshelf.db.migrate import migrate
+from syncshelf.tools import REGISTRY, ToolRegistry
 
 from clock import FakeClock
+from serving import Authed, AuthedClient, authed, make_config
 
 LIVE_ENV = "SYNCSHELF_LIVE"
 
@@ -113,3 +117,38 @@ def schema(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     with closing(connect(tmp_path / "schema.db")) as conn:
         migrate(conn, snapshot_dir=tmp_path)
         yield conn
+
+
+@pytest.fixture
+def authed_client(tmp_path: Path, data_dir: Path, clock: FakeClock) -> AuthedClient:
+    """Sign in to the real app's ``/mcp`` as a profile, through the production verifier
+    (SPEC §2.9)::
+
+        async with authed_client("alice") as session:
+            result = await session.mcp.call_tool("my_connections", {})
+
+    It runs an ``oauth``-mode app on ``data_dir`` and the ``clock`` fixture, puts a grant and
+    an access token for the profile into the store, and yields an
+    :class:`serving.Authed`: the MCP client, the raw HTTP client, the database, the grant id
+    and the raw token. Keyword arguments: ``profiles`` (the configured names, default just
+    the one signing in), ``profile_yaml`` (as for ``make_config``) and ``registry`` (the
+    tools served, the production registry by default).
+    """
+
+    def connect_as(
+        profile: str = "alice",
+        *,
+        profiles: Iterable[str] | None = None,
+        profile_yaml: dict[str, str] | None = None,
+        registry: ToolRegistry = REGISTRY,
+    ) -> AbstractAsyncContextManager[Authed]:
+        config = make_config(
+            tmp_path,
+            profiles=profiles if profiles is not None else (profile,),
+            profile_yaml=profile_yaml,
+            auth_mode="oauth",
+        )
+        app = create_app(config, data_dir=data_dir, clock=clock.time, registry=registry)
+        return authed(app, profile, int(clock.time()))
+
+    return connect_as

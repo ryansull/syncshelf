@@ -17,7 +17,8 @@ On shutdown the database is closed.
 
 The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
-protected-resource metadata otherwise (§3.2.1). The SDK serves that metadata on the mount.
+protected-resource metadata otherwise (§3.2.1). The SDK serves that metadata on the mount. The
+verifier reads the token store, so the lifespan binds it to the database once it is open.
 """
 
 import logging
@@ -103,12 +104,13 @@ def create_app(
     """
     if data_dir is None:
         data_dir = default_data_dir()
+    verifier = TokenVerifier(config, clock=clock)
     mcp = SyncShelfServer(
         registry,
         config.profiles,
         "syncshelf",
         version=__version__,
-        token_verifier=TokenVerifier(config),
+        token_verifier=verifier,
         # Validated from strings so the SDK keeps the issuer's exact form: AnyHttpUrl() alone
         # would add a trailing slash, and issuer comparison is exact (RFC 8414, RFC 9207).
         auth=AuthSettings.model_validate(
@@ -138,9 +140,11 @@ def create_app(
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
+            verifier.bind(db)
             async with mcp.session_manager.run():
                 yield
         finally:
+            verifier.bind(None)
             await db.close()
 
     return Starlette(

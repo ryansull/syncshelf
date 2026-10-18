@@ -16,8 +16,13 @@ class FakeClock:
     made; both move together and only forward. ``sleep()`` advances time and returns at once.
     """
 
-    START = 1_767_225_600
-    """2026-01-01T00:00:00Z: a fixed, recognisable start so failures read the same every run."""
+    START = 4_102_444_800
+    """2100-01-01T00:00:00Z: a fixed, recognisable start so failures read the same every run.
+
+    It is in the future on purpose. The MCP SDK refuses an ``AccessToken`` whose
+    ``expires_at`` is before the *real* ``time.time()``, on top of SyncShelf's own check
+    against this clock, so a token that is unexpired by this clock must be unexpired in real
+    time too."""
 
     def __init__(self, start: float = START) -> None:
         self._wall = float(start)
