@@ -75,6 +75,7 @@ from syncshelf.sync.apply import Applier
 from syncshelf.sync.limiter import Clock, HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
+from syncshelf.tools.confirm import ConfirmTokens
 
 __all__ = [
     "DB_FILENAME",
@@ -212,6 +213,7 @@ def create_app(
                     profiles=config.profiles,
                     hardcover=hardcover,
                     applier=Applier(hardcover, mirror, config.profiles),
+                    confirm=ConfirmTokens(clock),
                 )
             )
             async with AsyncExitStack() as stack:

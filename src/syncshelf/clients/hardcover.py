@@ -25,6 +25,9 @@ __all__ = [
     "UPDATE_READ",
     "INSERT_READ",
     "DELETE_READ",
+    "DELETE_USER_BOOK",
+    "DELETE_JOURNALS",
+    "JOURNAL",
     "BOOK_EDITIONS",
     "USER_BOOK",
     "UPDATE_USER_BOOK",
@@ -259,6 +262,31 @@ mutation DeleteRead($id: Int!) {
 }
 """
 """Deletes one read."""
+
+DELETE_USER_BOOK = """
+mutation DeleteUserBook($id: Int!) {
+  delete_user_book(id: $id) { id }
+}
+"""
+"""Takes a book off the shelves, reads and all, but leaves its reading journal (§3.3.1 trap
+4): :data:`DELETE_JOURNALS` goes after it."""
+
+DELETE_JOURNALS = """
+mutation DeleteJournals($book_id: Int!) {
+  delete_reading_journals_for_book(book_id: $book_id) { ids }
+}
+"""
+"""Deletes the caller's reading-journal rows for a book."""
+
+JOURNAL = """
+query Journal($book_id: Int!, $user_id: Int!) {
+  reading_journals(
+    where: {user_id: {_eq: $user_id}, book_id: {_eq: $book_id}}, limit: 1
+  ) { id }
+}
+"""
+"""Whether the user has journal rows for a book (cost 1). Hardcover refuses an aggregate
+here (403), so this fetches at most one row."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {

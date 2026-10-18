@@ -69,6 +69,9 @@ class FakeHardcover:
         """The date Hardcover stamps on the reads it invents (FakeClock.START's)."""
         self.writes: list[tuple[str, int, dict[str, Any]]] = []
         """Each applied mutation: its name, the user_book id and the fields it set."""
+        self.journals: dict[int, list[dict[str, Any]]] = {}
+        """Each user's reading-journal rows, ``{id, book_id}``: one per write to a shelved book,
+        and left behind when the book is removed (§3.3.1 trap 4)."""
         self.callers: list[int] = []
         """The user id whose token sent each request, in the same order."""
         self.daily_remaining = 5000
@@ -276,6 +279,15 @@ class FakeHardcover:
             "InsertRead": self._insert_read,
             "UpdateRead": self._update_read,
             "DeleteRead": self._delete_read,
+            "DeleteUserBook": self._delete_user_book,
+            "DeleteJournals": self._delete_journals,
+            "Journal": lambda uid, v: {
+                "reading_journals": [
+                    {"id": j["id"]}
+                    for j in self.journals.get(uid, [])
+                    if j["book_id"] == v["book_id"]
+                ][:1]
+            },
             "BookEditions": self._book_editions,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
@@ -368,7 +380,25 @@ class FakeHardcover:
         elif row["status_id"] != before:
             self._status_traps(row, before)
         self.writes.append(("insert_user_book", row["id"], obj))
+        self.add_journal(user_id, row["book_id"])
         return {"insert_user_book": {"id": row["id"], "error": None}}
+
+    def add_journal(self, user_id: int, book_id: int) -> None:
+        """One reading-journal row, as Hardcover writes for any change to a shelved book."""
+        self.journals.setdefault(user_id, []).append({"id": next(self._ids), "book_id": book_id})
+
+    def _delete_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        row = next(r for r in self.user_books[user_id] if r["id"] == variables["id"])
+        self.user_books[user_id].remove(row)  # its journal rows stay (trap 4)
+        self.writes.append(("delete_user_book", row["id"], {}))
+        return {"delete_user_book": {"id": row["id"]}}
+
+    def _delete_journals(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        mine = self.journals.get(user_id, [])
+        gone = [j["id"] for j in mine if j["book_id"] == variables["book_id"]]
+        self.journals[user_id] = [j for j in mine if j["id"] not in gone]
+        self.writes.append(("delete_reading_journals_for_book", variables["book_id"], {}))
+        return {"delete_reading_journals_for_book": {"ids": gone}}
 
     def _update_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         obj = dict(variables["object"])
@@ -380,6 +410,7 @@ class FakeHardcover:
         if row["status_id"] != before:
             self._status_traps(row, before)
         self.writes.append(("update_user_book", row["id"], obj))
+        self.add_journal(user_id, row["book_id"])
         return {"update_user_book": {"id": row["id"], "error": None}}
 
     def _status_traps(self, row: dict[str, Any], before: int | None) -> None:

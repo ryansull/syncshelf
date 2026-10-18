@@ -27,7 +27,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
@@ -35,9 +35,12 @@ from typing import Any, Final
 
 from syncshelf.clients.hardcover import (
     BOOK_EDITIONS,
+    DELETE_JOURNALS,
     DELETE_READ,
+    DELETE_USER_BOOK,
     INSERT_READ,
     INSERT_USER_BOOK,
+    JOURNAL,
     UPDATE_READ,
     UPDATE_USER_BOOK,
     USER_BOOK,
@@ -63,6 +66,7 @@ __all__ = [
     "NotShelved",
     "OpenReadExists",
     "ReadNotFound",
+    "Removal",
     "ReadStillOpen",
     "Start",
     "Target",
@@ -393,7 +397,8 @@ class Applier:
         nothing for it; ``first_started_reading_date`` still follows (rule 6).
 
         Raises :class:`NotShelved`, :class:`ReadNotFound` or :class:`DatesOutOfOrder` before
-        anything is written.
+        anything is written, and :class:`Incomplete` when the read changed but the first-start
+        date didn't: the same call again completes it.
         """
         async with self._locks[profile]:
             client = self._clients[profile]
@@ -426,9 +431,113 @@ class Applier:
                 applied.changes.append(change)
                 _log_change(profile, book_id, change, trigger)
                 reads[reads.index(old)] = new
+            try:
+                # Even with the read already right: a retry after this failed completes it.
                 await self._first_started(client, current, reads)
-                await self._write_through(client, profile, book_id)
+            except HardcoverError as exc:
+                if applied.changes:
+                    raise Incomplete(str(exc)) from exc
+                raise
+            finally:
+                if applied.changes:
+                    await self._write_through(client, profile, book_id)
             return applied
+
+    async def remove_book(
+        self,
+        profile: str,
+        book_id: int,
+        confirm: Callable[[dict[str, Any], bool], bool],
+        *,
+        trigger: str = "claude",
+    ) -> Removal:
+        """Take a book off ``profile``'s shelves (§3.3.9 ``remove_book``), if ``confirm`` says
+        so on seeing it fresh: the user_book (reads included) and whether it has journal rows.
+        A deletion runs outside the procedure (rule 8); the confirm runs under the apply lock,
+        so nothing changes between what it saw and what is deleted.
+
+        Raises :class:`NotShelved`. Once the book is gone, a failure to delete its journal
+        doesn't raise: the :class:`Removal` says so.
+        """
+        async with self._locks[profile]:
+            client = self._clients[profile]
+            current = await self._fetch(client, book_id)
+            if current is None:
+                raise NotShelved(book_id)
+            result = await client.execute(
+                JOURNAL, {"book_id": book_id, "user_id": await client.me_id()}
+            )
+            has_journal = bool(result.data.get("reading_journals"))
+            if not confirm(current, has_journal):
+                return Removal(current, has_journal, removed=False)
+            result = await client.execute(DELETE_USER_BOOK, {"id": current["id"]})
+            check_mutation(result.data, "delete_user_book")
+            _log_change(profile, book_id, Change("user_book", current["id"], None), trigger)
+            try:
+                await self._mirror.write_through(profile, book_id, None)
+            except Exception:
+                log.warning(
+                    "the book was removed, but the copy still has it until its refresh",
+                    exc_info=True,
+                    extra={
+                        "event": "write_through_failed",
+                        "profile": profile,
+                        "hc_book_id": book_id,
+                    },
+                )
+            removal = Removal(current, has_journal, removed=True)
+            if has_journal:
+                try:
+                    result = await client.execute(DELETE_JOURNALS, {"book_id": book_id})
+                    check_mutation(result.data, "delete_reading_journals_for_book")
+                except HardcoverError as exc:
+                    # Trap 4's leftovers: harmless history, shown on Hardcover only.
+                    log.warning(
+                        "the book was removed, but its reading journal wasn't",
+                        exc_info=True,
+                        extra={"event": "journal_left", "profile": profile, "hc_book_id": book_id},
+                    )
+                    removal.journal_error = str(exc)
+            return removal
+
+    async def delete_read(
+        self,
+        profile: str,
+        book_id: int,
+        read_id: int,
+        confirm: Callable[[dict[str, Any]], bool],
+        *,
+        trigger: str = "claude",
+    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        """Delete one read (§3.3.9 ``correct_read(delete=true)``), if ``confirm`` says so on
+        seeing the user_book fresh, under the apply lock. ``first_started_reading_date``
+        follows the reads left (rule 6).
+
+        Returns the user_book seen, the read, and whether it was deleted. Raises
+        :class:`NotShelved` or :class:`ReadNotFound`; and :class:`Incomplete` when the read
+        is gone but the first-start date couldn't follow.
+        """
+        async with self._locks[profile]:
+            client = self._clients[profile]
+            current = await self._fetch(client, book_id)
+            if current is None:
+                raise NotShelved(book_id)
+            reads = list(current.get("user_book_reads") or [])
+            old = next((r for r in reads if r["id"] == read_id), None)
+            if old is None:
+                raise ReadNotFound(read_id)
+            if not confirm(current):
+                return current, old, False
+            await self._write_read(client, DELETE_READ, {"id": read_id}, None)
+            _log_change(profile, book_id, Change("read", _shown(old), None), trigger)
+            reads.remove(old)
+            try:
+                await self._first_started(client, current, reads)
+            except HardcoverError as exc:
+                raise Incomplete(str(exc)) from exc
+            finally:
+                await self._write_through(client, profile, book_id)
+            return current, old, True
 
     async def _write_read(
         self,
@@ -665,6 +774,18 @@ class DatesOutOfOrder(Exception):
         super().__init__(started_on, finished_on)
         self.started_on = started_on
         self.finished_on = finished_on
+
+
+@dataclass
+class Removal:
+    """What :meth:`Applier.remove_book` saw, and what it did."""
+
+    user_book: dict[str, Any]
+    """The user_book as it was, reads included: the values to restore it from."""
+    has_journal: bool
+    removed: bool
+    journal_error: str | None = None
+    """Why the journal rows were left, when deleting them failed after the book went."""
 
 
 class ReadNotFound(Exception):
