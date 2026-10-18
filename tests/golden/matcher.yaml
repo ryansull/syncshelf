@@ -1,0 +1,68 @@
+# The matcher's normalisation and scoring helpers (SPEC §3.4a.5). The 4a matcher chain adds
+# its own cases to this file. These cases are the decision table: when a case and the spec
+# disagree, fix the case first, then the code (AGENTS.md).
+#
+# Step order: 6 and 7 run before punctuation is dropped, provisionally (#105).
+
+normalise:
+  - {in: "Dune", out: "dune"}
+  - {in: "  The   Hobbit ", out: "hobbit"}
+  - {in: "A Wizard of Earthsea", out: "wizard of earthsea"}
+  - {in: "An Ember in the Ashes", out: "ember in the ashes"}
+  - {in: "Theory of Everything", out: "theory of everything"}   # "the" only as a word
+  - {in: "Les Misérables", out: "les miserables"}               # 1: diacritics
+  - {in: "ÆON", out: "æon"}                                     # 1: no decomposition, kept
+  - {in: "STRASSE", out: "strasse"}                             # 2: casefold
+  - {in: "Straße", out: "strasse"}                              # 2: casefold, not lower
+  - {in: "Pride & Prejudice", out: "pride and prejudice"}       # 3
+  - {in: "Dune: Messiah", out: "dune messiah"}                  # 4
+  - {in: "Don't Panic!", out: "don t panic"}                    # 4: a space per mark
+  - {in: "Sci-Fi—Stories", out: "sci fi stories"}               # 4: dashes too
+  - {in: "The Way of Kings (The Stormlight Archive, #1)", out: "way of kings"}   # 6
+  - {in: "Skin Game (The Dresden Files, #15.5)", out: "skin game"}              # 6: decimals
+  - {in: "Mistborn (Mistborn #1)", out: "mistborn"}                             # 6: no comma
+  - {in: "Dune (40th Anniversary Edition)", out: "dune 40th anniversary edition"}  # 6: no #N
+  - {in: "Herbert, Frank", out: "frank herbert"}                # 7
+  - {in: "Le Guin, Ursula K.", out: "ursula k le guin"}         # 7
+  - {in: "Tolkien, J.R.R.", out: "j r r tolkien"}               # 7, then 4
+  - {in: "Me, Myself, and I", out: "me myself and i"}           # 7: only one comma swaps
+  - {in: "", out: ""}
+
+# Title score = max(token_sort_ratio of the full titles, token_sort_ratio of each title
+# before ':'), on normalised text. Author score = the best token_sort_ratio of the source's
+# primary author against each candidate author.
+title_score:
+  - {source: "Dune", candidate: "Dune", at_least: 100}
+  - {source: "The Hobbit", candidate: "Hobbit", at_least: 100}
+  - {source: "Dune", candidate: "Dune: Book One", at_least: 100}       # subtitle on one side
+  - {source: "Dune: Deluxe", candidate: "Dune", at_least: 100}
+  - {source: "The Way of Kings (The Stormlight Archive, #1)", candidate: "The Way of Kings", at_least: 100}
+  - {source: "Way Kings of", candidate: "The Way of Kings", at_least: 100}   # token sort
+  - {source: "Dune", candidate: "Dune Messiah", below: 95}
+  - {source: "Dune", candidate: "Children of Dune", below: 60}
+  - {source: "", candidate: "Dune", below: 1}
+
+author_score:
+  - {source: "Frank Herbert", candidates: ["Frank Herbert"], at_least: 100}
+  - {source: "Herbert, Frank", candidates: ["Frank Herbert"], at_least: 100}
+  - {source: "Frank Herbert", candidates: ["Brian Herbert", "Frank Herbert"], at_least: 100}
+  - {source: "Ursula K. Le Guin", candidates: ["Ursula K. Le Guin"], at_least: 100}
+  # A known weakness for 4a's calibration: spacing inside a surname splits a token.
+  - {source: "Ursula K. Le Guin", candidates: ["Ursula K. LeGuin"], at_least: 70, below: 90}
+  - {source: "Frank Herbert", candidates: ["Kevin J. Anderson"], below: 50}
+  - {source: "Frank Herbert", candidates: [], below: 1}
+
+# Decisions over a ranked candidate list: [title score, author score] per candidate, best
+# first. auto_accept: title >= 95, author >= 90, runner-up title at least 10 lower.
+# likely (check_books): title >= 85, author >= 80, same margin.
+decide:
+  - {candidates: [[100, 100]], auto_accept: true, likely: true}
+  - {candidates: [[95, 90]], auto_accept: true, likely: true}           # the edges accept
+  - {candidates: [[94.9, 100]], auto_accept: false, likely: true}
+  - {candidates: [[100, 89.9]], auto_accept: false, likely: true}
+  - {candidates: [[100, 100], [90, 100]], auto_accept: true, likely: true}   # margin 10
+  - {candidates: [[100, 100], [90.1, 100]], auto_accept: false, likely: false}  # ambiguous
+  - {candidates: [[85, 80]], auto_accept: false, likely: true}
+  - {candidates: [[84.9, 100]], auto_accept: false, likely: false}
+  - {candidates: [[100, 79.9]], auto_accept: false, likely: false}
+  - {candidates: [], auto_accept: false, likely: false}
