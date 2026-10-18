@@ -5,10 +5,11 @@ test sets up with :meth:`FakeHardcover.add_user` and :meth:`FakeHardcover.add_us
 have exactly the shape the library query returns, which the contract test checks against the
 recorded fixture.
 
-Traps reproduced so far (§3.3.10): the silent 1000-row cap on every list field, 429 with
-``Retry-After``, and a 200 whose mutation result carries ``error``. Later tickets add the write
-traps (auto "today" reads, upsert resetting omitted fields, journals left by a delete, lagging
-aggregates).
+Traps reproduced (§3.3.10): the silent 1000-row cap on every list field, 429 with
+``Retry-After``, a 200 whose mutation result carries ``error``, and the status traps: becoming
+Currently Reading opens a read dated :attr:`FakeHardcover.today`, and becoming Read stamps the
+open read's finish with today (or adds a read finished today). A read update resets any field
+it leaves out, so only full objects keep their values.
 """
 
 import copy
@@ -25,6 +26,8 @@ import httpx2
 
 URL = "https://api.hardcover.app/v1/graphql"
 ROW_CAP = 1000
+READ_FIELDS = ("started_at", "finished_at", "edition_id", "progress_pages", "progress_seconds")
+"""The read fields a full ``DatesReadInput`` carries."""
 """Hardcover returns at most this many rows for any list field, without saying so."""
 
 _OPERATION = re.compile(r"\b(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -62,6 +65,8 @@ class FakeHardcover:
         library query's. Shelving a book adds it."""
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
+        self.today = "2100-01-01"
+        """The date Hardcover stamps on the reads it invents (FakeClock.START's)."""
         self.writes: list[tuple[str, int, dict[str, Any]]] = []
         """Each applied mutation: its name, the user_book id and the fields it set."""
         self.callers: list[int] = []
@@ -268,6 +273,10 @@ class FakeHardcover:
             "UserBook": lambda uid, v: {"user_books": self._user_book(uid, v)},
             "InsertUserBook": self._insert_user_book,
             "UpdateUserBook": self._update_user_book,
+            "InsertRead": self._insert_read,
+            "UpdateRead": self._update_read,
+            "DeleteRead": self._delete_read,
+            "BookEditions": self._book_editions,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
             "Search": self._search,
@@ -348,7 +357,16 @@ class FakeHardcover:
         row = existing[0] if existing else self.add_user_book(user_id, book_id)
         if not existing:
             row["privacy_setting_id"] = obj.pop("privacy_setting_id", 1)
+        start, finish = obj.pop("user_start_date", None), obj.pop("user_date", None)
+        before = row["status_id"] if existing else None
+        if "edition_id" in obj:
+            row["edition_id"] = obj["edition_id"]
         _apply_fields(row, obj)
+        if not existing and (start or finish):
+            # A status set with its dates in one call creates exactly that read (§3.3.1).
+            self._add_read(row, start, finish, row.get("edition_id"))
+        elif row["status_id"] != before:
+            self._status_traps(row, before)
         self.writes.append(("insert_user_book", row["id"], obj))
         return {"insert_user_book": {"id": row["id"], "error": None}}
 
@@ -357,9 +375,93 @@ class FakeHardcover:
         if error := _rating_error(obj):
             return {"update_user_book": {"id": None, "error": error}}
         row = next(r for r in self.user_books[user_id] if r["id"] == variables["id"])
+        before = row["status_id"]
         _apply_fields(row, obj)
+        if row["status_id"] != before:
+            self._status_traps(row, before)
         self.writes.append(("update_user_book", row["id"], obj))
         return {"update_user_book": {"id": row["id"], "error": None}}
+
+    def _status_traps(self, row: dict[str, Any], before: int | None) -> None:
+        """Hardcover's invented dates (§3.3.1 trap 1)."""
+        reads = row["user_book_reads"]
+        if row["status_id"] == 2:
+            self._add_read(row, self.today, None, row.get("edition_id"))
+            row["first_started_reading_date"] = row.get("first_started_reading_date") or self.today
+        elif row["status_id"] == 3:
+            open_read = next((r for r in reads if r["started_at"] and not r["finished_at"]), None)
+            if open_read is not None:
+                open_read["finished_at"] = self.today
+            else:
+                self._add_read(row, None, self.today, row.get("edition_id"))
+
+    def _add_read(
+        self, row: dict[str, Any], start: str | None, finish: str | None, edition: int | None
+    ) -> dict[str, Any]:
+        read = read_row(next(self._ids), start, finish, edition, self.format_of(edition))
+        row["user_book_reads"].append(read)
+        return read
+
+    def format_of(self, edition_id: int | None) -> int | None:
+        """The ``reading_format_id`` of an edition: a book's default audio (2), ebook (4) or
+        physical (1) edition, as the catalog has them."""
+        if edition_id is None:
+            return None
+        for book in self.catalog.values():
+            for key, fmt in (
+                ("default_audio_edition", 2),
+                ("default_ebook_edition", 4),
+                ("default_physical_edition", 1),
+            ):
+                if (book.get(key) or {}).get("id") == edition_id:
+                    return fmt
+        return None
+
+    def _find_read(self, user_id: int, read_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        for row in self.user_books[user_id]:
+            for read in row["user_book_reads"]:
+                if read["id"] == read_id:
+                    return row, read
+        raise AssertionError(f"no read {read_id}")
+
+    def _insert_read(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        row = next(r for r in self.user_books[user_id] if r["id"] == variables["user_book_id"])
+        obj = variables["read"]
+        read = self._add_read(
+            row, obj.get("started_at"), obj.get("finished_at"), obj.get("edition_id")
+        )
+        self.writes.append(("insert_user_book_read", read["id"], dict(obj)))
+        return {"insert_user_book_read": {"id": read["id"], "error": None}}
+
+    def _update_read(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        _, read = self._find_read(user_id, variables["id"])
+        obj = variables["read"]
+        # A field left out is reset: only full objects keep their values.
+        for key in (
+            "started_at",
+            "finished_at",
+            "edition_id",
+            "progress_pages",
+            "progress_seconds",
+        ):
+            read[key] = obj.get(key)
+        edition = read["edition_id"]
+        read["edition"] = (
+            None if edition is None else {"reading_format_id": self.format_of(edition)}
+        )
+        self.writes.append(("update_user_book_read", read["id"], dict(obj)))
+        return {"update_user_book_read": {"id": read["id"], "error": None}}
+
+    def _delete_read(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        row, read = self._find_read(user_id, variables["id"])
+        row["user_book_reads"].remove(read)
+        self.writes.append(("delete_user_book_read", read["id"], {}))
+        return {"delete_user_book_read": {"id": read["id"], "error": None}}
+
+    def _book_editions(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        book = self.catalog.get(variables["book_id"])
+        keys = ("default_audio_edition", "default_ebook_edition", "default_physical_edition")
+        return {"books": [{k: book.get(k) for k in keys}] if book else []}
 
     def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         book = self.catalog.get(variables["book_id"])

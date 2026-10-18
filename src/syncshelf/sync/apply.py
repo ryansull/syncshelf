@@ -15,30 +15,54 @@ Goodreads (4a), ABS (5) and Chaptarr (6) syncs later. Given a profile, a book an
 - **writes through** to the mirror after success, and returns what changed with the prior
   values, so a caller can undo.
 
-Read operations (start, finish, correct) and undoing the reads Hardcover invents on a status
-change land with #91.
+A target may also carry one read operation, :class:`Start` or :class:`Finish`. After a status
+write, every read Hardcover invented (a "today" read it opened, a "today" finish it stamped) is
+undone against a snapshot taken first, and the intended read is then written explicitly, with
+full objects only. A finish adopts a read already logged within 14 days, or completes an open
+read; ``first_started_reading_date`` is kept to the earliest start (rules 4–6).
 """
 
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 from typing import Any, Final
 
 from syncshelf.clients.hardcover import (
+    BOOK_EDITIONS,
+    DELETE_READ,
+    INSERT_READ,
     INSERT_USER_BOOK,
+    UPDATE_READ,
     UPDATE_USER_BOOK,
     USER_BOOK,
     HardcoverClient,
+    HardcoverError,
     HardcoverQueryError,
     check_mutation,
 )
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.mirror import Mirror
 
-__all__ = ["UNSET", "Applied", "Applier", "Change", "NotShelved", "Target"]
+__all__ = [
+    "UNSET",
+    "Applied",
+    "Applier",
+    "Change",
+    "DateNeeded",
+    "Finish",
+    "FormatNeeded",
+    "Incomplete",
+    "NotShelved",
+    "OpenReadExists",
+    "ReadStillOpen",
+    "Start",
+    "Target",
+]
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +87,35 @@ class Target:
     review: Settable[str | None] = UNSET
     """Markdown, or ``None`` to clear the review and its spoiler flag."""
     review_has_spoilers: Settable[bool] = UNSET
+    read: ReadOp | None = None
+    """A read to start or finish, with its dates (rule 5)."""
+
+
+class Incomplete(Exception):
+    """A change partly landed: its status was written, but fixing the reads after it failed.
+    The same call again completes it (rule 9)."""
+
+
+class ReadStillOpen(Exception):
+    """A finish that wouldn't complete the read left open (it started later, or ``reread``),
+    which would then dangle under Read."""
+
+    def __init__(self, started_on: str) -> None:
+        super().__init__(started_on)
+        self.started_on = started_on
+
+
+PENDING_TTL = 3600.0
+"""How long an unfinished change waits for the same call to complete it (seconds)."""
+
+
+@dataclass
+class _Pending:
+    target: Target
+    snapshot: list[dict[str, Any]]
+    landed: list[Change]
+    """What the earlier attempt(s) already changed, reported again when the change completes."""
+    at: float
 
 
 class NotShelved(Exception):
@@ -109,6 +162,10 @@ class Applier:
         self._mirror = mirror
         self._profiles = profiles
         self._locks = {profile: asyncio.Lock() for profile in clients}
+        self._pending: dict[tuple[str, int], _Pending] = {}
+        """Changes whose read fix-up failed, by (profile, book): asking the same change again
+        completes it against the reads from before it began (rule 9). Kept in memory only, so
+        a restart in between loses it, and the invented reads stay until edited."""
 
     def lock(self, profile: str) -> asyncio.Lock:
         """The profile's apply lock (§2.2). A sync run holds it from its Hardcover fetch through
@@ -129,10 +186,11 @@ class Applier:
         ``trigger`` names who asked, for the change log (§2.7). ``locked`` says the caller
         already holds :meth:`lock`; otherwise this call takes it.
 
-        Raises :class:`NotShelved` when the book isn't shelved and ``target`` has no status,
-        and a :class:`~syncshelf.clients.hardcover.HardcoverError` when Hardcover refuses or
-        can't be reached before anything is written. Once a write has landed, nothing after it
-        (the write-through) can make this call fail: the changes are always returned.
+        Raises :class:`NotShelved`, :class:`DateNeeded`, :class:`OpenReadExists` or
+        :class:`FormatNeeded` before anything is written, and a
+        :class:`~syncshelf.clients.hardcover.HardcoverError` when Hardcover refuses or can't be
+        reached. A failure after the first write leaves the change to a rerun, which completes
+        it (rule 9). Nothing after the last write (the write-through) can make this call fail.
         """
         if locked:
             return await self._apply(profile, book_id, target, trigger)
@@ -141,20 +199,186 @@ class Applier:
 
     async def _apply(self, profile: str, book_id: int, target: Target, trigger: str) -> Applied:
         client = self._clients[profile]
+        key = (profile, book_id)
         current = await self._fetch(client, book_id)
         wanted = _wanted(target)
+        op = target.read
+        pending = self._replay(key, target)
+        # A replay is judged against the reads before the change began, not against what
+        # Hardcover invented when its first attempt's status write landed.
+        basis = pending.snapshot if pending else list((current or {}).get("user_book_reads") or [])
+        edition = await self._edition(client, book_id, current, op, basis)
         if current is None:
             if "status_id" not in wanted:
                 raise NotShelved(book_id)
-            applied = await self._insert(client, profile, book_id, wanted)
+            applied = await self._insert(client, profile, book_id, wanted, op, edition)
         else:
+            _check(target, op, basis)
             applied = await self._update(client, current, wanted)
-        # Logged as soon as Hardcover has them, whatever happens next.
-        for change in applied.changes:
+        for change in applied.changes:  # logged as soon as Hardcover has them
             _log_change(profile, book_id, change, trigger)
+        earlier = pending.landed if pending else []
+        status_written = current is None or any(c.field == "status_id" for c in applied.changes)
+        if status_written or op is not None or pending:
+            # Undo every read Hardcover invented, then write the one asked for (rule 4).
+            landed = earlier + applied.changes
+            self._pending[key] = _Pending(target, basis, landed, time.monotonic())
+            fixes: list[Change] = []
+            try:
+                await self._reconcile(client, book_id, basis, op, edition, fixes)
+            except HardcoverError as exc:
+                for change in fixes:
+                    _log_change(profile, book_id, change, trigger)
+                self._pending[key].landed = landed + fixes
+                raise Incomplete(str(exc)) from exc
+            del self._pending[key]
+            for change in fixes:
+                _log_change(profile, book_id, change, trigger)
+            applied.changes[:] = earlier + applied.changes + fixes
         if applied.changes:
             await self._write_through(client, profile, book_id)
         return applied
+
+    def _replay(self, key: tuple[str, int], target: Target) -> _Pending | None:
+        """The unfinished change for this book, when ``target`` is that same change asked
+        again in time; otherwise it's dropped, and its leftovers stay as they are."""
+        pending = self._pending.get(key)
+        if pending is None:
+            return None
+        if pending.target == target and time.monotonic() - pending.at < PENDING_TTL:
+            return pending
+        del self._pending[key]
+        log.warning(
+            "a partly done change to a book was replaced by a different one before it finished",
+            extra={"event": "change_abandoned", "profile": key[0], "hc_book_id": key[1]},
+        )
+        return None
+
+    async def _edition(
+        self,
+        client: HardcoverClient,
+        book_id: int,
+        current: dict[str, Any] | None,
+        op: ReadOp | None,
+        reads: list[dict[str, Any]],
+    ) -> int | None:
+        """The edition a read written for ``op`` carries (§3.3.5): the book's default edition
+        for the format. With no format, a finish may complete an open read or adopt a nearby
+        one, which keep their own editions; otherwise the format is needed."""
+        if op is None:
+            return None
+        if op.format is None:
+            adoptable = isinstance(op, Finish) and not op.reread and current is not None
+            if adoptable and (_open_read(reads, op.on) or _near(reads, op.on)):
+                return None
+            raise FormatNeeded
+        if current is not None:
+            book = current.get("book") or {}
+        else:
+            result = await client.execute(BOOK_EDITIONS, {"book_id": book_id})
+            books = result.data.get("books") or []
+            book = books[0] if books else {}
+        return (book.get(EDITION_FOR[op.format]) or {}).get("id")
+
+    async def _reconcile(
+        self,
+        client: HardcoverClient,
+        book_id: int,
+        snapshot: list[dict[str, Any]],
+        op: ReadOp | None,
+        edition: int | None,
+        changes: list[Change],
+    ) -> None:
+        """Bring the reads back to ``snapshot`` and write the read ``op`` asks for, in as few
+        full-object writes as possible (rules 4–6). Each read change made is appended to
+        ``changes`` as it lands, so a failure part-way still accounts for it."""
+        after = await self._fetch(client, book_id)
+        if after is None:
+            return
+        before = {r["id"]: r for r in snapshot}
+        # The open read a finish completes: it becomes the finished read in one write, stamped
+        # by Hardcover or not.
+        completes = None
+        if isinstance(op, Finish) and not op.reread:
+            completes = _open_read(snapshot, op.on)
+        done = False
+        kept: list[dict[str, Any]] = []
+        for read in after.get("user_book_reads") or []:
+            old = before.get(read["id"])
+            if old is not None and completes is not None and read["id"] == completes["id"]:
+                assert isinstance(op, Finish)
+                intended = _full(
+                    old,
+                    finished_at=op.on,
+                    started_at=op.started or old.get("started_at"),
+                    edition_id=edition if op.format else old.get("edition_id"),
+                )
+                await self._write_read(client, UPDATE_READ, {"id": read["id"]}, intended)
+                new = {**read, **intended}
+                changes.append(Change("read", _shown(old), _shown(new, op.format)))
+                kept.append(new)
+                done = True
+            elif old is not None:
+                if any(read.get(k) != old.get(k) for k in READ_FIELDS):
+                    await self._write_read(client, UPDATE_READ, {"id": read["id"]}, _full(old))
+                kept.append({**read, **{k: old.get(k) for k in READ_FIELDS}})
+            elif not done and op is not None and _is_intended(read, op, edition):
+                kept.append(read)  # the read an insert with dates created, as asked
+                done = True
+                changes.append(Change("read", None, _shown(read, op.format)))
+            else:
+                await self._write_read(client, DELETE_READ, {"id": read["id"]}, None)
+        if op is not None and not done:
+            if isinstance(op, Finish) and not op.reread and _near(kept, op.on) is not None:
+                pass  # already logged, within days of this finish
+            else:
+                started = op.started if isinstance(op, Finish) else op.on
+                fields = {
+                    "started_at": started,
+                    "finished_at": op.on if isinstance(op, Finish) else None,
+                    "edition_id": edition,
+                    "progress_pages": None,
+                    "progress_seconds": None,
+                }
+                result = await self._write_read(
+                    client, INSERT_READ, {"user_book_id": after["id"]}, fields
+                )
+                new = {"id": result["id"], **fields}
+                kept.append(new)
+                changes.append(Change("read", None, _shown(new, op.format)))
+        await self._first_started(client, after, kept)
+
+    async def _first_started(
+        self, client: HardcoverClient, user_book: dict[str, Any], reads: list[dict[str, Any]]
+    ) -> None:
+        """Set ``first_started_reading_date`` to the earliest read's start (rule 6). Hardcover
+        never recomputes it, and stamps it on the reads it invents."""
+        starts = [r["started_at"][:10] for r in reads if r.get("started_at")]
+        earliest = min(starts, default=None)
+        if earliest != (user_book.get("first_started_reading_date") or None):
+            result = await client.execute(
+                UPDATE_USER_BOOK,
+                {"id": user_book["id"], "object": {"first_started_reading_date": earliest}},
+            )
+            check_mutation(result.data, "update_user_book")
+
+    async def _write_read(
+        self,
+        client: HardcoverClient,
+        mutation: str,
+        ids: dict[str, int],
+        read: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        variables: dict[str, Any] = dict(ids)
+        if read is not None:
+            variables["read"] = read
+        result = await client.execute(mutation, variables)
+        name = {
+            INSERT_READ: "insert_user_book_read",
+            UPDATE_READ: "update_user_book_read",
+            DELETE_READ: "delete_user_book_read",
+        }[mutation]
+        return check_mutation(result.data, name)
 
     async def _write_through(self, client: HardcoverClient, profile: str, book_id: int) -> None:
         """Re-fetch the user_book and upsert it into the copy (§3.3.4, Write-through). Best
@@ -176,7 +400,13 @@ class Applier:
         return rows[0] if rows else None
 
     async def _insert(
-        self, client: HardcoverClient, profile: str, book_id: int, wanted: dict[str, Any]
+        self,
+        client: HardcoverClient,
+        profile: str,
+        book_id: int,
+        wanted: dict[str, Any],
+        op: ReadOp | None,
+        edition: int | None,
     ) -> Applied:
         obj: dict[str, Any] = {
             "book_id": book_id,
@@ -184,6 +414,16 @@ class Applier:
         }
         for name, value in wanted.items():
             obj[_FIELDS[name][1]] = value
+        # The read's dates go in the same call (rule 3): Read with user_date, Currently
+        # Reading with user_start_date, and its edition.
+        if isinstance(op, Finish):
+            obj["user_date"] = op.on
+            if op.started:
+                obj["user_start_date"] = op.started
+        elif isinstance(op, Start):
+            obj["user_start_date"] = op.on
+        if op is not None and edition is not None:
+            obj["edition_id"] = edition
         result = await client.execute(INSERT_USER_BOOK, {"object": obj})
         inserted = check_mutation(result.data, "insert_user_book")
         if not isinstance(inserted.get("id"), int):
@@ -209,6 +449,33 @@ class Applier:
             result = await client.execute(UPDATE_USER_BOOK, {"id": current["id"], "object": obj})
             check_mutation(result.data, "update_user_book")
         return Applied(current["id"], inserted=False, changes=changes)
+
+
+def _check(target: Target, op: ReadOp | None, reads: list[dict[str, Any]]) -> None:
+    """Refuse what §3.3.9 refuses, before anything is written. A Read status never sits over a
+    dangling open read."""
+    open_read = _open_read(reads)
+    if open_read is None:
+        return
+    started = open_read["started_at"][:10]
+    if target.status_id == 3 and op is None:
+        raise DateNeeded(started)
+    if isinstance(op, Start):
+        raise OpenReadExists(started)
+    if isinstance(op, Finish) and (op.reread or _open_read(reads, op.on) is None):
+        # This finish wouldn't complete the open read, which would then dangle under Read.
+        raise ReadStillOpen(started)
+
+
+def _is_intended(read: dict[str, Any], op: ReadOp, edition: int | None) -> bool:
+    """Whether a read the write created is exactly the one ``op`` asks for, edition too."""
+    started = (read.get("started_at") or "")[:10] or None
+    finished = (read.get("finished_at") or "")[:10] or None
+    if edition is not None and read.get("edition_id") != edition:
+        return False
+    if isinstance(op, Start):
+        return started == op.on and finished is None
+    return finished == op.on and started == op.started
 
 
 def _wanted(target: Target) -> dict[str, Any]:
@@ -255,3 +522,106 @@ def _review_mark(text: Any) -> str | None:
         return None
     digest = hashlib.sha256(str(text).encode()).hexdigest()[:8]
     return f"{len(str(text))} chars {digest}"
+
+
+# --- reads (#91) --------------------------------------------------------------------------
+
+READ_FIELDS = ("started_at", "finished_at", "edition_id", "progress_pages", "progress_seconds")
+"""A full ``DatesReadInput``: every read write sends all of them (§3.3.1 trap 2)."""
+
+ADOPT_DAYS = 14
+"""A finish this close to an existing read's is that read, logged again (§3.3.6 rule 5)."""
+
+EDITION_FOR = {
+    "audio": "default_audio_edition",
+    "ebook": "default_ebook_edition",
+    "print": "default_physical_edition",
+}
+"""The book's default edition each format's read is written with (§3.3.5)."""
+
+
+@dataclass(frozen=True)
+class Start:
+    """Open a read on ``on`` (an ISO date)."""
+
+    on: str
+    format: str | None = None
+
+
+@dataclass(frozen=True)
+class Finish:
+    """Finish a read on ``on``: complete or adopt an adoptable read, or add one."""
+
+    on: str
+    started: str | None = None
+    format: str | None = None
+    reread: bool = False
+    """Never adopt: always add a new read."""
+
+
+type ReadOp = Start | Finish
+
+
+class DateNeeded(Exception):
+    """Setting Read with no finish date over an open read: ask when it was finished."""
+
+    def __init__(self, started_on: str) -> None:
+        super().__init__(started_on)
+        self.started_on = started_on
+
+
+class OpenReadExists(Exception):
+    """A start asked for while a read is already open: correct that read instead."""
+
+    def __init__(self, started_on: str) -> None:
+        super().__init__(started_on)
+        self.started_on = started_on
+
+
+class FormatNeeded(Exception):
+    """A read must be written but its format can't be told: ask how it was read."""
+
+
+def _open_read(
+    reads: list[dict[str, Any]], on_or_before: str | None = None
+) -> dict[str, Any] | None:
+    """The latest read that has a start and no finish (started on or before a date, if given)."""
+    candidates = [
+        r
+        for r in reads
+        if r.get("started_at")
+        and not r.get("finished_at")
+        and (on_or_before is None or r["started_at"][:10] <= on_or_before)
+    ]
+    return max(candidates, key=lambda r: (r["started_at"], r["id"]), default=None)
+
+
+def _near(reads: list[dict[str, Any]], on: str) -> dict[str, Any] | None:
+    """A read finished within :data:`ADOPT_DAYS` of ``on``. An undated read never is."""
+    day = date.fromisoformat(on)
+    for r in reads:
+        finished = r.get("finished_at")
+        if finished and abs((date.fromisoformat(finished[:10]) - day).days) <= ADOPT_DAYS:
+            return r
+    return None
+
+
+def _full(read: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    """A read as a full ``DatesReadInput``, with ``changes`` over its current values."""
+    return {key: changes.get(key, read.get(key)) for key in READ_FIELDS}
+
+
+def _shown(read: dict[str, Any] | None, fmt: str | None = None) -> dict[str, Any] | None:
+    """A read as a change reports it: id, dates and format."""
+    if read is None:
+        return None
+    format_id = (read.get("edition") or {}).get("reading_format_id")
+    return {
+        "read_id": read["id"],
+        "started_on": (read.get("started_at") or None) and read["started_at"][:10],
+        "finished_on": (read.get("finished_at") or None) and read["finished_at"][:10],
+        "format": fmt or _FORMAT_NAMES.get(format_id or 0),
+    }
+
+
+_FORMAT_NAMES = {1: "print", 2: "audio", 3: "both", 4: "ebook"}
