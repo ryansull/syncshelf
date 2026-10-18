@@ -98,10 +98,32 @@ async def test_a_near_title_is_likely(connect: Any) -> None:
     assert (row["match"], row["book"]["book_id"]) == ("likely", 2)
 
 
-async def test_without_an_author_a_match_is_likely_at_best(connect: Any) -> None:
+async def test_without_an_author_a_title_is_not_found(connect: Any) -> None:
+    # The spec's author score for a missing author is 0, below every threshold.
     async with connect() as mcp:
         [row] = await check(mcp, {"title": "The Way of Kings"})
-    assert row["match"] == "likely"
+    assert row["match"] == "not_found"
+
+
+async def test_only_the_first_of_several_authors_is_used(connect: Any) -> None:
+    async with connect() as mcp:
+        [row] = await check(mcp, {"title": "The Way of Kings",
+                                  "author": "Brandon Sanderson & A. Narrator"})  # fmt: skip
+    assert row["match"] == "exact"
+
+
+async def test_an_id_whose_title_doesnt_fit_is_refused(connect: Any) -> None:
+    async with connect() as mcp:
+        [row] = await check(mcp, {"book_id": 9, "title": "Dune"})
+    assert row["match"] == "not_found" and "Hyperion" in row["error"]
+
+
+async def test_a_book_reads_the_same_by_title_or_id(connect: Any) -> None:
+    async with connect() as mcp:
+        by_title, by_id = await check(
+            mcp, {"title": "The Way of Kings", "author": "Brandon Sanderson"}, {"book_id": 1}
+        )
+    assert by_title["book"] == by_id["book"]
 
 
 async def test_an_author_hardcover_writes_differently_retries_without_the_filter(
@@ -158,15 +180,17 @@ async def test_household_shows_everyones_status(connect: Any) -> None:
 async def test_a_candidate_hardcover_fails_on_says_so_and_the_rest_carry_on(
     connect: Any, fake: FakeHardcover
 ) -> None:
-    fake.fail_next("Search", "unavailable", after=1)
+    fake.fail_next("Search", "unavailable", after=1)  # whichever search goes second
     async with connect() as mcp:
-        first, second = await check(
+        rows = await check(
             mcp,
             {"title": "The Way of Kings", "author": "Brandon Sanderson"},
             {"title": "Name of Wind", "author": "Patrick Rothfuss"},
         )
-    assert first["match"] == "exact"
-    assert (second["match"], second["error"]) == ("not_found", "Hardcover returned HTTP 503")
+    failed = [r for r in rows if "error" in r]
+    assert len(failed) == 1 and failed[0]["match"] == "not_found"
+    assert failed[0]["error"] == "Hardcover returned HTTP 503"
+    assert [r["match"] for r in rows if "error" not in r] in (["exact"], ["likely"])
 
 
 @pytest.mark.parametrize("candidates", [[], [{"title": "x"}] * 21, [{"author": "Only An Author"}]])

@@ -149,6 +149,26 @@ class FakeHardcover:
         }
         doc.update({**defaults, **fields, "id": str(book_id), "title": title})
         self.search_index.append(doc)
+        # The same book, as the books table has it, unless a test already put it there.
+        if book_id not in self.catalog:
+            self.add_book(
+                book_id,
+                title=title,
+                subtitle=doc["subtitle"],
+                release_year=doc.get("release_year"),
+                rating=doc["rating"] or None,
+                pages=doc.get("pages"),
+                cached_contributors=[
+                    {"author": {"id": n, "name": name}, "contribution": "Author"}
+                    for n, name in enumerate(doc["author_names"])
+                ],
+                cached_featured_series=doc["featured_series"] or {},
+                genres=[{"tag": g} for g in doc["genres"]],
+                default_audio_edition={"id": book_id * 10 + 2}
+                if doc.get("has_audiobook")
+                else None,
+                default_ebook_edition={"id": book_id * 10 + 4} if doc.get("has_ebook") else None,
+            )
         return doc
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:

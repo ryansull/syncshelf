@@ -38,9 +38,11 @@ from syncshelf.clients.hardcover import (
     SIMILAR,
     HardcoverClient,
     HardcoverError,
+    Result,
 )
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.matcher import (
+    TITLE_FLOOR,
     Scored,
     author_score,
     auto_accepts,
@@ -1482,9 +1484,7 @@ async def search_books(
                 raise
             incomplete = True  # keep what earlier pages found
             break
-        results = (result.data.get("search") or {}).get("results") or {}
-        found = int(results.get("found") or 0)
-        docs = [h.get("document") or {} for h in results.get("hits") or []]
+        found, docs = _search_results(result)
         page_ids = tuple(i for d in docs if (i := _doc_id(d)) is not None)
         shelves = {name: await bound.db.read(_statuses, name, page_ids) for name in names}
         for doc in docs:
@@ -1572,10 +1572,11 @@ CANDIDATE_HITS = 5
 """Search hits scored per candidate, as the matcher's fuzzy step takes (§3.4a.5)."""
 
 Match = Literal["exact", "likely", "not_found"]
+_AUTHOR_SEPARATORS = re.compile(r"\s*(?:&|;|\band\b|\bwith\b)\s*", re.IGNORECASE)
 
 
 class Candidate(TypedDict, total=False):
-    """A book to check: a title (and, ideally, its author), or a Hardcover book_id."""
+    """A book to check: a title and its author, or a Hardcover book_id."""
 
     title: str
     author: str
@@ -1590,7 +1591,7 @@ class CheckedBook(TypedDict):
     book: NotRequired[SearchHit]
     """The book, when the match is exact or likely; never a closest guess otherwise."""
     error: NotRequired[str]
-    """Why the candidate couldn't be checked this time (Hardcover failed), with not_found."""
+    """Why a not_found row couldn't be checked, or why a given id was refused."""
 
 
 class CheckPage(TypedDict):
@@ -1600,6 +1601,13 @@ class CheckPage(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+
+
+@dataclass
+class _Pick:
+    match: Match = "not_found"
+    book_id: int | None = None
+    error: str | None = None
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -1615,8 +1623,9 @@ async def check_books(
     nearest hit. For open-ended discovery, use search_books instead.
 
     Arguments:
-    - candidates: 1 to 20 items, each {"title": ..., "author": ...} (give the author whenever
-      you know it: without one a match can be likely at best) or {"book_id": ...}.
+    - candidates: 1 to 20 items, each {"title": ..., "author": ...} or {"book_id": ...}.
+      Give the author with a title: a title alone can't be matched. For several authors give
+      the first (the others are ignored). A book_id with a title is checked against it.
     - profile: "me" (the default), another profile's name, or "household" to see everyone's
       shelf status for each book.
 
@@ -1624,68 +1633,86 @@ async def check_books(
     author match closely and nothing else comes near), likely (close, but not enough to be
     sure: say so), or not_found. A matched row has book: book_id, title, author, release_year,
     series and position, community_rating, pages, has_audiobook and has_ebook (whether
-    Hardcover lists those editions), genres, and status (statuses on household answers; null
-    when not shelved). A row with error couldn't be checked this time; try it again.
+    Hardcover has those editions), genres, and status (statuses on household answers; null
+    when not shelved). A not_found row with error couldn't be checked this time (try again),
+    or names why a given book_id was refused.
     """
+    for candidate in candidates:
+        if "book_id" not in candidate and not _text(candidate.get("title")):
+            raise ToolError("Each candidate needs a title (with its author) or a book_id.")
     caller = current_profile()
     bound = services()
     names = resolve_profiles(profile, caller, bound.profiles)
     freshness = await _refresh(bound.mirror, names, caller)
     client = bound.hardcover[names[0]]
+
+    # Titles resolve through search at the same time (the limiter paces them), each distinct
+    # (title, author) once.
+    keys = {_key(c) for c in candidates if "book_id" not in c}
+    resolved: dict[tuple[str, str], _Pick] = {}
+
+    async def resolve(key: tuple[str, str]) -> None:
+        try:
+            resolved[key] = await _resolve(client, *key)
+        except HardcoverError as exc:
+            resolved[key] = _Pick(error=str(exc))
+
+    async with asyncio.TaskGroup() as tg:
+        for key in keys:
+            tg.create_task(resolve(key))
+
+    # Every book matched, title or id, is read the same way in one batched request (§3.4a.5:
+    # hits are hydrated), so a book's row doesn't depend on how it was asked for.
+    wanted = {c["book_id"] for c in candidates if "book_id" in c}
+    wanted |= {p.book_id for p in resolved.values() if p.book_id is not None}
+    books: dict[int, dict[str, Any]] = {}
+    hydrate_error: str | None = None
+    if wanted:
+        try:
+            result = await client.execute(BOOKS_BY_ID, {"ids": sorted(wanted)})
+            books = {b["id"]: b for b in result.data.get("books") or []}
+        except HardcoverError as exc:
+            hydrate_error = str(exc)
+    shelves = {name: await bound.db.read(_statuses, name, tuple(books)) for name in names}
+
     rows: list[CheckedBook] = []
-    found: dict[int, dict[str, Any]] = {}  # matched book id → its document, for the rows
-    by_id = sorted({c["book_id"] for c in candidates if "book_id" in c})
-    id_books: dict[int, dict[str, Any]] = {}
-    id_error: str | None = None
-    if by_id:
-        try:
-            result = await client.execute(BOOKS_BY_ID, {"ids": by_id})
-            id_books = {b["id"]: b for b in result.data.get("books") or []}
-        except HardcoverError as exc:
-            id_error = str(exc)
-    picks: list[tuple[Candidate, Match, int | None, str | None]] = []
     for candidate in candidates:
-        if "book_id" in candidate:
-            book_id = candidate["book_id"]
-            if id_error is not None:
-                picks.append((candidate, "not_found", None, id_error))
-            elif book_id in id_books:
-                found[book_id] = _doc_from_book(id_books[book_id])
-                picks.append((candidate, "exact", book_id, None))
-            else:
-                picks.append((candidate, "not_found", None, None))
-            continue
-        title = (candidate.get("title") or "").strip()
-        if not title:
-            raise ToolError("Each candidate needs a title or a book_id.")
-        try:
-            match, doc = await _resolve(client, title, (candidate.get("author") or "").strip())
-        except HardcoverError as exc:
-            picks.append((candidate, "not_found", None, str(exc)))
-            continue
-        if doc is not None and (book_id := _doc_id(doc)) is not None:
-            found[book_id] = doc
-            picks.append((candidate, match, book_id, None))
-        else:
-            picks.append((candidate, "not_found", None, None))
-    ids = tuple(found)
-    shelves = {name: await bound.db.read(_statuses, name, ids) for name in names}
-    for candidate, match, book_id, error in picks:
-        row = CheckedBook(input=candidate, match=match)
-        if book_id is not None:
-            row["book"] = _search_hit(found[book_id], book_id, names, shelves)
-        if error is not None:
-            row["error"] = error
+        pick = _id_pick(candidate, books) if "book_id" in candidate else resolved[_key(candidate)]
+        if pick.book_id is not None and pick.book_id not in books:
+            pick = _Pick(error=hydrate_error)  # matched, but its details couldn't be read
+        row = CheckedBook(input=candidate, match=pick.match)
+        if pick.book_id is not None:
+            doc = _doc_from_book(books[pick.book_id])
+            row["book"] = _search_hit(doc, pick.book_id, names, shelves)
+        if pick.error is not None:
+            row["error"] = pick.error
         rows.append(row)
     return CheckPage(books=rows, **_freshness(freshness))
 
 
-async def _resolve(
-    client: HardcoverClient, title: str, author: str
-) -> tuple[Match, dict[str, Any] | None]:
+def _key(candidate: Candidate) -> tuple[str, str]:
+    """(title, primary author), as searched and scored."""
+    author = _text(candidate.get("author")) or ""
+    primary = _AUTHOR_SEPARATORS.split(author, maxsplit=1)[0]
+    return (_text(candidate.get("title")) or "", primary)
+
+
+def _id_pick(candidate: Candidate, books: dict[int, dict[str, Any]]) -> _Pick:
+    """A given id is exact when Hardcover has it, unless a title given with it doesn't fit."""
+    book_id = candidate.get("book_id")
+    book = books.get(book_id) if book_id is not None else None
+    if book is None:
+        return _Pick()
+    title = _text(candidate.get("title"))
+    if title and title_score(title, book.get("title") or "") < TITLE_FLOOR:
+        return _Pick(error=f"Book {book_id} is {book.get('title')!r}, not {title!r}.")
+    return _Pick("exact", book_id)
+
+
+async def _resolve(client: HardcoverClient, title: str, author: str) -> _Pick:
     """Search as the matcher's fuzzy step does (§3.4a.5): by normalised title, filtered to the
-    author when there is one, once more without the filter if that finds nothing; then score
-    the hits. Without an author nothing can be exact."""
+    primary author, once more without the filter if that finds nothing; then score the hits.
+    With no author the author score is 0, so nothing matches."""
     variables: dict[str, Any] = {
         "q": normalise(title) or title,
         "filter": _search_filter(author or None, None),
@@ -1693,36 +1720,39 @@ async def _resolve(
         "per": CANDIDATE_HITS,
         "page": 1,
     }
-    docs = await _search_docs(client, variables)
+    _, docs = _search_results(await client.execute(SEARCH, variables))
     if not docs and variables["filter"]:
         variables["filter"] = None
-        docs = await _search_docs(client, variables)
+        _, docs = _search_results(await client.execute(SEARCH, variables))
     scored = sorted(
         (
             (
                 Scored(
                     title_score(title, d.get("title") or ""),
-                    author_score(author, d.get("author_names") or []) if author else 100.0,
+                    author_score(author, d.get("author_names") or []),
                 ),
-                d,
+                book_id,
             )
             for d in docs
+            if (book_id := _doc_id(d)) is not None
         ),
         key=lambda pair: (pair[0].title, pair[0].author),
         reverse=True,
     )
     ranked = [s for s, _ in scored]
-    if author and auto_accepts(ranked):
-        return "exact", scored[0][1]
+    if auto_accepts(ranked):
+        return _Pick("exact", scored[0][1])
     if is_likely(ranked):
-        return "likely", scored[0][1]
-    return "not_found", None
+        return _Pick("likely", scored[0][1])
+    return _Pick()
 
 
-async def _search_docs(client: HardcoverClient, variables: dict[str, Any]) -> list[dict[str, Any]]:
-    result = await client.execute(SEARCH, variables)
+def _search_results(result: Result) -> tuple[int, list[dict[str, Any]]]:
+    """A Search answer's total and its documents."""
     results = (result.data.get("search") or {}).get("results") or {}
-    return [h.get("document") or {} for h in results.get("hits") or []]
+    return int(results.get("found") or 0), [
+        h.get("document") or {} for h in results.get("hits") or []
+    ]
 
 
 def _doc_from_book(book: dict[str, Any]) -> dict[str, Any]:
