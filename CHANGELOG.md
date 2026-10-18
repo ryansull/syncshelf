@@ -6,26 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
-  secret: the Hardcover API token without its `Bearer ` prefix, which is refused). Startup
-  stops on a profile without one, naming the key.
-- A Hardcover API client: it pages a profile's whole library, lists included, past
-  Hardcover's silent 1000-row cap by keyset (so an edit between pages can't skip a row),
-  counts each call's cost, and reads the rate-limit headers.
-- Every Hardcover call goes through a per-profile limiter: bursts of 8, then 1 a second, with
-  Claude's calls served ahead of syncs. A 429 pauses that profile's calls until Hardcover's
-  `Retry-After` (a `hardcover_paused` warning). New config key
-  `cadence.hardcover_daily_reserve` (a whole number, default 1000): below that many requests
-  left for the day, syncs wait for the daily reset (a `hardcover_reserve` warning), while
-  Claude's calls carry on until none are left.
-
-### Changed
-
-- `my_connections`' description now says that a local dev-mode session isn't a connection,
-  so it isn't listed and an empty list is normal there.
-
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
