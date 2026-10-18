@@ -15,7 +15,8 @@ The build spec is [`docs/SPEC.md`](docs/SPEC.md).
 
 **Phase 1 (skeleton), released as v0.1.0.** The package, CI and test harness exist.
 `uv run python -m syncshelf` starts the service on `0.0.0.0:8000` (set by `server.listen`),
-with an MCP endpoint that has no tools yet and a `/healthz` liveness check. Its data lives in
+with an MCP endpoint and a `/healthz` liveness check. Phase 2 (front door and profiles) is in
+progress: `/mcp` now needs a bearer token, and so far only dev mode issues one. Its data lives in
 `/data`, or the existing directory named by `SYNCSHELF_DATA_DIR`. Phases are listed in SPEC §3.
 
 ## Development
@@ -52,7 +53,15 @@ Configuration goes in `profiles.yaml` (git-ignored), modelled on
 `${VAR}` reference to the environment (see `.env.example`) or a `*_file` path. Startup stops on
 bad config with a message naming the key. The file is the only source of profiles: at each
 start, a profile removed from it is marked removed and its Claude connections are revoked, and
-a name added back is restored. The full deployment guide is `docs/runbook.md`, which arrives in
+a name added back is restored.
+
+Every `/mcp` request needs a bearer token; without one it gets 401. With
+`server.auth_mode: dev`, `/mcp` accepts the single static token in `server.dev.token` (from
+`SYNCSHELF_DEV_TOKEN`) as the profile `server.dev.profile`, so Claude Code or MCP Inspector
+can connect to a local instance by sending `Authorization: Bearer <token>`. Dev mode refuses
+to start unless `server.public_url` is on `localhost` or `127.0.0.1`, and logs a warning at
+every start. OAuth sign-in for Claude is not built yet, and with `server.auth_mode` absent no
+token is accepted. The full deployment guide is `docs/runbook.md`, which arrives in
 phase 7. Until then, this section carries the deployment notes.
 
 Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and `:latest`)
@@ -69,8 +78,8 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
 - **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or
   a published port (`-p 8000:8000`) reaches it. Keep port 8000 in the container: the image's
-  health check probes `127.0.0.1:8000`. Phase 1 has no auth, so publish the port on loopback
-  only (`-p 127.0.0.1:8000:8000`), as below.
+  health check probes `127.0.0.1:8000`. Until OAuth sign-in is complete, publish the port on
+  loopback only (`-p 127.0.0.1:8000:8000`), as below.
 
 ```sh
 docker run -d --name syncshelf \

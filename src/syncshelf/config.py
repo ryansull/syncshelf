@@ -17,7 +17,7 @@ import ipaddress
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
@@ -54,9 +54,10 @@ PERMISSIONS = ("chaptarr",)
 """The values ``profiles.<name>.permissions`` may list (§2.8): ``chaptarr`` is the only one."""
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
-"""The only ``server.public_url`` hosts phase 1 accepts. It has no auth, so it must never be
-served under a public name (§3.1, Appendix D4). This guards the configured name only: with
-``server.listen``'s default ``0.0.0.0`` bind, anything that can reach the port reaches it."""
+"""The only ``server.public_url`` hosts dev mode accepts (§3.2.5), and, until OAuth mode is
+complete (#69), the only ones any mode accepts (§3.1, Appendix D4). This guards the configured
+name only: with ``server.listen``'s default ``0.0.0.0`` bind, anything that can reach the port
+reaches it."""
 
 SERVICE_ALIASES: Mapping[str, str] = {
     "hardcover_url": "hardcover",
@@ -92,8 +93,17 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class DevConfig:
+    """``server.dev``: the one static token dev mode accepts, and the profile it acts as."""
+
+    token: str = field(repr=False)
+    profile: str
+    """A configured profile name."""
+
+
+@dataclass(frozen=True)
 class ServerConfig:
-    """The ``server`` section keys that phase 1 reads."""
+    """The ``server`` section keys read so far."""
 
     public_url: str
     """The issuer URL, with no trailing slash."""
@@ -101,12 +111,20 @@ class ServerConfig:
     """Comma-separated addresses or networks, passed to uvicorn's ``--forwarded-allow-ips``."""
     log_level: str = "INFO"
     auth_mode: str | None = None
-    """``oauth`` or ``dev``, or ``None`` when absent. Phase 1 only reports it."""
+    """``oauth`` or ``dev``, or ``None`` when absent, in which case no token is accepted
+    (#73)."""
+    dev: DevConfig | None = None
+    """``server.dev``, read only in dev mode and ``None`` otherwise."""
     access_team_domain: str | None = None
     listen_host: str = DEFAULT_LISTEN_HOST
     """The address uvicorn binds, from ``server.listen``. An IPv6 address has no brackets."""
     listen_port: int = DEFAULT_LISTEN_PORT
     """The port uvicorn binds, from ``server.listen``."""
+
+    @property
+    def dev_mode(self) -> DevConfig | None:
+        """``dev`` when ``auth_mode`` is ``dev``, else ``None``: the one test for dev mode."""
+        return self.dev if self.auth_mode == "dev" else None
 
     @property
     def public_host(self) -> str:
@@ -234,9 +252,12 @@ def load_config(
     _expand_secrets(server_raw, "server", _SERVER_SECRETS, env, secrets)
     _expand_secrets(services_raw, "services", _SERVICE_SECRETS, env, secrets)
     profiles = _profiles(profiles_raw, env, secrets)
+    server = _server(server_raw)
+    if server.auth_mode == "dev":
+        server = replace(server, dev=_dev(secrets, server_raw.get("dev"), profiles))
 
     return Config(
-        server=_server(server_raw),
+        server=server,
         services=_services(services_raw),
         cadence=_cadence(_section(raw, "cadence")),
         profiles=profiles,
@@ -377,6 +398,10 @@ def _url(value: Any, key: str, schemes: tuple[str, ...]) -> SplitResult:
 
 
 def _server(raw: Mapping[str, Any]) -> ServerConfig:
+    auth_mode = raw.get("auth_mode")
+    if auth_mode is not None and auth_mode not in AUTH_MODES:
+        raise ConfigError(f"server.auth_mode: must be one of {', '.join(AUTH_MODES)}")
+
     if "public_url" not in raw:
         raise ConfigError("server.public_url: required")
     public_url = raw["public_url"]
@@ -384,8 +409,13 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
     if parts.query or parts.fragment or public_url.endswith("/"):
         raise ConfigError("server.public_url: must have no trailing slash, query or fragment")
     if parts.hostname not in LOCAL_HOSTS:
+        if auth_mode == "dev":
+            # Dev mode's one static token would let anyone who reached a public name in.
+            raise ConfigError("server.public_url: dev mode serves only localhost or 127.0.0.1")
+        # Lifted for oauth mode once it is complete (#69).
         raise ConfigError(
-            "server.public_url: phase 1 has no auth, so its host must be localhost or 127.0.0.1"
+            "server.public_url: OAuth sign-in isn't complete yet, so the host must be "
+            "localhost or 127.0.0.1"
         )
 
     if "forwarded_allow_ips" not in raw:
@@ -399,10 +429,6 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
     log_level = raw.get("log_level", "INFO")
     if log_level not in LOG_LEVELS:
         raise ConfigError(f"server.log_level: must be one of {', '.join(LOG_LEVELS)}")
-
-    auth_mode = raw.get("auth_mode")
-    if auth_mode is not None and auth_mode not in AUTH_MODES:
-        raise ConfigError(f"server.auth_mode: must be one of {', '.join(AUTH_MODES)}")
 
     team_domain = None
     access = raw.get("access")
@@ -423,6 +449,21 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
         listen_host=listen_host,
         listen_port=listen_port,
     )
+
+
+def _dev(secrets: Mapping[str, str], raw: Any, profiles: Mapping[str, ProfileConfig]) -> DevConfig:
+    """``server.dev``, which dev mode requires. ``raw`` is a mapping or ``None``:
+    :func:`_expand_secrets` has already refused anything else."""
+    token = secrets.get("server.dev.token")
+    if token is None:
+        raise ConfigError("server.dev.token: required when server.auth_mode is dev")
+    profile = (raw or {}).get("profile")
+    if profile is None:
+        raise ConfigError("server.dev.profile: required when server.auth_mode is dev")
+    if not isinstance(profile, str) or profile not in profiles:
+        # Not echoed: like every profile name, it may be someone's real name.
+        raise ConfigError("server.dev.profile: must name a profile in the profiles section")
+    return DevConfig(token=token, profile=profile)
 
 
 def _listen(value: Any) -> tuple[str, int]:

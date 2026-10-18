@@ -83,6 +83,14 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
+def data_dir(tmp_path: Path) -> Path:
+    """An existing, empty data directory for ``create_app``."""
+    path = tmp_path / "data"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
 async def db(tmp_path: Path) -> AsyncIterator[Database]:
     """A migrated database in a temp directory, opened as the service opens it.
 
