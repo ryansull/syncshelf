@@ -1,0 +1,69 @@
+[project]
+name = "syncshelf"
+version = "0.0.0"
+description = "Self-hosted MCP server and one-way syncs that keep Hardcover as a household's reading log."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.14,<3.15"
+# Phase 1's share of SPEC §2.1. Later phases add their own (PyJWT, rapidfuzz, playwright).
+dependencies = [
+    "httpx2>=2.13",
+    "mcp>=2.3,<3",
+    "pyyaml>=6",
+    "starlette>=1.8,<2",
+    "uvicorn>=0.54",
+]
+
+[dependency-groups]
+dev = [
+    "anyio>=4",
+    "pre-commit>=4",
+    "pyright>=1.1.400",
+    "pytest>=9.1",
+    "pytest-cov>=7",
+    "pytest-socket>=0.8",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+# Harness helpers in tests/, imported through pytest's pythonpath.
+known-local-folder = ["clock", "scrub"]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "basic"
+pythonVersion = "3.14"
+
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["tests"]
+# tests/ holds harness helpers (fixture scrubber) that tests and tests/live/record.py import.
+pythonpath = ["tests"]
+# Outbound sockets are blocked (SPEC §2.9). Loopback stays open because asyncio on Windows
+# builds its self-pipe from a loopback TCP pair, and in-process ASGI tests never leave the host.
+addopts = [
+    "--strict-markers",
+    "--allow-hosts=127.0.0.1,::1",
+    "--cov=syncshelf",
+    "--cov-report=term-missing",
+]
+markers = [
+    "live: talks to a real service; collected only with --live and SYNCSHELF_LIVE=1",
+]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["syncshelf"]
