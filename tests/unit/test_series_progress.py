@@ -159,3 +159,47 @@ async def test_household_shows_each_profiles_progress(connect: Any) -> None:
         ("bob", 2, 3),
     ]
     assert ordered["order"][2]["statuses"] == {"alice": "currently-reading", "bob": "read"}
+
+
+async def test_an_exact_name_wins_over_a_series_that_contains_it(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.add_series(80, "Legends of Dune", [(1, 31, "The Butlerian Jihad")])
+    fake.add_user_book(ALICE, 31, status_id=3, book=featured(80, "Legends of Dune", 1))
+    async with connect() as mcp:
+        found = (await progress(mcp, series="DUNE"))["series"]
+    assert [s["series_id"] for s in found] == [DUNE]
+
+
+async def test_a_part_of_a_name_finds_the_users_own_series(connect: Any) -> None:
+    async with connect() as mcp:
+        found = (await progress(mcp, series="don"))["series"]
+    assert [s["name"] for s in found] == ["Done"]
+
+
+async def test_a_numeric_name_is_tried_as_a_name_when_no_id_matches(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.add_series(1999, "1632", [(1, 41, "1632")])
+    async with connect() as mcp:
+        [found] = (await progress(mcp, series="1632"))["series"]
+    assert found["series_id"] == 1999
+
+
+async def test_a_blank_series_means_every_started_series(connect: Any) -> None:
+    async with connect() as mcp:
+        blank = await progress(mcp, series="  ")
+        default = await progress(mcp)
+    assert blank["series"] == default["series"]
+
+
+async def test_many_started_series_are_fetched_in_chunks(connect: Any, fake: FakeHardcover) -> None:
+    for n in range(25):
+        sid = 1000 + n
+        fake.add_series(sid, f"S{n:02d}", [(1, 5000 + n, "One"), (2, 6000 + n, "Two")])
+        fake.add_user_book(ALICE, 5000 + n, status_id=3, book=featured(sid, f"S{n:02d}", 1))
+    async with connect() as mcp:
+        page = await progress(mcp)
+    assert [s["name"] for s in page["series"]][:3] == ["Dune", "S00", "S01"]  # by name
+    assert len(page["series"]) == 26
+    assert [op for op, _ in fake.requests].count("Series") == 2

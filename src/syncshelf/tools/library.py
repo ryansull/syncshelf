@@ -1113,6 +1113,8 @@ def _statuses(conn: sqlite3.Connection, profile: str, book_ids: tuple[int, ...])
 STARTED = frozenset({2, 3})
 """Statuses that mean a series is under way: currently reading or read."""
 READ = 3
+SERIES_PER_REQUEST = 20
+"""Series fetched per live request when listing every started series."""
 _SHOWN_FIRST = (3, 2, 4, 1, 5, 6)
 """When several books share a position, the status shown for it: read wins, then reading."""
 
@@ -1140,6 +1142,8 @@ class SeriesProgress(TypedDict):
 
 
 class SeriesAnswer(TypedDict):
+    """One series: its main-entry count, each profile's progress, and its order if asked."""
+
     series_id: int
     name: str
     books: int
@@ -1150,6 +1154,8 @@ class SeriesAnswer(TypedDict):
 
 
 class SeriesPage(TypedDict):
+    """``series_progress``'s answer: series by name, with the copy's freshness."""
+
     series: list[SeriesAnswer]
     as_of: str
     stale: bool
@@ -1174,8 +1180,9 @@ async def series_progress(series: str | None = None, profile: str = ME) -> Serie
     - series: leave it out for every series the user has started (a book in it read or being
       read) but not finished, each with the next book to read. Give a series name, or its
       Hardcover series id, for that series' full reading order with the user's status for
-      each book; a name is matched first against the user's own series, then exactly on
-      Hardcover.
+      each book. A name is matched exactly (ignoring case) against the user's own series,
+      then exactly on Hardcover (where case matters), then as part of one of the user's own
+      series' names.
     - profile: "me" (the default), another profile's name, or "household".
 
     Each series has series_id, name, books (main entries in it) and progress: per profile,
@@ -1193,11 +1200,18 @@ async def series_progress(series: str | None = None, profile: str = ME) -> Serie
     freshness = await _refresh(bound.mirror, names, caller)
     shelves = {name: await bound.db.read(_series_shelf, name) for name in names}
     client = bound.hardcover[names[0]]
+    series = (series or "").strip() or None  # a blank name means every started series
     if series is None:
         started = sorted({s for shelf in shelves.values() for s in shelf.started})
-        found = await _fetch_series(client, SERIES, {"ids": started}) if started else []
+        found: list[dict[str, Any]] = []
+        # In chunks: a series' rows include every edition and translation, so one request
+        # for a long reader's every series could be tens of thousands of rows.
+        for at in range(0, len(started), SERIES_PER_REQUEST):
+            chunk = started[at : at + SERIES_PER_REQUEST]
+            found += await _fetch_series(client, SERIES, {"ids": chunk})
     else:
-        found = await _find_series(client, series.strip(), shelves)
+        found = await _find_series(client, series, shelves)
+    found.sort(key=lambda d: ((d.get("name") or "").casefold(), d["id"]))
     answers: list[SeriesAnswer] = []
     for data in found:
         order = _order(data.get("book_series") or [])
@@ -1259,28 +1273,26 @@ async def _fetch_series(
 async def _find_series(
     client: HardcoverClient, wanted: str, shelves: dict[str, _SeriesShelf]
 ) -> list[dict[str, Any]]:
-    if wanted.isascii() and wanted.isdigit():
-        found = await _fetch_series(client, SERIES, {"ids": [int(wanted)]})
-    else:
-        folded = wanted.casefold()
-        ids = sorted(
-            {
-                i
-                for shelf in shelves.values()
-                for i, n in shelf.names.items()
-                if folded in n.casefold()
-            }
-        )
-        if ids:
-            found = await _fetch_series(client, SERIES, {"ids": ids})
-        else:
-            found = await _fetch_series(client, SERIES_BY_NAME, {"name": wanted})
-    if not found:
-        raise ToolError(
-            f"No series matches {wanted!r}. Try its exact name, or find a book in it with "
-            "search_books and pass the series id from get_book."
-        )
-    return found
+    """The series ``wanted`` names, tried in order: an exact (case-insensitive) name among the
+    profiles' own series; a Hardcover series id, for a number; an exact name on Hardcover
+    (case-sensitive there); then a name among their own series that contains it."""
+    known = {i: n for shelf in shelves.values() for i, n in shelf.names.items()}
+    folded = wanted.casefold()
+    exact = sorted(i for i, n in known.items() if n.casefold() == folded)
+    if exact:
+        return await _fetch_series(client, SERIES, {"ids": exact})
+    numeric = wanted.isascii() and wanted.isdigit()
+    if numeric and (found := await _fetch_series(client, SERIES, {"ids": [int(wanted)]})):
+        return found
+    if found := await _fetch_series(client, SERIES_BY_NAME, {"name": wanted}):
+        return found
+    partial = sorted(i for i, n in known.items() if folded in n.casefold())
+    if partial:
+        return await _fetch_series(client, SERIES, {"ids": partial})
+    raise ToolError(
+        f"No series matches {wanted!r}. Try its exact name, or find a book in it with "
+        "search_books and pass the series id from get_book."
+    )
 
 
 def _order(book_series: list[dict[str, Any]]) -> list[_Position]:
