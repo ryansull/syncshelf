@@ -50,7 +50,7 @@ LOOPBACK_HOSTS = ("localhost:*", "127.0.0.1:*")
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
-log =logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class StartupError(Exception):

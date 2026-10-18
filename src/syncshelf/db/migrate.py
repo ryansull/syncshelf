@@ -2,9 +2,10 @@
 
 Migrations are the numbered files ``migrations/NNNN_<name>.sql``, and ``PRAGMA user_version``
 records the last one applied. Before applying anything, the runner snapshots the database with
-``VACUUM INTO``, or reuses the snapshot an earlier failed start already took. Each pending file then runs in its own ``BEGIN IMMEDIATE`` transaction together
-with its ``user_version`` bump, so a failure leaves the database at the last good version and
-the runner stops there. There are no down-migrations.
+``VACUUM INTO``, or reuses the snapshot an earlier failed start already took. Each pending
+file then runs in its own ``BEGIN IMMEDIATE`` transaction together with its ``user_version``
+bump, so a failure leaves the database at the last good version and the runner stops there.
+There are no down-migrations.
 """
 
 import logging
