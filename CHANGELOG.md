@@ -14,3 +14,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 - pre-commit hooks: gitleaks, and a private denylist read from the git-ignored
   `local/denylist.txt`.
 - Weekly dependabot updates for `uv` and GitHub Actions.
+- The database layer: one writer thread, per-thread read connections, and a forward-only
+  migration runner that writes a `pre-migration-NNNN.db` snapshot before migrating. Ships
+  migration `0001_meta` (the `meta` table).
