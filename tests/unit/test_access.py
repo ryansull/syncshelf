@@ -1,11 +1,19 @@
 """The Cloudflare Access JWT check (SPEC §3.2.3), against a test RSA key and a mocked JWKS."""
 
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Callable
 
+import anyio
 import httpx2
 import pytest
 
-from syncshelf.auth.access import AccessRefused, AccessVerifier
+from syncshelf.auth.access import (
+    JWKS_MAX_BYTES,
+    JWKS_TTL,
+    KID_REFETCH_COOLDOWN,
+    AccessRefused,
+    AccessVerifier,
+)
 
 from access_jwt import FakeAccess, jwk, rsa_key
 from clock import FakeClock
@@ -198,3 +206,178 @@ async def test_a_set_with_no_rs256_key_keeps_the_cached_keys(
     error = await refused(verifier, fake.token(kid="key-2"))
     assert (error.reason, error.unavailable) == ("jwks_unavailable", True)
     assert await verifier.verify(fake.token()) == "alice@example.com"
+
+
+async def test_the_key_set_expires_an_hour_after_it_was_fetched(
+    verifier: AccessVerifier, fake: FakeAccess, clock: FakeClock
+) -> None:
+    await verifier.verify(fake.token())
+    clock.advance(JWKS_TTL - 1)
+    await verifier.verify(fake.token())
+    assert len(fake.requests) == 1
+    clock.advance(1)
+    await verifier.verify(fake.token())
+    assert len(fake.requests) == 2
+    clock.advance(JWKS_TTL - 1)
+    await verifier.verify(fake.token())
+    assert len(fake.requests) == 2, "the hour counts from the latest fetch"
+
+
+async def test_a_retired_key_stops_verifying_once_the_set_expires(
+    verifier: AccessVerifier, fake: FakeAccess, clock: FakeClock
+) -> None:
+    await verifier.verify(fake.token())
+    old = fake.token()
+    fake.published = {"key-2": rsa_key("access-2")}  # Access retires key-1
+    fake.kid = "key-2"
+    assert await verifier.verify(old) == "alice@example.com", "cached until it expires"
+    clock.advance(JWKS_TTL)
+    assert (await refused(verifier, old)).reason == "access_jwt_unknown_kid"
+    assert await verifier.verify(fake.token()) == "alice@example.com"
+    assert len(fake.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        lambda: httpx2.Response(503),
+        lambda: httpx2.Response(
+            200, json={"keys": [{**jwk(rsa_key("access-2"), "k"), "alg": "RS512"}]}
+        ),
+        lambda: httpx2.Response(200, content=b" " * (JWKS_MAX_BYTES + 1)),
+    ],
+    ids=["503", "no-rs256-key", "too-large"],
+)
+async def test_a_failed_refetch_at_expiry_keeps_the_old_set(
+    verifier: AccessVerifier,
+    fake: FakeAccess,
+    clock: FakeClock,
+    response: Callable[[], httpx2.Response],
+) -> None:
+    await verifier.verify(fake.token())
+    clock.advance(JWKS_TTL)
+    fake.respond = lambda request: response()
+    assert await verifier.verify(fake.token()) == "alice@example.com"
+    assert await verifier.verify(fake.token()) == "alice@example.com"
+    assert len(fake.requests) == 3, "each verification after expiry tries again"
+    fake.respond = None
+    await verifier.verify(fake.token())
+    clock.advance(JWKS_TTL - 1)
+    await verifier.verify(fake.token())
+    assert len(fake.requests) == 4, "a good refetch restarts the hour"
+
+
+async def test_a_failed_refetch_at_expiry_is_unavailable_for_a_kid_the_old_set_lacks(
+    verifier: AccessVerifier, fake: FakeAccess, clock: FakeClock
+) -> None:
+    await verifier.verify(fake.token())
+    clock.advance(JWKS_TTL)
+    fake.respond = lambda request: httpx2.Response(503)
+    error = await refused(verifier, fake.token(kid="key-2"))
+    assert (error.reason, error.unavailable) == ("jwks_unavailable", True)
+
+
+async def test_concurrent_verifications_after_expiry_fetch_once(
+    clock: FakeClock, fake: FakeAccess
+) -> None:
+    failing = False
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        if not failing:
+            return fake(request)
+        fake.requests.append(request)
+        await anyio.lowlevel.checkpoint()  # so the other verification queues behind this one
+        return httpx2.Response(503)
+
+    access = AccessVerifier(
+        TEAM_DOMAIN, ACCESS_AUD, clock=clock.time, transport=httpx2.MockTransport(handle)
+    )
+    emails: list[str] = []
+
+    async def verify() -> None:
+        emails.append(await access.verify(fake.token()))
+
+    async with access.running():
+        await access.verify(fake.token())
+        clock.advance(JWKS_TTL)
+        failing = True
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(verify)
+            tg.start_soon(verify)
+    assert emails == ["alice@example.com"] * 2
+    assert len(fake.requests) == 2, "the waiting verification reuses the attempt it waited on"
+
+
+async def test_unknown_kid_refetches_are_limited_to_one_a_minute(
+    verifier: AccessVerifier, fake: FakeAccess, clock: FakeClock
+) -> None:
+    await verifier.verify(fake.token())
+    assert (await refused(verifier, fake.token(kid="key-2"))).reason == "access_jwt_unknown_kid"
+    assert len(fake.requests) == 2
+    clock.advance(KID_REFETCH_COOLDOWN - 1)
+    fake.published["key-3"] = rsa_key("access-3")
+    token = fake.token(key=fake.published["key-3"], kid="key-3")
+    assert (await refused(verifier, token)).reason == "access_jwt_unknown_kid"
+    assert len(fake.requests) == 2, "refused inside the cooldown without a fetch"
+    clock.advance(1)
+    assert await verifier.verify(token) == "alice@example.com"
+    assert len(fake.requests) == 3
+
+
+async def test_a_failed_unknown_kid_refetch_starts_the_cooldown(
+    verifier: AccessVerifier, fake: FakeAccess
+) -> None:
+    await verifier.verify(fake.token())
+    fake.respond = lambda request: httpx2.Response(503)
+    assert (await refused(verifier, fake.token(kid="key-2"))).unavailable
+    error = await refused(verifier, fake.token(kid="key-2"))
+    assert (error.reason, error.unavailable) == ("access_jwt_unknown_kid", False)
+    assert len(fake.requests) == 2
+
+
+async def test_a_first_fetch_is_not_held_by_the_cooldown(
+    verifier: AccessVerifier, fake: FakeAccess
+) -> None:
+    fake.respond = lambda request: httpx2.Response(503)
+    assert (await refused(verifier, fake.token())).unavailable
+    fake.respond = None
+    assert await verifier.verify(fake.token()) == "alice@example.com"
+    assert len(fake.requests) == 2
+
+
+async def test_the_expiry_refetch_is_not_held_by_the_cooldown(
+    verifier: AccessVerifier, fake: FakeAccess, clock: FakeClock
+) -> None:
+    await verifier.verify(fake.token())
+    clock.advance(JWKS_TTL - 10)
+    fake.respond = lambda request: httpx2.Response(503)
+    assert (await refused(verifier, fake.token(kid="key-2"))).unavailable  # cooldown starts
+    clock.advance(10)
+    fake.respond = None
+    old = fake.token()
+    fake.published = {"key-2": rsa_key("access-2")}
+    assert (await refused(verifier, old)).reason == "access_jwt_unknown_kid"
+    assert len(fake.requests) == 3, "the set expired, so it is fetched despite the cooldown"
+
+
+def _padded_key_set(fake: FakeAccess, size: int) -> bytes:
+    body = json.dumps({"keys": [jwk(fake.published[fake.kid], fake.kid)]}).encode()
+    return body + b" " * (size - len(body))
+
+
+async def test_a_key_set_up_to_64_kb_is_accepted(
+    verifier: AccessVerifier, fake: FakeAccess
+) -> None:
+    body = _padded_key_set(fake, JWKS_MAX_BYTES)
+    fake.respond = lambda request: httpx2.Response(200, content=body)
+    assert await verifier.verify(fake.token()) == "alice@example.com"
+    assert fake.requests[0].headers["accept-encoding"] == "identity"
+
+
+async def test_a_key_set_over_64_kb_is_a_failed_fetch(
+    verifier: AccessVerifier, fake: FakeAccess
+) -> None:
+    body = _padded_key_set(fake, JWKS_MAX_BYTES + 1)
+    fake.respond = lambda request: httpx2.Response(200, content=body)
+    error = await refused(verifier, fake.token())
+    assert (error.reason, error.unavailable) == ("jwks_unavailable", True)

@@ -21,4 +21,4 @@
 - [ ] No secrets or homelab values (SPEC §2.6 placeholders only)
 - [ ] Fixtures scrubbed
 - [ ] Docs updated per `AGENTS.md`
-- [ ] `CHANGELOG.md` entry, or "no user-visible change"
+- [ ] A `changelog.d/` fragment, or the `no-changelog` label for no user-visible change

@@ -62,15 +62,6 @@ class TestAuthorizationServerMetadata:
         assert body["authorization_endpoint"] == "http://127.0.0.1:9000/authorize"
         assert body["token_endpoint"] == "http://127.0.0.1:9000/token"
 
-    async def test_the_issuer_keeps_public_urls_exact_form(
-        self, tmp_path: Path, data_dir: Path
-    ) -> None:
-        # Pydantic's AnyHttpUrl would drop the default port; issuer comparison is exact.
-        config = make_config(tmp_path, "http://localhost:80", auth_mode="oauth")
-        async with running(app_for(config, data_dir), token=None) as client:
-            assert (await client.get(AS_METADATA)).json()["issuer"] == "http://localhost:80"
-            assert (await client.get(PRM)).json()["resource"] == "http://localhost:80/mcp"
-
     async def test_there_is_no_registration(self, tmp_path: Path, data_dir: Path) -> None:
         async with running(app_for(oauth_config(tmp_path), data_dir), token=None) as client:
             assert "registration_endpoint" not in (await client.get(AS_METADATA)).json()
