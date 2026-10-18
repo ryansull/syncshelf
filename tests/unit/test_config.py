@@ -461,6 +461,16 @@ def test_committed_example_loads(tmp_path: Path) -> None:
     assert set(config.profiles) == {"alice", "bob"}
 
 
+def test_committed_example_sets_every_key_phase_1_validates() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    assert config.server.auth_mode is not None
+    assert config.server.access_team_domain is not None
+    assert all(vars(config.services).values()), "every services URL key is shown"
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
+        assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
+
+
 def test_real_profiles_yaml_is_git_ignored() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "profiles.yaml" in ignored
