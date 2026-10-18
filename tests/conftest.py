@@ -1,11 +1,18 @@
-"""Shared test wiring: the anyio backend, the injectable clock and live-test gating.
+"""Shared test wiring: the anyio backend, the injectable clock, temp SQLite and live gating.
 
-Later phases add the temp SQLite database, the fakes and ``authed_client`` here (SPEC §2.5).
+Later phases add the fakes and ``authed_client`` here (SPEC §2.5).
 """
 
 import os
+import sqlite3
+from collections.abc import AsyncIterator, Iterator
+from contextlib import closing
+from pathlib import Path
 
 import pytest
+
+from syncshelf.db import Database, connect
+from syncshelf.db.migrate import migrate
 
 from clock import FakeClock
 
@@ -47,3 +54,28 @@ def anyio_backend() -> str:
 def clock() -> FakeClock:
     """A fresh clock at ``FakeClock.START`` that moves only when the test advances it."""
     return FakeClock()
+
+
+@pytest.fixture
+async def db(tmp_path: Path) -> AsyncIterator[Database]:
+    """A migrated database in a temp directory, opened as the service opens it.
+
+    Closed afterwards, so Windows can delete the temp files. Needs an ``anyio`` test.
+    """
+    database = await Database.open(tmp_path / "syncshelf.db", snapshot_dir=tmp_path)
+    try:
+        yield database
+    finally:
+        await database.close()
+
+
+@pytest.fixture
+def schema(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """A plain connection to a temp database migrated by the shipped migrations.
+
+    For SQL-invariant tests (``invariants.py``), which talk to SQLite directly so that what
+    they prove is the database's own refusal.
+    """
+    with closing(connect(tmp_path / "schema.db")) as conn:
+        migrate(conn, snapshot_dir=tmp_path)
+        yield conn

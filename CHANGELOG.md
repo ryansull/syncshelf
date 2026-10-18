@@ -24,3 +24,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 - JSON-lines logging on stdout, uvicorn's included, with `profile`/`run_id`/`tool` and other
   context fields, configured hosts rewritten to their alias, and every configured secret
   replaced with `***`, tracebacks included.
+- The database layer: one writer thread, per-thread read connections, and a forward-only
+  migration runner that writes a `pre-migration-NNNN.db` snapshot before migrating. Ships
+  migration `0001_meta` (the `meta` table).
