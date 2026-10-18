@@ -12,7 +12,8 @@ All notable changes to SyncShelf are recorded here. The format follows
 - CI on every push and PR: ruff, pyright, offline tests with outbound sockets blocked and a
   coverage report, and a gitleaks history scan.
 - pre-commit hooks: gitleaks, and a private denylist read from the git-ignored
-  `local/denylist.txt`.
+  `local/denylist.txt`. gitleaks (here and in CI) allowlists a SPEC §2.6 placeholder only when
+  it is the whole detected secret, so a credential beside or around one is still caught.
 - Weekly dependabot updates for `uv` and GitHub Actions.
 - Config loading from `SYNCSHELF_CONFIG` (default `/config/profiles.yaml`), with `${VAR}` and
   `*_file` secret references and fail-fast validation whose errors name the key, never a
