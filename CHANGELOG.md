@@ -6,6 +6,11 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `my_connections`' description now says that a local dev-mode session isn't a connection,
+  so it isn't listed and an empty list is normal there.
+
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
