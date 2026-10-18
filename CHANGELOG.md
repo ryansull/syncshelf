@@ -19,6 +19,18 @@ All notable changes to SyncShelf are recorded here. The format follows
 - `my_connections`' description now says that a local dev-mode session isn't a connection,
   so it isn't listed and an empty list is normal there.
 
+
+- Startup refuses a profile named `me` or `household`, the `profile` argument's keywords
+  (#74).
+- In dev mode, startup refuses a `server.dev.token` shorter than 32 characters (#75). The
+  README and `profiles.example.yaml` now say to publish a dev instance's port on loopback
+  only, or to listen on `127.0.0.1`.
+- `server.public_url` must be a bare origin in canonical form: no path (not even `/`), no
+  user name, a lowercase host and no default port (`:443` for https, `:80` for http). Startup
+  names the key otherwise (#98).
+- In oauth mode, `server.public_url` must be `https` unless its host is `localhost` or
+  `127.0.0.1` (#122).
+
 ### Fixed
 
 - The consent page is served with `Referrer-Policy: same-origin` instead of `no-referrer`, so

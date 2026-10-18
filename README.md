@@ -73,10 +73,13 @@ where tokens come from:
   send `Origin: null` when **Allow** is pressed, which the consent check refuses (#114).
 - **`dev`, for a local instance.** `/mcp` accepts the single static token in
   `server.dev.token` (from `SYNCSHELF_DEV_TOKEN`) as the profile `server.dev.profile`, so
-  Claude Code or MCP Inspector can connect by sending `Authorization: Bearer <token>`. Dev
-  mode refuses to start unless `server.public_url` is on `localhost` or `127.0.0.1`, serves
-  no OAuth routes, and logs a warning at every start. `profiles.example.yaml` shows how to
-  switch to it.
+  Claude Code or MCP Inspector can connect by sending `Authorization: Bearer <token>`. The
+  token must be at least 32 characters (`openssl rand -hex 32`). Dev mode refuses to start
+  unless `server.public_url` is on `localhost` or `127.0.0.1`, serves no OAuth routes, and
+  logs a warning at every start. That guards only the configured name, so keep a dev
+  instance off the network: publish the port on loopback only (e.g. `127.0.0.1:8000:8000`),
+  or set `server.listen` to `127.0.0.1:8000`. `profiles.example.yaml` shows how to switch to
+  it.
 - **Absent:** no token is accepted, and `server.public_url` must be on `localhost` or
   `127.0.0.1` (#73).
 
