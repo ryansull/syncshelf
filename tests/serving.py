@@ -28,6 +28,7 @@ MCP_URL = f"{BASE_URL}/mcp"
 ACCESS_AUD = "fake-access-aud-tag"
 TEAM_DOMAIN = "https://example.cloudflareaccess.com"
 ENVIRON = {"CONSENT": SECRET, "DEV_TOKEN": DEV_TOKEN, "ACCESS_AUD": ACCESS_AUD}
+HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 """The headers a raw Streamable HTTP POST to ``/mcp`` needs."""
 CLAUDE_CODE = "https://claude.ai/oauth/claude-code-client-metadata"
@@ -47,7 +48,8 @@ def make_config(
     profile), or ``oauth`` with the test Access app (:data:`TEAM_DOMAIN`, :data:`ACCESS_AUD`)
     and consent key (:data:`SECRET`).
 
-    ``profile_yaml`` gives a profile's body as one line of flow YAML, ``{}`` by default.
+    ``profile_yaml`` gives a profile's body as one line of flow YAML, ``{}`` by default. Each
+    profile also gets the Hardcover token :func:`hardcover_token` names, unless its body sets one.
     """
     profiles = list(profiles)
     bodies = profile_yaml or {}
@@ -64,11 +66,27 @@ def make_config(
               consent_hmac_key: ${{CONSENT}}
             """)
         + (dev_block if auth_mode == "dev" else access_block)
+        + f"services:\n  hardcover_url: {HARDCOVER_URL}\n"
         + "profiles:\n"
-        + "".join(f"  {name}: {bodies.get(name, '{}')}\n" for name in profiles),
+        + "".join(f"  {name}: {_with_token(name, bodies.get(name, '{}'))}\n" for name in profiles),
         encoding="utf-8",
     )
-    return load_config(path, environ=ENVIRON)
+    tokens = {f"HC_{name.upper()}": hardcover_token(name) for name in profiles}
+    return load_config(path, environ=ENVIRON | tokens)
+
+
+def hardcover_token(profile: str) -> str:
+    """The Hardcover token :func:`make_config` gives ``profile``, for a ``FakeHardcover`` user."""
+    return f"fake-hardcover-token-{profile}"
+
+
+def _with_token(name: str, body: str) -> str:
+    if "hardcover_token" in body:
+        return body
+    # Quoted: in flow YAML a bare ${...} reads as a nested mapping.
+    entry = f'hardcover_token: "${{HC_{name.upper()}}}"'
+    inner = body.strip()[1:-1].strip()
+    return f"{{{entry}, {inner}}}" if inner else f"{{{entry}}}"
 
 
 @asynccontextmanager

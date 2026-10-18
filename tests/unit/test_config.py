@@ -5,6 +5,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+import yaml
 
 from syncshelf.config import (
     CONFIG_ENV,
@@ -32,26 +33,63 @@ server:
 SECRET = "s3cr3t-value-never-shown-anywhere"
 
 
-def write(tmp_path: Path, text: str) -> Path:
+HC_URL = "https://api.hardcover.app/v1/graphql"
+HC_TOKEN = "fake-hardcover-token"
+HC_ENV = {"HC": HC_TOKEN}
+
+
+def write(tmp_path: Path, text: str, *, hardcover: bool = True) -> Path:
     """Write ``text`` as the config, adding a one-profile ``profiles`` section (required) when
-    the text has a server section but no profiles, so tests of other sections stay short."""
+    the text has a server section but no profiles, so tests of other sections stay short.
+
+    With ``hardcover``, the keys required from phase 3 are filled in where the text has a
+    server section and leaves them out: ``services.hardcover_url``, and each profile's
+    ``hardcover_token`` as ``${HC}`` (:data:`HC_ENV`).
+    """
     text = dedent(text)
     if re.search(r"^server:", text, re.MULTILINE) and not re.search(
         r"^profiles:", text, re.MULTILINE
     ):
         text += "profiles:\n  alice: {}\n"
+    if hardcover:
+        text = _with_hardcover(text)
     path = tmp_path / "profiles.yaml"
     path.write_text(text, encoding="utf-8")
     return path
 
 
-def load(tmp_path: Path, text: str, environ: dict[str, str] | None = None) -> Config:
-    return load_config(write(tmp_path, text), environ=environ or {})
+def _with_hardcover(text: str) -> str:
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    if not isinstance(data, dict) or not isinstance(data.get("server"), dict):
+        return text
+    services = data.setdefault("services", {}) or {}
+    if isinstance(services, dict):
+        services.setdefault("hardcover_url", HC_URL)
+        data["services"] = services
+    profiles = data.get("profiles")
+    if isinstance(profiles, dict):
+        for body in profiles.values():
+            if isinstance(body, dict) and not {"hardcover_token", "hardcover_token_file"} & set(
+                body
+            ):
+                body["hardcover_token"] = "${HC}"
+    return yaml.safe_dump(data, sort_keys=False)
 
 
-def load_error(tmp_path: Path, text: str, environ: dict[str, str] | None = None) -> str:
+def load(
+    tmp_path: Path, text: str, environ: dict[str, str] | None = None, *, hardcover: bool = True
+) -> Config:
+    return load_config(write(tmp_path, text, hardcover=hardcover), environ=HC_ENV | (environ or {}))
+
+
+def load_error(
+    tmp_path: Path, text: str, environ: dict[str, str] | None = None, *, hardcover: bool = True
+) -> str:
     with pytest.raises(ConfigError) as excinfo:
-        load(tmp_path, text, environ)
+        load(tmp_path, text, environ, hardcover=hardcover)
     return str(excinfo.value)
 
 
@@ -68,7 +106,7 @@ def test_config_path_comes_from_syncshelf_config() -> None:
 
 def test_load_config_without_a_path_reads_syncshelf_config(tmp_path: Path) -> None:
     path = write(tmp_path, MINIMAL)
-    config = load_config(environ={CONFIG_ENV: str(path)})
+    config = load_config(environ={CONFIG_ENV: str(path)} | HC_ENV)
     assert config.server.public_url == "http://localhost"
 
 
@@ -125,7 +163,8 @@ def test_minimal_file_loads_with_defaults(tmp_path: Path) -> None:
     assert config.server.log_level == "INFO"
     assert config.server.auth_mode is None
     assert (config.server.listen_host, config.server.listen_port) == ("0.0.0.0", 8000)
-    assert config.profiles == {"alice": ProfileConfig(name="alice")}
+    assert config.profiles == {"alice": ProfileConfig(name="alice", hardcover_token=HC_TOKEN)}
+    assert config.services.hardcover_url == HC_URL
     assert config.cadence.rss_interval == 60 * 60
     assert config.cadence.abs_interval == 15 * 60
     assert config.cadence.chaptarr_pending_interval == 2 * 60
@@ -742,8 +781,11 @@ def test_host_aliases_map_configured_service_hosts(tmp_path: Path) -> None:
     }
 
 
-def test_host_aliases_without_services_alias_only_the_public_host(tmp_path: Path) -> None:
-    assert load(tmp_path, MINIMAL).host_aliases() == {"localhost": "public"}
+def test_host_aliases_with_only_the_required_service(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).host_aliases() == {
+        "localhost": "public",
+        "api.hardcover.app": "hardcover",
+    }
 
 
 def test_host_aliases_include_the_public_and_access_hosts(tmp_path: Path) -> None:
@@ -755,12 +797,52 @@ def test_host_aliases_include_the_public_and_access_hosts(tmp_path: Path) -> Non
     assert config.host_aliases() == {
         "127.0.0.1": "public",
         "example.cloudflareaccess.com": "access",
+        "api.hardcover.app": "hardcover",
     }
 
 
 def test_a_service_alias_wins_over_the_public_alias_on_a_shared_host(tmp_path: Path) -> None:
     config = load(tmp_path, MINIMAL + "services:\n  browser_ws: ws://localhost:3000/\n")
-    assert config.host_aliases() == {"localhost": "browser"}
+    assert config.host_aliases() == {"localhost": "browser", "api.hardcover.app": "hardcover"}
+
+
+# --- the Hardcover keys (phase 3) -------------------------------------------------------
+
+
+def test_hardcover_url_is_required(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    hardcover_token: ${HC}\n"
+    assert load_error(tmp_path, text, hardcover=False) == "services.hardcover_url: required"
+
+
+def test_each_profile_needs_a_hardcover_token(tmp_path: Path) -> None:
+    text = MINIMAL + f"services:\n  hardcover_url: {HC_URL}\nprofiles:\n  alice: {{}}\n"
+    message = load_error(tmp_path, text, hardcover=False)
+    assert message == "profiles.alice.hardcover_token: required"
+
+
+def test_the_hardcover_token_is_read_from_a_file(tmp_path: Path) -> None:
+    token_file = tmp_path / "hc"
+    token_file.write_text(SECRET + "\n", encoding="utf-8")
+    text = (
+        MINIMAL
+        + f"services:\n  hardcover_url: {HC_URL}\n"
+        + f"profiles:\n  alice:\n    hardcover_token_file: {token_file.as_posix()}\n"
+    )
+    alice = load(tmp_path, text, hardcover=False).profiles["alice"]
+    assert alice.hardcover_token == SECRET
+    assert SECRET not in repr(alice)
+
+
+def test_hardcover_url_must_be_https(tmp_path: Path) -> None:
+    text = MINIMAL + "services:\n  hardcover_url: http://api.hardcover.app/v1/graphql\n"
+    assert "services.hardcover_url: must be a https URL" in load_error(tmp_path, text)
+
+
+@pytest.mark.parametrize("prefix", ["Bearer ", "bearer "])
+def test_a_hardcover_token_with_the_bearer_prefix_is_refused(tmp_path: Path, prefix: str) -> None:
+    message = load_error(tmp_path, MINIMAL, {"HC": prefix + SECRET})
+    assert message == "profiles.alice.hardcover_token: give the token without the leading 'Bearer '"
+    assert SECRET not in message
 
 
 @pytest.mark.parametrize("key", ["hardcover_url", "abs_url", "chaptarr_url", "browser_ws"])
@@ -772,7 +854,12 @@ def test_service_url_without_a_host_is_rejected(tmp_path: Path, key: str) -> Non
 # --- the committed example --------------------------------------------------------------
 
 
-EXAMPLE_ENV = {"ACCESS_AUD": "aud-" + SECRET, "CONSENT_HMAC_KEY": "hmac-" + SECRET}
+EXAMPLE_ENV = {
+    "ACCESS_AUD": "aud-" + SECRET,
+    "CONSENT_HMAC_KEY": "hmac-" + SECRET,
+    "HARDCOVER_TOKEN_ALICE": "a",
+    "HARDCOVER_TOKEN_BOB": "b",
+}
 
 
 def test_committed_example_loads(tmp_path: Path) -> None:
@@ -801,8 +888,10 @@ def test_committed_example_switches_to_dev_mode_as_its_comments_say(tmp_path: Pa
     )
     path = tmp_path / "profiles.yaml"
     path.write_text(local, encoding="utf-8")
-    # Only the dev token: a local instance needs none of oauth mode's secrets.
-    config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET})
+    # The dev token and the Hardcover tokens: a local instance needs none of oauth mode's
+    # secrets.
+    hardcover = {"HARDCOVER_TOKEN_ALICE": "a", "HARDCOVER_TOKEN_BOB": "b"}
+    config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET} | hardcover)
     assert config.server.dev_mode is not None
     assert config.server.dev_mode.profile in config.profiles
 
@@ -824,6 +913,12 @@ def test_committed_example_sets_the_profile_keys_phase_2_validates() -> None:
         assert profile.permissions == frozenset({"chaptarr"})
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
     assert raw.count("\n    household_visible: ") == len(config.profiles)
+
+
+def test_committed_example_sets_the_keys_phase_3_requires() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
+    assert config.services.hardcover_url == HC_URL
+    assert {p.hardcover_token for p in config.profiles.values()} == {"a", "b"}
 
 
 def test_real_profiles_yaml_is_git_ignored() -> None:

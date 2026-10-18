@@ -7,7 +7,7 @@ SyncShelf's own environment, or ``k_file: <path>``, read from that file.
 Every failure raises :class:`ConfigError` with a message that names the key at fault. No
 message ever contains a secret value, so startup errors are safe to paste anywhere.
 
-Validation covers what phases 1 and 2 read (§2.3: "a key becomes required when the phase that
+Validation covers what phases 1 to 3 read (§2.3: "a key becomes required when the phase that
 reads it ships"). Keys and sections for later phases may be present or absent, and are
 ignored here apart from secret expansion, which covers every secret key the spec names so
 that the log scrubber (§2.7) knows every configured secret from the first phase.
@@ -203,6 +203,8 @@ class ProfileConfig:
     privilege, until #71 decides whether the key is required instead."""
     household_visible: bool = False
     """Whether this profile appears in the other profile's answers. Opt in (§2.8)."""
+    hardcover_token: str = field(default="", repr=False)
+    """The profile's Hardcover PAT, without ``Bearer ``. Required from phase 3."""
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,9 @@ def load_config(
     _expand_secrets(server_raw, "server", _SERVER_SECRETS, env, secrets)
     _expand_secrets(services_raw, "services", _SERVICE_SECRETS, env, secrets)
     profiles = _profiles(profiles_raw, env, secrets)
+    services = _services(services_raw)
+    if services.hardcover_url is None:
+        raise ConfigError("services.hardcover_url: required")
     server = _server(server_raw)
     if server.auth_mode == "dev":
         server = replace(server, dev=_dev(secrets, server_raw.get("dev"), profiles))
@@ -290,7 +295,7 @@ def load_config(
 
     return Config(
         server=server,
-        services=_services(services_raw),
+        services=services,
         cadence=_cadence(_section(raw, "cadence")),
         profiles=profiles,
         secrets=secrets,
@@ -609,7 +614,13 @@ def _services(raw: Mapping[str, Any]) -> ServicesConfig:
         value = raw.get(key)
         if value is None:
             continue
-        schemes = ("ws", "wss") if key == "browser_ws" else ("http", "https")
+        if key == "browser_ws":
+            schemes: tuple[str, ...] = ("ws", "wss")
+        elif key == "hardcover_url":
+            # Every request carries a profile's token, so never in clear text.
+            schemes = ("https",)
+        else:
+            schemes = ("http", "https")
         _url(value, f"services.{key}", schemes)
         urls[key] = value
     return ServicesConfig(**urls)
@@ -662,6 +673,7 @@ def _profiles(
             owners[email] = name
         profiles[name] = ProfileConfig(
             name=name,
+            hardcover_token=_hardcover_token(secrets.get(f"{prefix}.hardcover_token"), prefix),
             email=email,
             permissions=_permissions(body.get("permissions"), f"{prefix}.permissions"),
             household_visible=_household_visible(
@@ -669,6 +681,16 @@ def _profiles(
             ),
         )
     return profiles
+
+
+def _hardcover_token(token: str | None, prefix: str) -> str:
+    key = f"{prefix}.hardcover_token"
+    if token is None:
+        raise ConfigError(f"{key}: required")
+    # Hardcover shows the token with "Bearer " in front; the client adds its own prefix.
+    if token[:7].lower() == "bearer ":
+        raise ConfigError(f"{key}: give the token without the leading 'Bearer '")
+    return token
 
 
 def _permissions(value: Any, key: str) -> frozenset[str]:

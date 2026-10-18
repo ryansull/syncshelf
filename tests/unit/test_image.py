@@ -27,6 +27,8 @@ from image.check_logs import LogCheckError, check_logs, main
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "Dockerfile"
 CI_CONFIG = ROOT / "tests" / "image" / "config.yaml"
+CI_ENV = {"HARDCOVER_TOKEN_ALICE": "ci-placeholder"}
+"""The environment the CI image job passes (.github/workflows/ci.yml)."""
 HEALTH_URL = "http://127.0.0.1:8000/healthz"
 
 
@@ -85,7 +87,7 @@ class TestDockerfile:
         assert HEALTH_URL in command[2]
         # The health check runs inside the container, so loopback reaches the default bind
         # on every interface. If the default port moves, the health check must move with it.
-        served = entry.server_config(_no_app, load_config(CI_CONFIG, environ={}))
+        served = entry.server_config(_no_app, load_config(CI_CONFIG, environ=CI_ENV))
         assert (served.host, served.port) == ("0.0.0.0", 8000)
         assert f"http://127.0.0.1:{served.port}/healthz" == HEALTH_URL
 
@@ -156,7 +158,7 @@ class TestCiConfigAndLogs:
     async def test_the_ci_config_starts_a_server_whose_logs_pass_the_check(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        config = load_config(CI_CONFIG, environ={})
+        config = load_config(CI_CONFIG, environ=CI_ENV)
         data = tmp_path / "data"
         data.mkdir()  # empty, as in CI
         entry.configure_logging(config)

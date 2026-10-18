@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "me": [
+        {
+          "id": 0
+        }
+      ]
+    }
+  }
+}
