@@ -329,6 +329,43 @@ def test_profile_must_be_a_mapping(tmp_path: Path) -> None:
     assert "profiles.alice" in load_error(tmp_path, MINIMAL + "profiles:\n  alice: 3\n")
 
 
+def test_profile_permissions_and_household_visible_are_read(tmp_path: Path) -> None:
+    config = load(
+        tmp_path,
+        MINIMAL + "profiles:\n  alice:\n    permissions: [chaptarr]\n    household_visible: true\n",
+    )
+    assert config.profiles["alice"].permissions == frozenset({"chaptarr"})
+    assert config.profiles["alice"].household_visible is True
+
+
+def test_absent_permissions_grant_nothing_and_household_visible_is_opt_in(
+    tmp_path: Path,
+) -> None:
+    alice = load(tmp_path, MINIMAL + "profiles:\n  alice: {}\n").profiles["alice"]
+    assert alice.permissions == frozenset()
+    assert alice.household_visible is False
+
+
+def test_an_empty_permissions_list_grants_nothing(tmp_path: Path) -> None:
+    config = load(tmp_path, MINIMAL + "profiles:\n  alice:\n    permissions: []\n")
+    assert config.profiles["alice"].permissions == frozenset()
+
+
+@pytest.mark.parametrize("value", ["chaptarr", "[admin]", "[chaptarr, 3]", "{chaptarr: true}"])
+def test_permissions_outside_the_known_list_are_rejected(tmp_path: Path, value: str) -> None:
+    message = load_error(tmp_path, MINIMAL + f"profiles:\n  alice:\n    permissions: {value}\n")
+    assert "profiles.alice.permissions" in message
+    assert "chaptarr" in message
+
+
+@pytest.mark.parametrize("value", ["yes please", "1", '"true"', "[true]"])
+def test_household_visible_must_be_a_boolean(tmp_path: Path, value: str) -> None:
+    message = load_error(
+        tmp_path, MINIMAL + f"profiles:\n  alice:\n    household_visible: {value}\n"
+    )
+    assert "profiles.alice.household_visible" in message
+
+
 # --- secret references ------------------------------------------------------------------
 
 
@@ -540,6 +577,14 @@ def test_committed_example_sets_every_key_phase_1_validates() -> None:
     assert "\n  listen: " in raw, "server.listen is shown"
     for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
         assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
+
+
+def test_committed_example_sets_the_profile_keys_phase_2_validates() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    for profile in config.profiles.values():
+        assert profile.permissions == frozenset({"chaptarr"})
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert raw.count("\n    household_visible: ") == len(config.profiles)
 
 
 def test_real_profiles_yaml_is_git_ignored() -> None:

@@ -7,7 +7,8 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
 1. config is already loaded and validated, because uvicorn needs it before the app starts
    (``__main__`` loads it and fails fast; #51 asks the spec to confirm this order);
 2. the data directory and its ``goodreads/`` directory must be writable;
-3. the database is opened and migrated;
+3. the database is opened and migrated, and the ``profiles`` table is synced with the
+   config (:mod:`syncshelf.profiles`);
 4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret;
 5. the MCP session manager runs for as long as the app does.
 
@@ -18,6 +19,7 @@ safe only because config refuses a ``server.public_url`` that isn't on loopback.
 import logging
 import sqlite3
 import tempfile
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,6 +36,7 @@ from syncshelf import __version__
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
+from syncshelf.profiles import ProfileSync, sync_profiles
 
 __all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
 
@@ -96,6 +99,8 @@ def create_app(config: Config, *, data_dir: Path | None = None) -> Starlette:
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
         try:
+            synced = await db.write(sync_profiles, list(config.profiles), int(time.time()))
+            _log_profile_sync(synced)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
             _log_startup(config, db)
             app.state.db = db
@@ -144,6 +149,25 @@ def _check_writable(path: Path, *, create: bool = False) -> None:
         message = f"the data directory {path} is not writable ({type(exc).__name__})"
         log.error(message, extra={"event": "startup_failed"})
         raise StartupError(message) from None
+
+
+def _log_profile_sync(synced: ProfileSync) -> None:
+    if not (synced.added or synced.removed or synced.restored):
+        return
+    log.info(
+        "profiles synced with the config: %d added, %d removed, %d restored, %d grants revoked",
+        len(synced.added),
+        len(synced.removed),
+        len(synced.restored),
+        synced.revoked,
+        extra={
+            "event": "profiles_synced",
+            "added": synced.added,
+            "removed": synced.removed,
+            "restored": synced.restored,
+            "revoked_grants": synced.revoked,
+        },
+    )
 
 
 def _log_startup(config: Config, db: Database) -> None:

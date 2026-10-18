@@ -9,8 +9,8 @@
 # Only secret keys expand ${VAR}; every other value is taken literally. A missing variable or
 # file stops startup with a message naming the key.
 #
-# Every key phase 1 reads or validates is set below. Lines commented out are keys that later
-# phases read; SPEC §2.3 shows the full shape. A secret key that is present is expanded from
+# Every key validated so far is set below. Lines commented out are keys that later work
+# reads; SPEC §2.3 shows the full shape. A secret key that is present is expanded from
 # phase 1 on, so leave a secret commented out until its variable or file exists.
 
 server:
@@ -58,11 +58,14 @@ cadence:                                    # all optional; defaults shown, writ
 
 profiles:
   # Profile names match ^[a-z][a-z0-9_]{0,31}$. Emails are lowercased and must be unique.
+  # Removing a profile here marks it removed at the next start and revokes its Claude
+  # connections; its data is kept. Adding the name back restores it, but Claude must connect
+  # again. Renaming a profile is not supported this way: it reads as a removal plus an addition.
   alice:
     email: alice@example.com
     # timezone: Etc/UTC
-    # permissions: [chaptarr]
-    # household_visible: false
+    permissions: [chaptarr]                 # the only permission; [] grants none
+    household_visible: false                # true opts in to appearing in bob's answers
     # hardcover_token: ${HARDCOVER_TOKEN_ALICE}
     # hardcover_privacy: private
     # ingest_secret: ${INGEST_SECRET_ALICE}
@@ -79,3 +82,5 @@ profiles:
     #   token: ${ABS_TOKEN_ALICE}
   bob:
     email: bob@example.com
+    permissions: [chaptarr]
+    household_visible: false
