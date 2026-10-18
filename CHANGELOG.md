@@ -14,6 +14,11 @@ All notable changes to SyncShelf are recorded here. The format follows
 - A Hardcover API client: it pages a profile's whole library past Hardcover's silent
   1000-row cap, counts each call's cost, and reads the rate-limit headers.
 
+### Changed
+
+- `my_connections`' description now says that a local dev-mode session isn't a connection,
+  so it isn't listed and an empty list is normal there.
+
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.
