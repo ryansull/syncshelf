@@ -6,52 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
-  secret: the Hardcover API token without its `Bearer ` prefix, which is refused). Startup
-  stops on a profile without one, naming the key.
-- A Hardcover API client: it pages a profile's whole library, lists included, past
-  Hardcover's silent 1000-row cap by keyset (so an edit between pages can't skip a row),
-  counts each call's cost, and reads the rate-limit headers.
-- Every Hardcover call goes through a per-profile limiter: bursts of 8, then 1 a second, with
-  Claude's calls served ahead of syncs. A 429 pauses that profile's calls until Hardcover's
-  `Retry-After` (a `hardcover_paused` warning). New config key
-  `cadence.hardcover_daily_reserve` (a whole number, default 1000): below that many requests
-  left for the day, syncs wait for the daily reset (a `hardcover_reserve` warning), while
-  Claude's calls carry on until none are left.
-- Migration `0003_mirror`: the `mirror_state`, `mirror_books`, `mirror_user_books`,
-  `mirror_reads` and `mirror_list_items` tables, a per-profile copy of the Hardcover library
-  (no review text). An upgrade snapshots the database to `pre-migration-0002.db` first.
-- MCP tool `get_my_library`: the caller's shelves as compact rows, filtered by shelf, text,
-  author, genre, series, format, minimum rating and finish dates, sorted by date added, last
-  finished, rating, title or author, with totals and per-shelf counts. `profile` reads another
-  profile's shelves, or `household` everyone's who opted in with `household_visible`, each copy
-  refreshed with that profile's own token; reviews are never shared. It reads the copy,
-  refreshed when older than `cadence.mirror_ttl`; when Hardcover can't be reached it answers
-  from the older copy flagged `stale`, and refuses only when there is no copy yet. Each
-  refresh logs `mirror_refreshed`, and a failed one `mirror_refresh_failed`.
-- MCP tool `reading_stats(period, group_by?, profile?)`: books, pages and hours read in a year,
-  month, date range, the last 30 days or 12 months, or all time, optionally grouped by month,
-  format, genre, author or rating, with Hardcover goal progress. It says how many reads it
-  can't place in any period (undated, or shelved as read with no read logged).
-- MCP tool `get_book(book, profile?)`: one book's full record, live from Hardcover: details,
-  contributors and narrators, series, top tags, content warnings, ten similar books with shelf
-  status, and the caller's shelf (reads, lists, and their own review). `household` adds each
-  sharing profile's shelf, never their review. What it reads is written back to the copy.
-- MCP tool `series_progress(series?, profile?)`: the series the user has started but not
-  finished, each with the next book to read, or one series' full reading order with the
-  user's status for each book. Series orders come live from Hardcover in one request; any
-  edition or translation read counts for its place.
-- New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
-  zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
-  names resolve on any system.
-
-### Changed
-
-- `my_connections`' description now says that a local dev-mode session isn't a connection,
-  so it isn't listed and an empty list is normal there.
-
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.

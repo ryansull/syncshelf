@@ -48,6 +48,7 @@ from syncshelf.logging import add_secret, discard_secret
 __all__ = [
     "ACCESS_PREFIX",
     "ACCESS_TOKEN_TTL",
+    "CODE_RETENTION",
     "CODE_TTL",
     "DEV_CLIENT_ID",
     "GRACE_PERIOD",
@@ -55,12 +56,14 @@ __all__ = [
     "OFFLINE_ACCESS",
     "REFRESH_PREFIX",
     "REFRESH_WINDOW",
+    "REVOKED_RETENTION",
     "SCOPE",
     "CodeExchange",
     "ExchangeRefused",
     "Grant",
     "IssuedTokens",
     "PresentedToken",
+    "PurgeCounts",
     "RefreshExchange",
     "RefreshGrace",
     "Successor",
@@ -73,6 +76,7 @@ __all__ = [
     "insert_code",
     "insert_refresh_token",
     "open_grants",
+    "purge_expired",
     "refresh_tokens",
     "revoke_grant",
     "s256",
@@ -111,6 +115,15 @@ replaced it (§3.2.4). Reuse from this many seconds after the rotation revokes t
 LAST_USED_INTERVAL = 60
 """Verification moves a grant's ``last_used_at`` at most this often, in seconds, so a busy
 connection doesn't turn every request into a write (§3.2.4, assembly choice)."""
+
+CODE_RETENTION = 86400
+"""How long, in seconds, an authorization code's row outlives its ``expires_at`` before
+:func:`purge_expired` deletes it (§2.4, #77). A replay inside this day still finds the grant
+the code made, and revokes it."""
+
+REVOKED_RETENTION = 90 * 86400
+"""How long, in seconds, a revoked grant's refresh-token rows are kept after the revocation,
+when its refresh window would keep them longer (#77)."""
 
 log = logging.getLogger(__name__)
 
@@ -411,6 +424,45 @@ def _unspendable(conn: sqlite3.Connection, code_hash: str, now: int) -> Exchange
     if grant_id is not None and revoke_grant(conn, grant_id, "code_replay", now):
         return ExchangeRefused("invalid_grant", "code_replay", revoked_grant=grant_id)
     return ExchangeRefused("invalid_grant", "code_replay")
+
+
+# --- retention ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PurgeCounts:
+    """How many rows one :func:`purge_expired` deleted from each table. False when none."""
+
+    codes: int
+    access_tokens: int
+    refresh_tokens: int
+
+    def __bool__(self) -> bool:
+        return bool(self.codes or self.access_tokens or self.refresh_tokens)
+
+
+def purge_expired(conn: sqlite3.Connection, now: int) -> PurgeCounts:
+    """Delete the OAuth rows that can no longer do anything at ``now`` (§2.4, #77).
+
+    That is ``oauth_code`` rows that expired more than :data:`CODE_RETENTION` ago,
+    ``oauth_access_token`` rows at or past ``expires_at`` (the verifier already refuses them),
+    and ``oauth_refresh_token`` rows whose grant's ``refresh_expires_at`` has come, or whose
+    grant was revoked more than :data:`REVOKED_RETENTION` ago. Rotated refresh rows stay as
+    long as their grant's live ones, so reuse is still caught. Grants are never deleted.
+
+    A grant's refresh rows always go together, in one statement, so a rotated row's
+    ``successor_hash`` never points at a row already gone.
+    """
+    codes = conn.execute(
+        "DELETE FROM oauth_code WHERE expires_at < ?", (now - CODE_RETENTION,)
+    ).rowcount
+    access = conn.execute("DELETE FROM oauth_access_token WHERE expires_at <= ?", (now,)).rowcount
+    refresh = conn.execute(
+        "DELETE FROM oauth_refresh_token WHERE grant_id IN (SELECT id FROM oauth_grant "
+        "WHERE refresh_expires_at <= ? OR revoked_at < ?)",
+        (now, now - REVOKED_RETENTION),
+    ).rowcount
+    return PurgeCounts(codes, access, refresh)
 
 
 # --- refresh rotation ---------------------------------------------------------------------
