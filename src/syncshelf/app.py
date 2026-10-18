@@ -51,6 +51,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
@@ -59,6 +60,8 @@ from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
+from syncshelf.sync.limiter import Clock, hardcover_clients
+from syncshelf.sync.mirror import Mirror
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 
 __all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
@@ -105,6 +108,7 @@ def create_app(
     clock: Callable[[], float] = time.time,
     registry: ToolRegistry = REGISTRY,
     http_transport: httpx2.AsyncBaseTransport | None = None,
+    limiter_clock: Clock | None = None,
 ) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
@@ -116,8 +120,11 @@ def create_app(
 
     ``registry`` holds the tools served, :data:`syncshelf.tools.REGISTRY` by default.
 
-    ``http_transport`` carries the app's outbound HTTP calls (so far only the client-document
-    fetch) in place of the network; tests pass a ``MockTransport`` (§2.9).
+    ``http_transport`` carries the app's outbound HTTP calls (the client-document fetch and
+    Hardcover) in place of the network; tests pass a ``MockTransport`` (§2.9).
+
+    ``limiter_clock`` paces the Hardcover limiters (it sleeps as well as tells the time); the
+    real clock by default.
 
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
@@ -154,6 +161,7 @@ def create_app(
         _check_writable(data_dir)
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
+        hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
         try:
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
@@ -163,7 +171,8 @@ def create_app(
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             verifier.bind(db)
-            mcp.bind(Services(db, clock))
+            mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
+            mcp.bind(Services(db, clock, mirror))
             async with AsyncExitStack() as stack:
                 if oauth:  # only /authorize fetches client documents
                     await stack.enter_async_context(clients.running(db))
@@ -172,6 +181,8 @@ def create_app(
         finally:
             mcp.bind(None)
             verifier.bind(None)
+            for client in hardcover.values():
+                await client.aclose()
             await db.close()
 
     return Starlette(

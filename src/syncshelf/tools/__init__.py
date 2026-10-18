@@ -33,6 +33,8 @@ from mcp.types import Tool as MCPTool
 
 from syncshelf.config import PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
+from syncshelf.sync.limiter import interactive
+from syncshelf.sync.mirror import Mirror
 
 __all__ = [
     "HOUSEHOLD",
@@ -113,6 +115,8 @@ class Services:
     db: Database
     clock: Callable[[], float]
     """Wall-clock epoch seconds: ``create_app``'s one clock (§2.9)."""
+    mirror: Mirror
+    """Each profile's copy of its Hardcover library (§3.3.4)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)
@@ -166,7 +170,9 @@ class SyncShelfServer(MCPServer[Any]):
             )
         reset = _services.set(self._services)
         try:
-            return await super().call_tool(name, arguments, context)
+            # A tool call is someone waiting: its Hardcover calls jump the sync queue (§3.3.3).
+            with interactive():
+                return await super().call_tool(name, arguments, context)
         finally:
             _services.reset(reset)
 

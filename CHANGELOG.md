@@ -19,6 +19,14 @@ All notable changes to SyncShelf are recorded here. The format follows
   `cadence.hardcover_daily_reserve` (a whole number, default 1000): below that many requests
   left for the day, syncs wait for the daily reset (a `hardcover_reserve` warning), while
   Claude's calls carry on until none are left.
+- Migration `0003_mirror`: the `mirror_state`, `mirror_books`, `mirror_user_books`,
+  `mirror_reads` and `mirror_list_items` tables, a per-profile copy of the Hardcover library
+  (no review text). An upgrade snapshots the database to `pre-migration-0002.db` first.
+- MCP tool `get_my_library(status?, limit=25, cursor?)`: the caller's shelves as compact rows,
+  newest additions first, with totals and per-shelf counts. It reads the copy, refreshed when
+  older than `cadence.mirror_ttl`; when Hardcover can't be reached it answers from the older
+  copy flagged `stale`, and refuses only when there is no copy yet. Each refresh logs
+  `mirror_refreshed`, and a failed one `mirror_refresh_failed`.
 - New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.
