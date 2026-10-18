@@ -9,7 +9,6 @@ Reads without a format are reported in an explicit ``unknown`` bucket, never gue
 """
 
 import base64
-import binascii
 import json
 import sqlite3
 from collections import Counter
@@ -123,7 +122,7 @@ async def get_my_library(
     and an older copy was used. An edit just made in Hardcover itself may not show yet.
     """
     profile = current_profile()
-    offset = _offset(cursor)
+    after = _after(cursor)
     bound = services()
     try:
         freshness = await bound.mirror.fresh(profile)
@@ -133,13 +132,15 @@ async def get_my_library(
     if status is not None:
         books = [b for b in books if b.row["status"] == status]
     # Newest first; books with no date_added go last, then by Hardcover's id.
-    books.sort(key=lambda b: (b.date_added or "", b.user_book_id), reverse=True)
-    page = books[offset : offset + limit]
-    end = offset + len(page)
+    books.sort(key=_sort_key, reverse=True)
+    # The cursor is the last row's sort key, not an offset, so a refresh between pages
+    # (books added or removed) never repeats or skips a row.
+    rest = books if after is None else [b for b in books if _sort_key(b) < after]
+    page = rest[:limit]
     result = LibraryPage(
         books=[b.row for b in page],
         total=len(books),
-        next_cursor=_cursor(end) if end < len(books) else None,
+        next_cursor=_cursor(_sort_key(page[-1])) if len(rest) > limit else None,
         **_freshness(freshness),
     )
     if len(books) > len(page):
@@ -199,26 +200,34 @@ def _first_author(contributors: list[dict[str, Any]]) -> str | None:
     for c in contributors:
         if not c.get("role"):
             return c["name"]
-    return contributors[0]["name"] if contributors else None
+    # Only narrators, editors and the like: naming one as the author would mislead.
+    return None
 
 
 # --- paging and freshness -----------------------------------------------------------------
 
 
-def _cursor(offset: int) -> str:
-    return base64.urlsafe_b64encode(f"o:{offset}".encode()).decode().rstrip("=")
+type _Key = tuple[str, int]
 
 
-def _offset(cursor: str | None) -> int:
+def _sort_key(book: _Book) -> _Key:
+    return (book.date_added or "", book.user_book_id)
+
+
+def _cursor(key: _Key) -> str:
+    return base64.urlsafe_b64encode(json.dumps(list(key)).encode()).decode().rstrip("=")
+
+
+def _after(cursor: str | None) -> _Key | None:
     if cursor is None:
-        return 0
+        return None
     try:
-        text = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
-        kind, _, value = text.partition(":")
-        if kind != "o" or not value.isdigit():
+        key = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        date_added, user_book_id = key
+        if not isinstance(date_added, str) or type(user_book_id) is not int:
             raise ValueError
-        return int(value)
-    except ValueError, binascii.Error, UnicodeDecodeError:
+        return (date_added, user_book_id)
+    except ValueError, TypeError:  # binascii.Error and JSON/Unicode errors are ValueErrors
         raise ToolError(
             "That cursor isn't one this tool gave out. Pass next_cursor from the previous "
             "page, or leave cursor out to start from the beginning."

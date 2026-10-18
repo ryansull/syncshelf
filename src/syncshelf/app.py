@@ -56,11 +56,12 @@ from syncshelf import __version__
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import TokenVerifier
+from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
-from syncshelf.sync.limiter import Clock, hardcover_clients
+from syncshelf.sync.limiter import Clock, HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 
@@ -161,8 +162,9 @@ def create_app(
         _check_writable(data_dir)
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
-        hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
+        hardcover: dict[str, HardcoverClient] = {}
         try:
+            hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
@@ -181,9 +183,11 @@ def create_app(
         finally:
             mcp.bind(None)
             verifier.bind(None)
-            for client in hardcover.values():
-                await client.aclose()
-            await db.close()
+            try:
+                for client in hardcover.values():
+                    await client.aclose()
+            finally:
+                await db.close()
 
     return Starlette(
         routes=[
@@ -194,6 +198,28 @@ def create_app(
         ],
         lifespan=lifespan,
     )
+
+
+def hardcover_clients(
+    config: Config,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    clock: Clock | None = None,
+) -> dict[str, HardcoverClient]:
+    """One Hardcover client per configured profile, each with that profile's token and gated
+    by its own limiter (§3.3.3). ``transport`` and ``clock`` are for tests."""
+    # Config validation requires the URL from phase 3; the fallback only satisfies the type.
+    url = config.services.hardcover_url or ""
+    reserve = config.cadence.hardcover_daily_reserve
+    return {
+        name: HardcoverClient(
+            url,
+            profile.hardcover_token,
+            gate=HardcoverLimiter(name, reserve=reserve, clock=clock),
+            transport=transport,
+        )
+        for name, profile in config.profiles.items()
+    }
 
 
 async def healthz(request: Request) -> JSONResponse:

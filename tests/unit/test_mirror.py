@@ -200,3 +200,37 @@ async def test_a_user_book_is_stored_without_its_review(
     assert await query(db, "SELECT * FROM mirror_list_items") == [("alice", 2, "Favourites", 7)]
     for table in ("books", "user_books", "reads", "list_items", "state"):
         assert "private thoughts" not in str(await query(db, f"SELECT * FROM mirror_{table}"))
+
+
+async def test_readers_queued_behind_a_failed_refresh_share_the_failure(
+    mirror: Mirror, fake: FakeHardcover
+) -> None:
+    fake.fail_next("Me", "unavailable")
+    outcomes: list[str] = []
+
+    async def read() -> None:
+        try:
+            await mirror.fresh("alice")
+            outcomes.append("ok")
+        except NoMirror:
+            outcomes.append("refused")
+
+    async with anyio.create_task_group() as tg:
+        for _ in range(3):
+            tg.start_soon(read)
+    assert outcomes == ["refused"] * 3
+    assert [op for op, _ in fake.requests] == ["Me"]
+
+
+async def test_data_the_copy_cant_hold_serves_the_old_copy_stale(
+    mirror: Mirror, db: Database, fake: FakeHardcover, clock: FakeClock
+) -> None:
+    fake.add_user_book(42, 7)
+    first = await mirror.fresh("alice")
+    fake.add_user_book(42, 8, rating=4.25)  # off the half-star grid: the CHECK refuses it
+    clock.advance(TTL)
+    stale = await mirror.fresh("alice")
+    assert (stale.as_of, stale.stale) == (first.as_of, True)
+    assert stale.stale_reason == "Hardcover sent data SyncShelf couldn't store (IntegrityError)"
+    assert await query(db, "SELECT hc_book_id FROM mirror_user_books") == [(7,)]
+    assert await query(db, "SELECT last_error FROM mirror_state") == [(stale.stale_reason,)]

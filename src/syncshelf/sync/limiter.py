@@ -30,17 +30,13 @@ from enum import IntEnum
 from itertools import count
 from typing import Literal, Protocol
 
-import httpx2
-
 from syncshelf.clients.hardcover import (
     HardcoverCapacityError,
-    HardcoverClient,
     HardcoverError,
     HardcoverRateLimited,
     RateLimit,
     Result,
 )
-from syncshelf.config import Config
 
 __all__ = [
     "BURST",
@@ -54,7 +50,6 @@ __all__ = [
     "Priority",
     "ServeStale",
     "SystemClock",
-    "hardcover_clients",
     "interactive",
 ]
 
@@ -333,29 +328,6 @@ class HardcoverLimiter:
             self._daily_remaining = None
             self._daily_reset = None
             self._in_reserve = False
-
-
-def hardcover_clients(
-    config: Config,
-    *,
-    transport: httpx2.AsyncBaseTransport | None = None,
-    clock: Clock | None = None,
-) -> dict[str, HardcoverClient]:
-    """One Hardcover client per configured profile, each with that profile's token and gated
-    by its own limiter. ``transport`` and ``clock`` are for tests."""
-    url = config.services.hardcover_url
-    if url is None:  # config validation requires it from phase 3
-        raise ValueError("services.hardcover_url is not set")
-    reserve = config.cadence.hardcover_daily_reserve
-    return {
-        name: HardcoverClient(
-            url,
-            profile.hardcover_token,
-            gate=HardcoverLimiter(name, reserve=reserve, clock=clock),
-            transport=transport,
-        )
-        for name, profile in config.profiles.items()
-    }
 
 
 def _next_midnight_utc(now: float) -> float:

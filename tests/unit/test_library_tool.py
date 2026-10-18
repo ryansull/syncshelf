@@ -193,3 +193,27 @@ async def test_with_no_copy_and_hardcover_down_it_is_refused(
     async with connect() as mcp:
         message = await error(mcp)
     assert "no copy of this Hardcover library yet" in message
+
+
+async def test_paging_survives_a_refresh_between_pages(
+    connect: Any, fake: FakeHardcover, clock: FakeClock
+) -> None:
+    for book_id in range(1, 31):
+        fake.add_user_book(42, book_id, date_added=f"2026-01-{book_id:02d}")
+    async with connect() as mcp:
+        first = await library(mcp)
+        fake.add_user_book(42, 99, date_added="2026-02-01")  # newest: sorts first
+        clock.advance(TTL)
+        second = await library(mcp, cursor=first["next_cursor"])
+    assert [b["book_id"] for b in second["books"]] == [5, 4, 3, 2, 1]
+    assert second["total"] == 31
+
+
+async def test_a_book_credited_only_to_a_narrator_has_no_author(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    narrator = {"author": {"id": 2, "name": "Scott Brick"}, "contribution": "Narrator"}
+    fake.add_user_book(42, 7, book={"cached_contributors": [narrator]})
+    async with connect() as mcp:
+        [row] = (await library(mcp))["books"]
+    assert row["author"] is None

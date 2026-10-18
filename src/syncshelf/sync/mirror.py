@@ -66,25 +66,41 @@ class Mirror:
         self._ttl = ttl
         self._clock = clock
         self._locks = {profile: asyncio.Lock() for profile in clients}
+        self._attempts = dict.fromkeys(clients, 0)
+        self._last: dict[str, Freshness | NoMirror] = {}
 
     async def fresh(self, profile: str) -> Freshness:
         """Make ``profile``'s copy current enough to read, refreshing it if it's older than
         the TTL, and say how current it is. Raises :class:`NoMirror` when there's no copy and
-        the refresh failed."""
+        the refresh failed.
+
+        Readers that queue behind a refresh take its outcome, a failure included, rather than
+        each trying again in turn.
+        """
+        # Counted before anything awaits, so an attempt that starts after this reader arrived
+        # is always one it can share.
+        attempts = self._attempts[profile]
         as_of = await self._db.read(_as_of, profile)
         if as_of is not None and self._clock() - as_of < self._ttl:
             return Freshness(as_of)
         async with self._locks[profile]:
-            # A refresh that finished while this reader waited counts.
+            if self._attempts[profile] != attempts:
+                # A refresh ran while this reader waited: share its outcome.
+                return self._outcome(profile)
+            # One that started before this reader arrived may have finished meanwhile.
             as_of = await self._db.read(_as_of, profile)
             if as_of is not None and self._clock() - as_of < self._ttl:
                 return Freshness(as_of)
+            self._attempts[profile] += 1
             try:
                 library = await self._clients[profile].library()
-            except HardcoverError as exc:
-                return await self._failed(profile, as_of, exc)
-            now = int(self._clock())
-            await self._db.write(replace_library, profile, library, now)
+                now = int(self._clock())
+                await self._db.write(replace_library, profile, library, now)
+            except (HardcoverError, sqlite3.Error, KeyError, TypeError) as exc:
+                # A database or shape error means Hardcover sent something the copy can't
+                # hold; like an unreachable Hardcover, the old copy is served meanwhile.
+                self._last[profile] = await self._failed(profile, exc)
+                return self._outcome(profile)
             log.info(
                 "refreshed the Hardcover mirror",
                 extra={
@@ -94,18 +110,35 @@ class Mirror:
                     "cost": library.cost,
                 },
             )
-            return Freshness(now)
+            done = Freshness(now)
+            self._last[profile] = done
+            return done
 
-    async def _failed(self, profile: str, as_of: int | None, exc: HardcoverError) -> Freshness:
-        reason = scrub(str(exc))
+    def _outcome(self, profile: str) -> Freshness:
+        last = self._last[profile]
+        if isinstance(last, NoMirror):
+            raise last
+        return last
+
+    async def _failed(self, profile: str, exc: Exception) -> Freshness | NoMirror:
+        if isinstance(exc, HardcoverError):
+            reason = scrub(str(exc))
+        else:
+            reason = f"Hardcover sent data SyncShelf couldn't store ({type(exc).__name__})"
+            log.error(
+                "the Hardcover mirror couldn't store a refresh",
+                exc_info=True,
+                extra={"event": "mirror_store_failed", "profile": profile},
+            )
         await self._db.write(_record_failure, profile, int(self._clock()), reason)
         log.warning(
             "the Hardcover mirror refresh failed: %s",
             reason,
             extra={"event": "mirror_refresh_failed", "profile": profile},
         )
+        as_of = await self._db.read(_as_of, profile)
         if as_of is None:
-            raise NoMirror(
+            return NoMirror(
                 f"SyncShelf has no copy of this Hardcover library yet, and fetching it "
                 f"failed: {reason}"
             )
