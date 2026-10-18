@@ -39,3 +39,7 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local state and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/
