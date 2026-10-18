@@ -35,6 +35,7 @@ class _Fault:
     kind: str
     retry_after: int
     message: str
+    user_id: int | None = None
 
 
 class FakeHardcover:
@@ -46,6 +47,8 @@ class FakeHardcover:
         self.lists: dict[int, list[dict[str, Any]]] = {}
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
+        self.callers: list[int] = []
+        """The user id whose token sent each request, in the same order."""
         self.daily_remaining = 5000
         self._faults: dict[str, list[_Fault]] = {}
         self._ids = count(1)
@@ -88,15 +91,23 @@ class FakeHardcover:
         self.lists[user_id].append({"id": list_id, "name": name, "list_books": list_books})
 
     def fail_next(
-        self, operation: str, kind: str, *, retry_after: int = 7, message: str = "refused"
+        self,
+        operation: str,
+        kind: str,
+        *,
+        retry_after: int = 7,
+        message: str = "refused",
+        user_id: int | None = None,
     ) -> None:
-        """Make the next request for ``operation`` fail with ``kind`` (one of :data:`FAULTS`).
+        """Make the next request for ``operation`` fail with ``kind`` (one of :data:`FAULTS`),
+        from any user, or only from ``user_id``.
 
         ``validation`` answers 200 with ``message`` in the mutation result's ``error``.
         """
         if kind not in FAULTS:
             raise ValueError(f"unknown fault {kind!r}")
-        self._faults.setdefault(operation, []).append(_Fault(kind, retry_after, message))
+        fault = _Fault(kind, retry_after, message, user_id)
+        self._faults.setdefault(operation, []).append(fault)
 
     # --- transport ------------------------------------------------------------------------
 
@@ -117,10 +128,12 @@ class FakeHardcover:
         match = _OPERATION.search(query)
         operation = match.group(1) if match else ""
         self.requests.append((operation, variables))
+        self.callers.append(user_id)
 
-        faults = self._faults.get(operation)
-        if faults:
-            fault = faults.pop(0)
+        faults = self._faults.get(operation, [])
+        fault = next((f for f in faults if f.user_id in (None, user_id)), None)
+        if fault is not None:
+            faults.remove(fault)
             if fault.kind == "timeout":
                 raise httpx2.ReadTimeout("timed out", request=request)
             if fault.kind == "rate_limited":

@@ -117,6 +117,8 @@ class Services:
     """The refresh-grace cache ``/token`` fills, which a revocation empties (§3.2.7)."""
     mirror: Mirror
     """Each profile's copy of its Hardcover library (§3.3.4)."""
+    profiles: Mapping[str, ProfileConfig]
+    """The configured profiles, for resolving a read tool's ``profile`` argument (§2.8)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)

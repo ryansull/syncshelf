@@ -201,7 +201,9 @@ def create_app(
             app.state.grace = grace
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
-            mcp.bind(Services(db=db, clock=clock, grace=grace, mirror=mirror))
+            mcp.bind(
+                Services(db=db, clock=clock, grace=grace, mirror=mirror, profiles=config.profiles)
+            )
             async with AsyncExitStack() as stack:
                 purges = await stack.enter_async_context(anyio.create_task_group())
                 purges.start_soon(_purge_every, purge_interval, db, clock, name=PURGE_TASK)

@@ -8,13 +8,14 @@ failed and the copy was served anyway.
 Reads without a format are reported in an explicit ``unknown`` bucket, never guessed (§3.3.2).
 """
 
+import asyncio
 import base64
 import hashlib
 import json
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
@@ -22,8 +23,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from syncshelf.sync.mirror import Freshness, NoMirror
-from syncshelf.tools import REGISTRY, current_profile, services
+from syncshelf.sync.mirror import Freshness, Mirror, NoMirror
+from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
 __all__ = ["FORMATS", "SORTS", "STATUSES", "LibraryPage", "LibraryRow", "get_my_library"]
 
@@ -73,6 +74,8 @@ class LibraryRow(TypedDict):
     read_count: int
     series: Series | None
     genres: list[str]
+    profile: NotRequired[str]
+    """Whose shelf the row is from, on ``household`` answers."""
 
 
 class LibraryPage(TypedDict):
@@ -145,12 +148,14 @@ async def get_my_library(
     sort: Sort = "date_added",
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
     cursor: str | None = None,
+    profile: str = ME,
 ) -> LibraryPage:
-    """List books on the caller's Hardcover shelves, filtered and sorted.
+    """List books on Hardcover shelves, the caller's by default, filtered and sorted.
 
-    Use this for questions about the user's own library: what they're currently reading,
-    what's on their want-to-read (by author, in a genre), what they read in a period, what
-    they rated highest last year, and how many of each. For one book's full record (reads with
+    Use this for questions about the user's library, or a household member's (see profile):
+    what they're currently reading, what's on their want-to-read (by author, in a genre), what
+    they read in a period, what they rated highest last year, what both have read, and how
+    many of each. For one book's full record (reads with
     dates, review, series, tags) use get_book instead. Every filter is optional, and filters
     combine (all must match).
 
@@ -170,6 +175,13 @@ async def get_my_library(
       "Highest rated last year" is finished_from/finished_to for that year with sort=rating.
     - limit: rows per page, 1 to 100 (default 25).
     - cursor: the next_cursor from the previous page, with the same filters and sort.
+    - profile: "me" (the default), another profile's name, or "household" for the caller's
+      shelves and those of every profile that shares its books. Use it for "what have we both
+      read?" or "what did my partner think of X?". On household answers each row has a
+      profile field saying whose shelf it's from, and a book both have is two rows. A profile
+      that hasn't opted in to sharing is refused. Status, rating, dates and formats are
+      shared; reviews never are. If someone's books can't be read yet, the answer comes
+      from the rest, with stale true and stale_reason naming them.
 
     Each row has book_id, title, author (the first author), status, rating (0.5–5 in half
     stars, or null), formats (of its reads: audio, ebook, print, or unknown when Hardcover
@@ -184,7 +196,7 @@ async def get_my_library(
     when it was taken, and stale is true (with stale_reason) when Hardcover couldn't be reached
     and an older copy was used. An edit just made in Hardcover itself may not show yet.
     """
-    profile = current_profile()
+    caller = current_profile()
     if finished_from and finished_to and finished_from > finished_to:
         raise ToolError("finished_from is after finished_to; give the earlier date first.")
     wanted = _Filters(
@@ -198,13 +210,19 @@ async def get_my_library(
         finished_from=finished_from.isoformat() if finished_from else None,
         finished_to=finished_to.isoformat() if finished_to else None,
     )
-    after = _after(cursor, sort, wanted.digest())
     bound = services()
-    try:
-        freshness = await bound.mirror.fresh(profile)
-    except NoMirror as exc:
-        raise ToolError(str(exc)) from None
-    books = await bound.db.read(_library, profile)
+    # Refused here, before any refresh, when a named profile hasn't opted in (§3.3.4).
+    names = resolve_profiles(profile, caller, bound.profiles)
+    # Bound to the profiles resolved, so "me" and the caller's own name share cursors.
+    digest = wanted.digest(names)
+    after = _after(cursor, sort, digest)
+    freshness = await _refresh(bound.mirror, names, caller)
+    # Rows name their shelf whenever the answer isn't only the caller's own.
+    tag = names != (caller,)
+    books: list[_Book] = []
+    for name in names:
+        shelf = await bound.db.read(_library, name)
+        books += [replace(b, row=_tagged(b.row, name)) for b in shelf] if tag else shelf
     books = [b for b in books if wanted.match(b)]
     key, descending = SORTS[sort]
     books.sort(key=key, reverse=descending)
@@ -220,7 +238,7 @@ async def get_my_library(
     result = LibraryPage(
         books=[b.row for b in page],
         total=len(books),
-        next_cursor=_cursor(sort, wanted.digest(), key(page[-1])) if len(rest) > limit else None,
+        next_cursor=_cursor(sort, digest, key(page[-1])) if len(rest) > limit else None,
         **_freshness(freshness),
     )
     if len(books) > len(page):
@@ -266,10 +284,10 @@ class _Filters:
         # One read must match both: "audiobooks finished last year" means a listen that year.
         return not by_read or any(self._read(r) for r in b.reads)
 
-    def digest(self) -> str:
-        """A short fingerprint of these filters, which a cursor carries so it can't be reused
-        under different ones."""
-        text = json.dumps(asdict(self), sort_keys=True)
+    def digest(self, profiles: tuple[str, ...]) -> str:
+        """A short fingerprint of these filters and the shelves read, which a cursor carries
+        so it can't be reused under different ones."""
+        text = json.dumps([asdict(self), profiles], sort_keys=True)
         return hashlib.sha256(text.encode()).hexdigest()[:12]
 
     def _series(self, b: _Book) -> bool:
@@ -391,11 +409,54 @@ def _after(cursor: str | None, sort: str, digest: str) -> _Key | None:
         ) from None
 
 
-def _freshness(freshness: Freshness) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "as_of": datetime.fromtimestamp(freshness.as_of, UTC).isoformat(),
-        "stale": freshness.stale,
+type _Copy = Freshness | NoMirror
+"""A profile's copy as an answer can use it: how fresh it is, or that it has none yet."""
+
+
+async def _refresh(mirror: Mirror, names: tuple[str, ...], caller: str) -> dict[str, _Copy]:
+    """Make each profile's copy fresh, at the same time: each has its own token, limiter and
+    lock. A profile with no copy yet is noted, so the answer comes from the others, flagged
+    stale (#116). Only when no profile asked about has a copy is the answer refused."""
+    copies: dict[str, _Copy] = {}
+
+    async def one(name: str) -> None:
+        try:
+            copies[name] = await mirror.fresh(name)
+        except NoMirror as exc:
+            copies[name] = exc
+
+    async with asyncio.TaskGroup() as tg:
+        for name in names:
+            tg.create_task(one(name))
+    if all(isinstance(c, NoMirror) for c in copies.values()):
+        first = names[0]
+        whose = "" if first == caller or len(names) == 1 else f"For {first}: "
+        raise ToolError(whose + str(copies[first]))
+    return {name: copies[name] for name in names}
+
+
+def _tagged(row: LibraryRow, profile: str) -> LibraryRow:
+    tagged = LibraryRow(**row)
+    tagged["profile"] = profile
+    return tagged
+
+
+def _freshness(by_profile: dict[str, _Copy]) -> dict[str, Any]:
+    """``as_of`` and ``stale`` for an answer drawn from one or more copies: the oldest copy's
+    ``as_of``, and stale when any copy is stale or missing, with each one's reason."""
+    copies = {name: c for name, c in by_profile.items() if isinstance(c, Freshness)}
+    oldest = min(f.as_of for f in copies.values())
+    reasons = {
+        name: str(c) if isinstance(c, NoMirror) else c.stale_reason
+        for name, c in by_profile.items()
+        if isinstance(c, NoMirror) or c.stale_reason
     }
-    if freshness.stale_reason is not None:
-        out["stale_reason"] = freshness.stale_reason
+    out: dict[str, Any] = {
+        "as_of": datetime.fromtimestamp(oldest, UTC).isoformat(),
+        "stale": bool(reasons) or any(f.stale for f in copies.values()),
+    }
+    if len(by_profile) == 1 and reasons:
+        out["stale_reason"] = next(iter(reasons.values()))
+    elif reasons:
+        out["stale_reason"] = "; ".join(f"{name}: {why}" for name, why in reasons.items())
     return out
