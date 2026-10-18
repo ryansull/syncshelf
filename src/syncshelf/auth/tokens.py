@@ -13,6 +13,10 @@ consent page showed, and the code exchange redeems it (:func:`exchange_code`). T
 made only on redemption, which records it on the code row, so a replayed code can find and
 revoke the grant it produced (§3.2.4).
 
+**Refresh.** A refresh rotates the token (:func:`refresh_tokens`): the old one is marked
+rotated with its successor's hash, and the raw successor pair waits in :class:`RefreshGrace`
+for 60 s in case the client retries. Reuse past that revokes the grant (§3.2.4).
+
 **The verifier.** The MCP SDK, as the resource server, hands every bearer token to
 :class:`TokenVerifier`. A token it accepts becomes the request's identity:
 ``get_access_token().subject`` is the profile name, and ``.claims`` carries ``iss``, ``email``
@@ -30,20 +34,23 @@ import hmac
 import logging
 import secrets
 import sqlite3
+import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, fields
 
 from mcp.server.auth.provider import AccessToken
 
 from syncshelf.config import Config, DevConfig
 from syncshelf.db import Database
+from syncshelf.logging import add_secret, discard_secret
 
 __all__ = [
     "ACCESS_PREFIX",
     "ACCESS_TOKEN_TTL",
     "CODE_TTL",
     "DEV_CLIENT_ID",
+    "GRACE_PERIOD",
     "LAST_USED_INTERVAL",
     "OFFLINE_ACCESS",
     "REFRESH_PREFIX",
@@ -54,6 +61,9 @@ __all__ = [
     "Grant",
     "IssuedTokens",
     "PresentedToken",
+    "RefreshExchange",
+    "RefreshGrace",
+    "Successor",
     "TokenVerifier",
     "create_grant",
     "exchange_code",
@@ -63,6 +73,7 @@ __all__ = [
     "insert_code",
     "insert_refresh_token",
     "open_grants",
+    "refresh_tokens",
     "revoke_grant",
     "s256",
     "touch_grant",
@@ -92,6 +103,10 @@ CODE_TTL = 120
 REFRESH_WINDOW = 90 * 86400
 """The sliding refresh window: a grant's ``refresh_expires_at`` is this far past its creation
 or its last refresh (§3.2.4). There is no absolute cap."""
+
+GRACE_PERIOD = 60
+"""How long, in seconds, a rotated refresh token can still be retried for the pair that
+replaced it (§3.2.4). Reuse from this many seconds after the rotation revokes the grant."""
 
 LAST_USED_INTERVAL = 60
 """Verification moves a grant's ``last_used_at`` at most this often, in seconds, so a busy
@@ -301,7 +316,7 @@ class CodeExchange:
 
 @dataclass(frozen=True)
 class IssuedTokens:
-    """A redeemed code's new grant and the raw tokens on it, for the client only."""
+    """The raw tokens a code exchange or refresh issued on a grant, for the client only."""
 
     grant_id: int
     client_label: str
@@ -309,13 +324,15 @@ class IssuedTokens:
     refresh_token: str | None
     """Issued only when the grant's scopes include ``offline_access``."""
     scopes: tuple[str, ...]
+    retried: bool = False
+    """True when a refresh retry inside the grace period got back the pair issued before."""
 
 
 @dataclass(frozen=True)
 class ExchangeRefused:
-    """Why a code exchange was refused: ``error`` is the OAuth error code for the client,
-    ``reason`` a snake_case code for the log, and ``revoked_grant`` the grant a replayed code
-    had produced, now revoked."""
+    """Why a code exchange or refresh was refused: ``error`` is the OAuth error code for the
+    client, ``reason`` a snake_case code for the log, and ``revoked_grant`` the grant a
+    replayed code had produced, or a reused refresh token belongs to, now revoked."""
 
     error: str
     reason: str
@@ -392,6 +409,165 @@ def _unspendable(conn: sqlite3.Connection, code_hash: str, now: int) -> Exchange
     if grant_id is not None and revoke_grant(conn, grant_id, "code_replay", now):
         return ExchangeRefused("invalid_grant", "code_replay", revoked_grant=grant_id)
     return ExchangeRefused("invalid_grant", "code_replay")
+
+
+# --- refresh rotation ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Successor:
+    """The raw pair a refresh issued, held for a retry with the token it replaced."""
+
+    grant_id: int
+    access_token: str
+    refresh_token: str
+    held_until: int
+    """Epoch seconds: the entry is gone from this moment (rotation + :data:`GRACE_PERIOD`)."""
+
+
+class RefreshGrace:
+    """The 60 s refresh-grace cache (§3.2.4): each rotation's raw successor pair, in process
+    memory only, keyed by the sha256 hex of the refresh token it replaced.
+
+    A client that lost the response to a refresh retries with the old token, and gets the
+    same pair back while its entry is held. Nothing here is persisted, so a restart forgets
+    every entry, and a retry after one is refused without revoking.
+
+    The raw tokens held are registered with :func:`syncshelf.logging.add_secret` for as long
+    as they are held (§2.7). Expired entries are swept on every call, so none outlives its
+    window by more than the time to the next refresh. Safe to use from any thread: rotation
+    reads and fills it on the database's writer thread, and revocation empties it from the
+    event loop.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, Successor] = {}
+
+    def hold(self, old_hash: str, successor: Successor, now: int) -> None:
+        """Hold ``successor`` for a retry with the token hashed to ``old_hash``."""
+        with self._lock:
+            self._sweep(now)
+            self._entries[old_hash] = successor
+            add_secret(successor.access_token)
+            add_secret(successor.refresh_token)
+
+    def get(self, old_hash: str, now: int) -> Successor | None:
+        """The pair that replaced the token hashed to ``old_hash``, if still held at ``now``."""
+        with self._lock:
+            self._sweep(now)
+            return self._entries.get(old_hash)
+
+    def drop_grants(self, grant_ids: Collection[int]) -> int:
+        """Forget every entry on one of ``grant_ids``, as revoking them requires (§3.2.7).
+        Returns how many entries went."""
+        with self._lock:
+            dropped = [h for h, entry in self._entries.items() if entry.grant_id in grant_ids]
+            for old_hash in dropped:
+                self._forget(old_hash)
+            return len(dropped)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def _sweep(self, now: int) -> None:
+        for old_hash in [h for h, entry in self._entries.items() if now >= entry.held_until]:
+            self._forget(old_hash)
+
+    def _forget(self, old_hash: str) -> None:
+        entry = self._entries.pop(old_hash)
+        discard_secret(entry.access_token)
+        discard_secret(entry.refresh_token)
+
+
+@dataclass(frozen=True)
+class RefreshExchange:
+    """What a ``grant_type=refresh_token`` request presents, already checked for shape: one
+    of each parameter and a ``client_id`` past the client gate."""
+
+    refresh_token: str
+    """The raw refresh token, which is only ever hashed."""
+    client_id: str
+    resource: str | None
+    """As :attr:`CodeExchange.resource`."""
+
+
+def refresh_tokens(
+    conn: sqlite3.Connection, refresh: RefreshExchange, grace: RefreshGrace, now: int
+) -> IssuedTokens | ExchangeRefused:
+    """Rotate a refresh token at ``now`` (§3.2.4). One unit of work for
+    :meth:`syncshelf.db.Database.write`, so it all happens in one ``BEGIN IMMEDIATE``.
+
+    A current token is marked rotated with its successor's hash, a new refresh and access
+    token are issued on its grant, and the grant's sliding window and ``last_used_at`` move
+    to ``now``. The new pair is held in ``grace`` for :data:`GRACE_PERIOD`.
+
+    A token that was already rotated is a reuse. Within the grace period it gets the pair it
+    was issued before, from ``grace``; after it, the grant is revoked (``refresh_reuse``).
+    Inside the period with no entry held (the process restarted) it is refused without
+    revoking, so the client just signs in again.
+
+    ``grace`` is read and filled here, on the writer thread, because writes run one at a
+    time: two refreshes racing with one token rotate it once, and the second sees the first's
+    entry. An entry held by a transaction whose ``COMMIT`` then fails is never served, since
+    its token was never marked rotated. As with :func:`exchange_code`, a refusal is returned
+    rather than raised, so a revocation commits. #119 lists the calls the order of checks
+    makes where the spec is silent.
+    """
+    token_hash = hash_token(refresh.refresh_token)
+    row = conn.execute(
+        f"SELECT t.rotated_at, t.revoked_at, p.name IS NULL OR p.removed_at IS NOT NULL, "
+        f"{_GRANT_COLUMNS} FROM oauth_refresh_token t "
+        "JOIN oauth_grant g ON g.id = t.grant_id "
+        "LEFT JOIN profiles p ON p.name = g.profile "
+        "WHERE t.token_hash = ?",
+        (token_hash,),
+    ).fetchone()
+    if row is None:
+        return ExchangeRefused("invalid_grant", "refresh_unknown")
+    rotated_at, revoked_at, removed, *columns = row
+    grant = _grant(tuple(columns))
+    if grant.revoked_at is not None:
+        return ExchangeRefused("invalid_grant", "grant_revoked")
+    if revoked_at is not None:
+        return ExchangeRefused("invalid_grant", "token_revoked")
+    if removed:
+        return ExchangeRefused("invalid_grant", "profile_removed")
+    if now >= grant.refresh_expires_at:
+        return ExchangeRefused("invalid_grant", "refresh_expired")
+    if rotated_at is not None and now >= rotated_at + GRACE_PERIOD:
+        # Like a replayed code, a reuse revokes whatever client presents it.
+        revoke_grant(conn, grant.id, "refresh_reuse", now)
+        return ExchangeRefused("invalid_grant", "refresh_reuse", revoked_grant=grant.id)
+    if refresh.client_id != grant.client_id:
+        return ExchangeRefused("invalid_grant", "client_mismatch")
+    if refresh.resource is not None and refresh.resource != grant.resource:
+        return ExchangeRefused("invalid_target", "resource_mismatch")
+    if rotated_at is not None:
+        held = grace.get(token_hash, now)
+        if held is None:
+            return ExchangeRefused("invalid_grant", "refresh_grace_lost")
+        return IssuedTokens(
+            grant.id,
+            grant.client_label,
+            held.access_token,
+            held.refresh_token,
+            grant.scopes,
+            retried=True,
+        )
+    access = insert_access_token(conn, grant.id, now)
+    successor = insert_refresh_token(conn, grant.id, now)
+    conn.execute(
+        "UPDATE oauth_refresh_token SET rotated_at = ?, successor_hash = ? WHERE token_hash = ?",
+        (now, hash_token(successor), token_hash),
+    )
+    conn.execute(
+        "UPDATE oauth_grant SET refresh_expires_at = ?, last_used_at = ? WHERE id = ?",
+        (now + REFRESH_WINDOW, now, grant.id),
+    )
+    grace.hold(token_hash, Successor(grant.id, access, successor, now + GRACE_PERIOD), now)
+    return IssuedTokens(grant.id, grant.client_label, access, successor, grant.scopes)
 
 
 @dataclass(frozen=True)
