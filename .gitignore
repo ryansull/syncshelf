@@ -7,6 +7,7 @@ secrets/
 *.key
 
 # Local homelab config (IPs, hostnames, emails) stays out of the public repo
+profiles.yaml
 local/
 *.local.yaml
 *.local.yml

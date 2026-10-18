@@ -44,9 +44,12 @@ Contributing rules, for people and agents alike, are in [`AGENTS.md`](AGENTS.md)
 
 ## Configuration and deployment
 
-Configuration goes in `profiles.yaml`, modelled on `profiles.example.yaml`, with secrets in the
-environment (see `.env.example`). Deployment is covered in `docs/runbook.md`. Both files arrive
-with the phases that need them.
+Configuration goes in `profiles.yaml` (git-ignored), modelled on
+[`profiles.example.yaml`](profiles.example.yaml). SyncShelf reads it from the path in
+`SYNCSHELF_CONFIG`, default `/config/profiles.yaml`. Secrets never go in the file: each is a
+`${VAR}` reference to the environment (see `.env.example`) or a `*_file` path. Startup stops on
+bad config with a message naming the key. Deployment is covered in `docs/runbook.md`, which
+arrives in phase 7.
 
 ## Licence
 
