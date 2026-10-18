@@ -1,0 +1,97 @@
+# The matcher's normalisation and scoring helpers (SPEC §3.4a.5). The 4a matcher chain adds
+# its own cases to this file. These cases are the decision table: when a case and the spec
+# disagree, fix the case first, then the code (AGENTS.md).
+#
+# Normalisation order (#105): NFKD and diacritics, casefold, & → and, the trailing series
+# parenthetical, then (author names only) Last, First → First Last, then punctuation and
+# whitespace, then a leading article.
+
+normalise:  # titles
+  - {in: "Dune", out: "dune"}
+  - {in: "  The   Hobbit ", out: "hobbit"}
+  - {in: "A Wizard of Earthsea", out: "wizard of earthsea"}
+  - {in: "An Ember in the Ashes", out: "ember in the ashes"}
+  - {in: "Theory of Everything", out: "theory of everything"}   # "the" only as a word
+  - {in: "Les Misérables", out: "les miserables"}               # diacritics
+  - {in: "ÆON", out: "æon"}                                     # no decomposition, kept
+  - {in: "STRASSE", out: "strasse"}                             # casefold
+  - {in: "Straße", out: "strasse"}                              # casefold, not lower
+  - {in: "Pride & Prejudice", out: "pride and prejudice"}
+  - {in: "Dune: Messiah", out: "dune messiah"}
+  - {in: "Don't Panic!", out: "don t panic"}                    # a space per mark
+  - {in: "Sci-Fi—Stories", out: "sci fi stories"}               # dashes too
+  - {in: "The Way of Kings (The Stormlight Archive, #1)", out: "way of kings"}   # series
+  - {in: "Skin Game (The Dresden Files, #15.5)", out: "skin game"}              # decimals
+  - {in: "Mistborn (Mistborn #1)", out: "mistborn"}                             # no comma
+  - {in: "Dune (40th Anniversary Edition)", out: "dune 40th anniversary edition"}  # no #N
+  - {in: "The Lord of the Rings, Volume 1", out: "lord of the rings volume 1"}  # no swap
+  - {in: "Herbert, Frank", out: "herbert frank"}                # a title is never swapped
+  - {in: "Me, Myself, and I", out: "me myself and i"}
+  - {in: "", out: ""}
+
+normalise_author:  # author names: the same steps, plus Last, First → First Last
+  - {in: "Frank Herbert", out: "frank herbert"}
+  - {in: "Herbert, Frank", out: "frank herbert"}
+  - {in: "Le Guin, Ursula K.", out: "ursula k le guin"}
+  - {in: "Tolkien, J.R.R.", out: "j r r tolkien"}
+  - {in: "Brontë, Charlotte", out: "charlotte bronte"}
+  - {in: "Smith, Jones, and Co", out: "smith jones and co"}     # only one comma swaps
+
+# Title score = max(token_sort_ratio of the full titles, token_sort_ratio of each title
+# before ':'), on normalised text. Author score = the best token_sort_ratio of the source's
+# primary author against each candidate author.
+title_score:
+  - {source: "Dune", candidate: "Dune", at_least: 100}
+  - {source: "The Hobbit", candidate: "Hobbit", at_least: 100}
+  - {source: "Dune", candidate: "Dune: Book One", at_least: 100}       # subtitle on one side
+  - {source: "Dune: Deluxe", candidate: "Dune", at_least: 100}
+  - {source: "The Way of Kings (The Stormlight Archive, #1)", candidate: "The Way of Kings", at_least: 100}
+  - {source: "Way Kings of", candidate: "The Way of Kings", at_least: 100}   # token sort
+  - {source: "Dune", candidate: "Dune Messiah", below: 95}
+  - {source: "Dune", candidate: "Children of Dune", below: 60}
+  - {source: "", candidate: "Dune", below: 1}
+  - {source: ":x", candidate: ":y", below: 1}                        # empty never matches empty
+  # The before-':' part scores an adaptation 100 too; the full-title score below (#138) tells
+  # them apart.
+  - {source: "A Wizard of Earthsea", candidate: "A Wizard of Earthsea: A Graphic Novel", at_least: 100}
+  - {source: "Star Wars: A New Hope", candidate: "Star Wars: The Empire Strikes Back", at_least: 100}
+
+full_title_score:  # the full titles alone, for the margin when the top hit's is exact (#138)
+  - {source: "A Wizard of Earthsea", candidate: "A Wizard of Earthsea", at_least: 100}
+  - {source: "A Wizard of Earthsea", candidate: "A Wizard of Earthsea: A Graphic Novel", below: 90}
+  - {source: "The Way of Kings (The Stormlight Archive, #1)", candidate: "The Way of Kings", at_least: 100}
+
+author_score:
+  - {source: "Frank Herbert", candidates: ["Frank Herbert"], at_least: 100}
+  - {source: "Herbert, Frank", candidates: ["Frank Herbert"], at_least: 100}
+  - {source: "Frank Herbert", candidates: ["Brian Herbert", "Frank Herbert"], at_least: 100}
+  - {source: "Le Guin, Ursula K.", candidates: ["Ursula K. Le Guin"], at_least: 100}
+  # A known weakness for 4a's calibration: spacing inside a surname splits a token.
+  - {source: "Ursula K. Le Guin", candidates: ["Ursula K. LeGuin"], at_least: 70, below: 90}
+  - {source: "Frank Herbert", candidates: ["Kevin J. Anderson"], below: 50}
+  - {source: "Frank Herbert", candidates: [], below: 1}
+  - {source: "", candidates: [""], below: 1}
+
+# Decisions over a ranked candidate list: [title score, author score] per candidate, best
+# first, or [title, author, full-title score] where the full title differs (#138).
+# auto_accept: title >= 95, author >= 90, every other title at least 10 lower; but when the
+# top full title is exact (100), the margin compares full-title scores.
+# likely (check_books): title >= 85, author >= 80, same margin.
+decide:
+  - {candidates: [[100, 100]], auto_accept: true, likely: true}
+  - {candidates: [[95, 90]], auto_accept: true, likely: true}           # the edges accept
+  - {candidates: [[94.9, 100]], auto_accept: false, likely: true}
+  - {candidates: [[100, 89.9]], auto_accept: false, likely: true}
+  - {candidates: [[100, 100], [90, 100]], auto_accept: true, likely: true}   # margin 10
+  - {candidates: [[100, 100], [90.1, 100]], auto_accept: false, likely: false}  # ambiguous
+  - {candidates: [[85, 80]], auto_accept: false, likely: true}
+  - {candidates: [[84.9, 100]], auto_accept: false, likely: false}
+  - {candidates: [[100, 79.9]], auto_accept: false, likely: false}
+  - {candidates: [[96, 100], [70, 50], [95, 40]], auto_accept: false, likely: false}  # any other
+  - {candidates: [], auto_accept: false, likely: false}
+  # #138: the book and its graphic novel both score 100, but only the book's full title does.
+  - {candidates: [[100, 100, 100], [100, 100, 69]], auto_accept: true, likely: true}
+  # Two exact full titles (two records of one book) stay ambiguous.
+  - {candidates: [[100, 100, 100], [100, 100, 100]], auto_accept: false, likely: false}
+  # With no exact full title, the before-':' scores decide the margin as before.
+  - {candidates: [[100, 100, 80], [100, 100, 70]], auto_accept: false, likely: false}
