@@ -37,6 +37,8 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
+| Check changelog fragments | `uv run python scripts/changelog.py check` |
+| Assemble the changelog (release-prep PR only) | `uv run python scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD --title "Phase N: …"` |
 
 Tests block outbound network access. Live tests read credentials from the git-ignored
 repo-root `.env`; see `.env.example`.

@@ -6,43 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- Expired OAuth rows are purged at every start and then every 24 hours (#77): authorization
-  codes a day after they expire, access tokens once they expire, and a connection's refresh
-  tokens once its refresh window closes or 90 days after it was revoked. Connections
-  themselves are never deleted. A purge that deletes anything logs one `oauth_purged` line
-  with the counts; a failed purge logs `oauth_purge_failed` and the service carries on.
-
-### Changed
-
-- `my_connections`' description now says that a local dev-mode session isn't a connection,
-  so it isn't listed and an empty list is normal there.
-
-
-- Startup refuses a profile named `me` or `household`, the `profile` argument's keywords
-  (#74).
-- In dev mode, startup refuses a `server.dev.token` shorter than 32 characters (#75). The
-  README and `profiles.example.yaml` now say to publish a dev instance's port on loopback
-  only, or to listen on `127.0.0.1`.
-- `server.public_url` must be a bare origin in canonical form: no path (not even `/`), no
-  user name, a lowercase host and no default port (`:443` for https, `:80` for http). Startup
-  names the key otherwise (#98).
-- In oauth mode, `server.public_url` must be `https` unless its host is `localhost` or
-  `127.0.0.1` (#122).
-
-### Fixed
-
-- The consent page is served with `Referrer-Policy: same-origin` instead of `no-referrer`, so
-  a browser's **Allow** click sends the real `Origin` and passes the POST's Origin check.
-  Under `no-referrer` browsers send `Origin: null` and every sign-in would be refused (#114).
-  Error pages and redirects still send no referrer.
-- The cached Cloudflare Access signing keys now expire 1 hour after they were fetched, so a
-  key Access has retired stops verifying sign-ins. If the refetch fails, the old keys are
-  kept. A sign-in JWT with an unknown key ID fetches the keys at most once a minute; inside
-  that minute it is refused without a fetch. A key-set response over 64 KB counts as a
-  failed fetch.
-
 ## [0.2.0] - 2026-10-18
 
 Phase 2: Front door and profiles.

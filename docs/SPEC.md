@@ -342,6 +342,7 @@ From [SQLite schema and repo structure](https://github.com/ryansull/syncshelf/is
 LICENSE  pyproject.toml  uv.lock  Dockerfile  .gitattributes  .pre-commit-config.yaml
 .gitignore  profiles.example.yaml  .env.example  docs/SPEC.md
 README.md  CHANGELOG.md  AGENTS.md  CLAUDE.md                                   [1]
+changelog.d/README.md  scripts/changelog.py                    [#139, after 2]
 .github/workflows/ci.yml  .github/workflows/release.yml                          [1]
 .github/pull_request_template.md  .github/dependabot.yml                        [1]
 docs/runbook.md  deploy/compose.example.yaml                                    [7]
@@ -503,7 +504,7 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
   - **Spec:** the § sections it implements, or "none".
   - **Tests:** what was added, what ran locally, and which live tests ran (if any), with their gates.
   - **Discrepancies:** any place the spec turned out wrong or silent, each linking the issue opened for it. "None" is a valid answer and must be written.
-  - **Checklist:** CI green; no secrets or homelab values; fixtures scrubbed; docs updated per `AGENTS.md`; `CHANGELOG.md` entry, or "no user-visible change".
+  - **Checklist:** CI green; no secrets or homelab values; fixtures scrubbed; docs updated per `AGENTS.md`; a `changelog.d/` fragment, or the `no-changelog` label for no user-visible change.
 - **Review and merge.** The owner reviews and merges. Agents open PRs and never merge their own. Merges are **squash merges**, with the PR title as the commit subject.
 - **Branch protection on `main`** (the owner turns it on in phase 1): PRs required, the CI check required, no force pushes, no deletion.
 - **Commit messages:** an imperative subject under ~72 characters, no type prefixes, with a body when the why isn't obvious. Commits use the noreply author (§2.6).
@@ -515,7 +516,10 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
 - Image tags have no `v` (`0.1.0`), plus `:latest`.
 
   The release-version and image-tag rules are decided in [Release: how the version reaches 0.1.0, and whether image tags keep the v](https://github.com/ryansull/syncshelf/issues/52).
-- **`CHANGELOG.md`** follows *Keep a Changelog*. Each PR with a user- or operator-visible change adds a line under `## [Unreleased]`, and tagging moves those lines under the new version. Migrations and new config keys are always listed.
+- **`CHANGELOG.md`** follows *Keep a Changelog*, assembled from per-PR fragments ([Changelog: per-PR fragments assembled at release](https://github.com/ryansull/syncshelf/issues/139)):
+  - Each PR with a user- or operator-visible change adds a fragment, `changelog.d/<issue-or-pr>.<added|changed|removed|fixed>.md`, holding its bullet(s) as they should read, and never edits `CHANGELOG.md`. Migrations and new config keys are always listed. `changelog.d/README.md` says how to write one.
+  - `## [Unreleased]` stays empty on `main`. CI runs `scripts/changelog.py check`, and fails a PR that changes `src/` without adding a fragment unless it's labelled `no-changelog`.
+  - The release-prep PR runs `scripts/changelog.py build --version … --date … --title …`, which writes the fragments under the new version heading in section order (Added, Changed, Removed, Fixed) and deletes them, alongside the version bump.
 
 **Docs**
 - **`README.md`** (from phase 1): what SyncShelf is, the current phase, dev setup (`uv sync`, `pre-commit install`, the test and lint commands), a pointer to `profiles.example.yaml` for configuration and to `docs/runbook.md` for deployment, and the licence. It follows the §2.6 placeholder rules.

@@ -29,6 +29,8 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 | Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | All pre-commit hooks (gitleaks, private denylist) | `uv run pre-commit run --all-files` |
+| Check changelog fragments | `uv run python scripts/changelog.py check` |
+| Assemble the changelog (release-prep PR only) | `uv run python scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD --title "Phase N: …"` |
 
 ## How work lands (SPEC §2.10)
 
@@ -38,6 +40,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 - Commit subjects are imperative, under ~72 characters, with no type prefixes. Use the noreply author.
 - While iterating, run only the tests your change touches (`uv run pytest <path> --no-cov -x`). Each test is capped at 60 s, so a hang fails instead of stalling.
 - Before opening a PR, run lint, types and the full test suite locally, and check the maintenance table below.
+- **Never edit `CHANGELOG.md`.** A PR with a user- or operator-visible change adds a fragment under `changelog.d/` (`<issue-or-pr>.<added|changed|removed|fixed>.md`, see `changelog.d/README.md`). A PR with none is labelled `no-changelog`. Only the release-prep PR runs `scripts/changelog.py build`, which writes the fragments into `CHANGELOG.md` and deletes them ([#139](https://github.com/ryansull/syncshelf/issues/139)).
 - Tag `v0.<n>.0` only when a phase's "Done when" holds (SPEC §2.10 maps phases to versions).
 
 ## Maintenance: what to update when
@@ -46,15 +49,15 @@ A PR isn't done until the files its change touches are updated in the **same PR*
 
 | When you change… | Also update |
 |---|---|
-| Any user- or operator-visible behaviour | `CHANGELOG.md` under `## [Unreleased]` |
+| Any user- or operator-visible behaviour | a fragment in `changelog.d/` (never `CHANGELOG.md` itself) |
 | An MCP tool's behaviour, arguments or result | its docstring (Claude reads it as the tool description), its tests, and SPEC Appendix B if the signature changed (which needs a decision, see below) |
-| A config key | `profiles.example.yaml`, `.env.example`, config validation and its test, the README configuration pointer, and a `CHANGELOG.md` line |
-| The schema | a **new** migration (never edit a shipped one), its SQL-invariant tests, and a `CHANGELOG.md` line |
+| A config key | `profiles.example.yaml`, `.env.example`, config validation and its test, the README configuration pointer, and a changelog fragment |
+| The schema | a **new** migration (never edit a shipped one), its SQL-invariant tests, and a changelog fragment |
 | An external API contract the code relies on | re-record the fixture (`tests/live/record.py`), update the fake, and keep the contract test green |
 | A decision table (diff, matcher, ABS finish, Chaptarr, attention) | the golden YAML file first, then the code |
 | Deployment, ops, health or onboarding | `docs/runbook.md` and `deploy/compose.example.yaml`. Phase 7 creates both (SPEC §2.5), so until then update the README's "Configuration and deployment" section instead |
 | Dev setup or a command | `README.md` and the Commands table above |
-| PR, branch, version or docs conventions | SPEC §2.10, `.github/pull_request_template.md` and this file, all together |
+| PR, branch, version, changelog or docs conventions | SPEC §2.10, `.github/pull_request_template.md`, `changelog.d/README.md` and this file, all together |
 | A new public module, class or function | its docstring. Comments say *why*, not what |
 
 **`docs/SPEC.md` changes only by decision.** A PR that edits it links the issue that decided the change. Never edit the spec to match code you just wrote. If the code and spec disagree, open an issue.
