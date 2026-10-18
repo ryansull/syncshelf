@@ -114,8 +114,9 @@ class Database:
     async def write[*Ts, R](self, fn: Callable[[sqlite3.Connection, *Ts], R], *args: *Ts) -> R:
         """Run ``fn(conn, *args)`` on the writer inside one ``BEGIN IMMEDIATE … COMMIT``.
 
-        If ``fn`` raises, the transaction is rolled back and the exception propagates. ``fn``
-        must not manage the transaction itself.
+        If ``fn`` or the ``COMMIT`` raises (a deferred constraint, ``SQLITE_BUSY``, a full
+        disk), the transaction is rolled back and the exception propagates, so the writer is
+        always left with no transaction open. ``fn`` must not manage the transaction itself.
         """
         if self._closed or self._writer_executor is None:
             raise RuntimeError("the database is closed")
@@ -128,11 +129,13 @@ class Database:
         conn.execute("BEGIN IMMEDIATE")
         try:
             result = fn(conn, *args)
+            # Inside the try: a failed COMMIT leaves the transaction open, and every later
+            # write would then fail to BEGIN.
+            conn.execute("COMMIT")
         except BaseException:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise
-        conn.execute("COMMIT")
         return result
 
     async def read[*Ts, R](self, fn: Callable[[sqlite3.Connection, *Ts], R], *args: *Ts) -> R:

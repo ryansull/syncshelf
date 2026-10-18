@@ -88,6 +88,24 @@ class TestDatabase:
         assert await db.read(select_all) == []
         assert await db.write(insert, 5)  # the writer is still usable afterwards
 
+    async def test_a_failed_commit_rolls_back_and_leaves_the_writer_usable(
+        self, db: Database
+    ) -> None:
+        # A deferred foreign key is checked only at COMMIT, so the COMMIT itself fails. The
+        # transaction must not stay open, or every later write would fail to BEGIN.
+        def schema(conn: sqlite3.Connection) -> None:
+            conn.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE child (parent_id INTEGER"
+                " REFERENCES parent (id) DEFERRABLE INITIALLY DEFERRED)"
+            )
+
+        await db.write(schema)
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.write(lambda c: c.execute("INSERT INTO child VALUES (99)"))
+        await db.write(lambda c: c.execute("INSERT INTO parent VALUES (1)"))
+        assert await db.read(lambda c: c.execute("SELECT count(*) FROM child").fetchone()[0]) == 0
+
     async def test_reads_use_per_thread_read_only_connections(self, db: Database) -> None:
         await db.write(create_t)
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
