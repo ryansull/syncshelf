@@ -34,15 +34,19 @@ TITLE_FLOOR = 60.0
 ``id_title_mismatch`` (4a). Fuzzy candidates below it aren't kept."""
 
 AUTO_ACCEPT_TITLE = 95.0
+"""The title score a fuzzy top candidate needs to auto-link (with the author and margin)."""
+
 AUTO_ACCEPT_AUTHOR = 90.0
-"""A fuzzy top candidate auto-links only at or above both (and with :data:`MARGIN`)."""
+"""The author score a fuzzy top candidate needs to auto-link (with the title and margin)."""
 
 LIKELY_TITLE = 85.0
+"""The title score for ``check_books``'s ``likely`` [assembly choice; calibrated in 4a]."""
+
 LIKELY_AUTHOR = 80.0
-"""``check_books``'s ``likely`` band [assembly choice; calibrated with the matcher in 4a]."""
+"""The author score for ``check_books``'s ``likely`` [assembly choice; calibrated in 4a]."""
 
 MARGIN = 10.0
-"""The runner-up's title score must be at least this many points below the top one."""
+"""Every other candidate's title score must be at least this many points below the top one."""
 
 _SERIES = re.compile(r"\s*\([^()]*#\s*\d+(?:\.\d+)?\s*\)\s*$")
 _LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+")
@@ -57,48 +61,52 @@ class Scored:
 
 
 def normalise(text: str) -> str:
-    """The one normalisation applied to both sides before scoring (§3.4a.5).
+    """The one normalisation applied to both sides before scoring, in the order §3.4a.5
+    states.
 
-    Steps 6 (the trailing Goodreads series parenthetical) and 7 (``Last, First``) run before
-    punctuation is dropped, since step 4 removes what they look for (#105, provisional).
+    Step 4 drops the punctuation that steps 6 (the trailing ``(… #N)``) and 7 (``Last,
+    First``) look for, so as stated they can't fire. #105 asks which order is meant; they're
+    built as written until it's decided.
     """
     # 1. NFKD, then strip diacritics (combining marks).
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     # 2. casefold; 3. & → and.
     text = text.casefold().replace("&", " and ")
+    # 4. every punctuation mark becomes a space, then whitespace collapses.
+    text = "".join(c if c.isalnum() or c.isspace() else " " for c in text)
+    text = " ".join(text.split())
+    # 5. a leading article.
+    text = _LEADING_ARTICLE.sub("", text)
     # 6. a trailing "(Series Name, #N)".
     text = _SERIES.sub("", text)
     # 7. "Last, First" → "First Last", only for exactly one comma.
     parts = text.split(",")
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
         text = f"{parts[1].strip()} {parts[0].strip()}"
-    # 4. every punctuation mark becomes a space, then whitespace collapses.
-    text = "".join(c if c.isalnum() or c.isspace() else " " for c in text)
-    text = " ".join(text.split())
-    # 5. a leading article.
-    return _LEADING_ARTICLE.sub("", text)
+    return text
 
 
 def title_score(source: str, candidate: str) -> float:
     """``max(token_sort_ratio(full), token_sort_ratio(title before ':'))`` on normalised text,
-    so a subtitle on either side doesn't sink a match."""
-    full = token_sort_ratio(normalise(source), normalise(candidate))
-    main = token_sort_ratio(
-        normalise(source.split(":", 1)[0]), normalise(candidate.split(":", 1)[0])
-    )
+    so a subtitle on either side doesn't sink a match. A side with nothing to compare scores
+    0, never the 100 two empty strings would."""
+    full = _ratio(normalise(source), normalise(candidate))
+    if ":" not in source and ":" not in candidate:
+        return full
+    main = _ratio(normalise(source.split(":", 1)[0]), normalise(candidate.split(":", 1)[0]))
     return max(full, main)
 
 
 def author_score(source: str, candidates: Iterable[str]) -> float:
     """The best ``token_sort_ratio`` of the source's primary author against each of the
-    candidate's authors; 0 when the candidate has none."""
+    candidate's authors; 0 when either side has none."""
     want = normalise(source)
-    return max((token_sort_ratio(want, normalise(name)) for name in candidates), default=0.0)
+    return max((_ratio(want, normalise(name)) for name in candidates), default=0.0)
 
 
 def auto_accepts(ranked: Sequence[Scored]) -> bool:
-    """Whether the top of ``ranked`` (best first) passes the fuzzy auto-accept rule: title
-    ≥ 95, author ≥ 90, and the runner-up's title at least 10 points lower."""
+    """Whether the top of ``ranked`` passes the fuzzy auto-accept rule: title ≥ 95, author
+    ≥ 90, and every other candidate's title at least 10 points lower."""
     return _passes(ranked, AUTO_ACCEPT_TITLE, AUTO_ACCEPT_AUTHOR)
 
 
@@ -109,9 +117,15 @@ def is_likely(ranked: Sequence[Scored]) -> bool:
 
 
 def _passes(ranked: Sequence[Scored], title: float, author: float) -> bool:
+    # ranked[0] is the candidate under test; the margin holds against all the others, so the
+    # rest needn't be sorted by title.
     if not ranked:
         return False
     top = ranked[0]
     if top.title < title or top.author < author:
         return False
-    return len(ranked) < 2 or ranked[1].title <= top.title - MARGIN
+    return all(other.title <= top.title - MARGIN for other in ranked[1:])
+
+
+def _ratio(a: str, b: str) -> float:
+    return token_sort_ratio(a, b) if a and b else 0.0

@@ -786,7 +786,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.13" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "rapidfuzz", specifier = ">=3" },
+    { name = "rapidfuzz", specifier = ">=3,<4" },
     { name = "starlette", specifier = ">=1.8,<2" },
     { name = "uvicorn", specifier = ">=0.54" },
 ]
