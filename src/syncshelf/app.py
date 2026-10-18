@@ -59,15 +59,19 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import RefreshGrace, TokenVerifier, purge_expired
+from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
+from syncshelf.sync.limiter import Clock, HardcoverLimiter
+from syncshelf.sync.mirror import Mirror
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 
 __all__ = [
@@ -117,6 +121,7 @@ def create_app(
     registry: ToolRegistry = REGISTRY,
     http_transport: httpx2.AsyncBaseTransport | None = None,
     purge_interval: float = PURGE_INTERVAL,
+    limiter_clock: Clock | None = None,
 ) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
@@ -128,12 +133,15 @@ def create_app(
 
     ``registry`` holds the tools served, :data:`syncshelf.tools.REGISTRY` by default.
 
-    ``http_transport`` carries the app's outbound HTTP calls (so far the client-document
-    fetch and the Access key fetch) in place of the network; tests pass a ``MockTransport``
+    ``http_transport`` carries the app's outbound HTTP calls (the client-document fetch, the
+    Access key fetch and Hardcover) in place of the network; tests pass a ``MockTransport``
     (§2.9).
 
     ``purge_interval`` is the seconds between purges of expired OAuth rows,
     :data:`PURGE_INTERVAL` by default; tests shorten it rather than wait a day.
+
+    ``limiter_clock`` paces the Hardcover limiters (it sleeps as well as tells the time); the
+    real clock by default.
 
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
@@ -179,7 +187,9 @@ def create_app(
         _check_writable(data_dir)
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
+        hardcover: dict[str, HardcoverClient] = {}
         try:
+            hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
             await _purge(db, clock)
@@ -190,7 +200,8 @@ def create_app(
             app.state.db = db
             app.state.grace = grace
             verifier.bind(db)
-            mcp.bind(Services(db, clock, grace))
+            mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
+            mcp.bind(Services(db=db, clock=clock, grace=grace, mirror=mirror))
             async with AsyncExitStack() as stack:
                 purges = await stack.enter_async_context(anyio.create_task_group())
                 purges.start_soon(_purge_every, purge_interval, db, clock, name=PURGE_TASK)
@@ -204,7 +215,11 @@ def create_app(
         finally:
             mcp.bind(None)
             verifier.bind(None)
-            await db.close()
+            try:
+                for client in hardcover.values():
+                    await client.aclose()
+            finally:
+                await db.close()
 
     authorization_server = (
         oauth_routes(config, clients, access, grace, clock=clock) if access is not None else []
@@ -218,6 +233,28 @@ def create_app(
         ],
         lifespan=lifespan,
     )
+
+
+def hardcover_clients(
+    config: Config,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    clock: Clock | None = None,
+) -> dict[str, HardcoverClient]:
+    """One Hardcover client per configured profile, each with that profile's token and gated
+    by its own limiter (§3.3.3). ``transport`` and ``clock`` are for tests."""
+    # Config validation requires the URL from phase 3; the fallback only satisfies the type.
+    url = config.services.hardcover_url or ""
+    reserve = config.cadence.hardcover_daily_reserve
+    return {
+        name: HardcoverClient(
+            url,
+            profile.hardcover_token,
+            gate=HardcoverLimiter(name, reserve=reserve, clock=clock),
+            transport=transport,
+        )
+        for name, profile in config.profiles.items()
+    }
 
 
 async def healthz(request: Request) -> JSONResponse:
