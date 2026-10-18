@@ -1,0 +1,9 @@
+# The build context is the checkout, and this repo is public: keep secrets and local config out
+# of every image layer. Only what the Dockerfile copies is needed; ignore by default.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+src/**/__pycache__

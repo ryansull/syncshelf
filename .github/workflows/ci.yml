@@ -50,3 +50,73 @@ jobs:
           tar -xzf "${tarball}" gitleaks
       - name: Scan history
         run: ./gitleaks git --redact --verbose .
+
+  # SPEC §3.1 "Done when", checked on every PR (owner decision on #41): build the image for the
+  # runner's own architecture, start it against an empty /data, and wait for its HEALTHCHECK.
+  # It never logs in or pushes; publishing is release.yml's, on a version tag only.
+  image:
+    name: Image builds and starts healthy
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: syncshelf:ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Runs as 10001:10001
+        run: test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE")" = 10001:10001
+      - name: Bad config exits 1
+        run: |
+          set +e
+          docker run --rm -e SYNCSHELF_CONFIG=/config/missing.yaml "$IMAGE"
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 1
+      - name: Start against an empty /data
+        # A fresh named volume takes the image's /data, owned by 10001. The config is the
+        # checked-out file, mounted read-only as in production.
+        run: |
+          docker volume create syncshelf-data
+          docker run -d --name syncshelf \
+            -v syncshelf-data:/data \
+            -v "$PWD/tests/image/profiles.yaml:/config/profiles.yaml:ro" \
+            "$IMAGE"
+      - name: Wait for healthy
+        run: |
+          for _ in $(seq 1 45); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' syncshelf)
+            running=$(docker inspect --format '{{.State.Running}}' syncshelf)
+            echo "health: $status, running: $running"
+            if [ "$status" = healthy ]; then exit 0; fi
+            if [ "$status" = unhealthy ] || [ "$running" != true ]; then break; fi
+            sleep 2
+          done
+          docker inspect --format '{{json .State.Health}}' syncshelf || true
+          exit 1
+      - name: /healthz is 200
+        # The service listens on loopback inside the container (#51), so probe from inside.
+        run: |
+          docker exec syncshelf python -c \
+            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).read().decode())"
+      - name: Logs are JSON lines with the version and SQLite version
+        run: |
+          docker logs syncshelf > logs.txt 2>&1
+          cat logs.txt
+          python3 tests/image/check_logs.py logs.txt
+      - name: Container logs
+        if: failure()
+        run: docker logs syncshelf || true
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f syncshelf || true
+          docker volume rm syncshelf-data || true
