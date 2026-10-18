@@ -154,7 +154,7 @@ def _log_startup(config: Config, db: Database) -> None:
                 "event": "migrated",
                 "from_version": migration.from_version,
                 "to_version": migration.to_version,
-                "snapshot": str(migration.snapshot),
+                "snapshot": str(migration.snapshot) if migration.snapshot else None,
             },
         )
     log.info(

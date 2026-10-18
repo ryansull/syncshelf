@@ -56,10 +56,12 @@ arrives in phase 7. Until then, this section carries the deployment notes.
 Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and `:latest`)
 for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
 
-- **`/data`** holds the database, its `pre-migration-NNNN.db` snapshots and `goodreads/`. The
-  container runs as `10001:10001`, so a bind-mounted host directory must exist and be owned
-  by that user (`chown 10001:10001 <dir>`), or startup stops naming the unwritable path. A
-  named volume gets the right owner from the image.
+- **`/data`** holds the database, its `pre-migration-NNNN.db` snapshots (taken before each
+  upgrade, none on a fresh install) and `goodreads/`. The container runs as `10001:10001`, so
+  a bind-mounted host directory must exist and be owned by that user
+  (`chown 10001:10001 <dir>`), or startup stops naming the unwritable path. A named volume
+  gets the right owner from the image. Startup also stops if the database is newer than the
+  image (an older release started on it).
 - **`/config/profiles.yaml`** is the config. Mount it read-only (`:ro`); SyncShelf never
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
 - **Listening.** For now the service listens on `127.0.0.1:8000` inside the container, pending
