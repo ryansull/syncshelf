@@ -236,10 +236,14 @@ def test_localhost_public_urls_are_accepted(tmp_path: Path, url: str) -> None:
         "http://[::1]",
     ],
 )
-def test_startup_refuses_a_public_url_that_is_not_localhost(tmp_path: Path, url: str) -> None:
+def test_without_an_auth_mode_startup_refuses_a_public_url_that_is_not_localhost(
+    tmp_path: Path, url: str
+) -> None:
+    # Only oauth mode lifts the guard (#69); an absent mode accepts no token at all (#73).
     message = load_error(tmp_path, MINIMAL.replace("http://localhost", url))
     assert "server.public_url" in message
     assert "localhost" in message
+    assert "server.auth_mode" in message
 
 
 @pytest.mark.parametrize(
@@ -328,6 +332,14 @@ def test_oauth_mode_requires_its_keys(tmp_path: Path, line: str, key: str) -> No
 def test_the_team_domain_is_only_a_scheme_and_host(tmp_path: Path, domain: str) -> None:
     text = OAUTH.replace("https://example.cloudflareaccess.com", domain)
     assert "server.access.team_domain" in load_error(tmp_path, text, OAUTH_ENV)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://shelf.example.com", "https://shelf.example.com:8443", "http://localhost"]
+)
+def test_oauth_mode_accepts_any_public_url(tmp_path: Path, url: str) -> None:
+    config = load(tmp_path, OAUTH.replace("http://localhost", url), OAUTH_ENV)
+    assert config.server.public_url == url
 
 
 def test_other_modes_do_not_read_the_oauth_keys(tmp_path: Path) -> None:
@@ -778,7 +790,8 @@ def test_service_url_without_a_host_is_rejected(tmp_path: Path, key: str) -> Non
 
 
 EXAMPLE_ENV = {
-    "SYNCSHELF_DEV_TOKEN": SECRET,
+    "ACCESS_AUD": "aud-" + SECRET,
+    "CONSENT_HMAC_KEY": "hmac-" + SECRET,
     "HARDCOVER_TOKEN_ALICE": "a",
     "HARDCOVER_TOKEN_BOB": "b",
 }
@@ -786,8 +799,36 @@ EXAMPLE_ENV = {
 
 def test_committed_example_loads(tmp_path: Path) -> None:
     config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
-    assert config.server.public_host in {"localhost", "127.0.0.1"}
+    assert config.server.public_host == "shelf.example.com"
     assert set(config.profiles) == {"alice", "bob"}
+
+
+def test_committed_example_is_oauth_mode_with_its_keys() -> None:
+    # oauth is the production path (#69); dev mode is shown commented out, for local use.
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
+    assert config.server.auth_mode == "oauth"
+    assert config.server.oauth is not None
+
+
+def test_committed_example_switches_to_dev_mode_as_its_comments_say(tmp_path: Path) -> None:
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    local = (
+        raw.replace("public_url: https://shelf.example.com", "public_url: http://localhost:8000")
+        .replace("auth_mode: oauth", "auth_mode: dev")
+        .replace("\n  # dev:\n", "\n  dev:\n")
+        .replace("\n  #   token:", "\n    token:")
+        .replace("\n  #   profile:", "\n    profile:")
+        .replace("\n    aud:", "\n    # aud:")
+        .replace("\n  consent_hmac_key:", "\n  # consent_hmac_key:")
+    )
+    path = tmp_path / "profiles.yaml"
+    path.write_text(local, encoding="utf-8")
+    # The dev token and the Hardcover tokens: a local instance needs none of oauth mode's
+    # secrets.
+    hardcover = {"HARDCOVER_TOKEN_ALICE": "a", "HARDCOVER_TOKEN_BOB": "b"}
+    config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET} | hardcover)
+    assert config.server.dev_mode is not None
+    assert config.server.dev_mode.profile in config.profiles
 
 
 def test_committed_example_sets_every_key_phase_1_validates() -> None:
@@ -811,7 +852,6 @@ def test_committed_example_sets_the_profile_keys_phase_2_validates() -> None:
     config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
     for profile in config.profiles.values():
         assert profile.permissions == frozenset({"chaptarr"})
-    assert config.server.dev is not None and config.server.dev.profile in config.profiles
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
     assert raw.count("\n    household_visible: ") == len(config.profiles)
 

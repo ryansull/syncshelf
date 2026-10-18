@@ -15,9 +15,11 @@ The build spec is [`docs/SPEC.md`](docs/SPEC.md).
 
 **Phase 1 (skeleton), released as v0.1.0.** The package, CI and test harness exist.
 `uv run python -m syncshelf` starts the service on `0.0.0.0:8000` (set by `server.listen`),
-with an MCP endpoint and a `/healthz` liveness check. Phase 2 (front door and profiles) is in
-progress: `/mcp` now needs a bearer token, and so far only dev mode issues one. Its data lives in
-`/data`, or the existing directory named by `SYNCSHELF_DATA_DIR`. Phases are listed in SPEC §3.
+with an MCP endpoint and a `/healthz` liveness check. Phase 2 (front door and profiles) is
+built and awaiting its release: `/mcp` needs a bearer token, which Claude gets by signing in
+through SyncShelf's own OAuth server in `oauth` mode, or which a local client sends as the
+static dev token in `dev` mode. Its data lives in `/data`, or the existing directory named by
+`SYNCSHELF_DATA_DIR`. Phases are listed in SPEC §3.
 
 ## Development
 
@@ -33,6 +35,7 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
 | Types | `uv run pyright` |
 | Tests (offline, as CI runs them) | `uv run pytest` |
+| Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
@@ -59,16 +62,31 @@ each profile's 5000 daily Hardcover requests the syncs leave for Claude. The fil
 start, a profile removed from it is marked removed and its Claude connections are revoked, and
 a name added back is restored.
 
-Every `/mcp` request needs a bearer token; without one it gets 401. With
-`server.auth_mode: dev`, `/mcp` accepts the single static token in `server.dev.token` (from
-`SYNCSHELF_DEV_TOKEN`) as the profile `server.dev.profile`, so Claude Code or MCP Inspector
-can connect to a local instance by sending `Authorization: Bearer <token>`. Dev mode refuses
-to start unless `server.public_url` is on `localhost` or `127.0.0.1`, and logs a warning at
-every start. OAuth sign-in for Claude is being built: `server.auth_mode: oauth` needs
-`server.access.team_domain`, `server.access.aud` (`ACCESS_AUD`) and `server.consent_hmac_key`
-(`CONSENT_HMAC_KEY`), and with `server.auth_mode` absent no
-token is accepted. The full deployment guide is `docs/runbook.md`, which arrives in
-phase 7. Until then, this section carries the deployment notes.
+Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says
+where tokens come from:
+
+- **`oauth`, the production mode.** Claude connects to `server.public_url` (for example
+  `https://shelf.example.com`, served through the reverse proxy) and signs in with SyncShelf
+  as its OAuth server: discovery, the Claude client documents (CIMD), PKCE, and a consent page
+  at `/authorize`. Cloudflare Access does the login there, so an Access app must cover
+  `/authorize`, both GET and POST, and pass on its `Cf-Access-Jwt-Assertion` header. The mode
+  needs `server.access.team_domain` (just `https://` and the team's host),
+  `server.access.aud` (`ACCESS_AUD`, the Access app's AUD tag) and `server.consent_hmac_key`
+  (`CONSENT_HMAC_KEY`), and startup names whichever is missing. Each person signs in with the
+  email of their profile; any other email is refused. `my_connections` and
+  `revoke_connection` list and end a profile's Claude connections. Known issue: browsers may
+  send `Origin: null` when **Allow** is pressed, which the consent check refuses (#114).
+- **`dev`, for a local instance.** `/mcp` accepts the single static token in
+  `server.dev.token` (from `SYNCSHELF_DEV_TOKEN`) as the profile `server.dev.profile`, so
+  Claude Code or MCP Inspector can connect by sending `Authorization: Bearer <token>`. Dev
+  mode refuses to start unless `server.public_url` is on `localhost` or `127.0.0.1`, serves
+  no OAuth routes, and logs a warning at every start. `profiles.example.yaml` shows how to
+  switch to it.
+- **Absent:** no token is accepted, and `server.public_url` must be on `localhost` or
+  `127.0.0.1` (#73).
+
+The full deployment guide is `docs/runbook.md`, which arrives in phase 7. Until then, this
+section carries the deployment notes.
 
 Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and `:latest`)
 for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
@@ -84,12 +102,15 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
 - **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or
   a published port (`-p 8000:8000`) reaches it. Keep port 8000 in the container: the image's
-  health check probes `127.0.0.1:8000`. Until OAuth sign-in is complete, publish the port on
-  loopback only (`-p 127.0.0.1:8000:8000`), as below.
+  health check probes `127.0.0.1:8000`. In oauth mode, attach the container to the reverse
+  proxy's network rather than publishing the port, set `server.forwarded_allow_ips` to that
+  network, and pass `ACCESS_AUD` and `CONSENT_HMAC_KEY` (`-e`). In dev mode, publish the port
+  on loopback only and pass `SYNCSHELF_DEV_TOKEN`, as in this local example:
 
 ```sh
 docker run -d --name syncshelf \
   -p 127.0.0.1:8000:8000 \
+  -e SYNCSHELF_DEV_TOKEN=<token> \
   -v <data-dir>:/data \
   -v <config-dir>/profiles.yaml:/config/profiles.yaml:ro \
   ghcr.io/<owner>/syncshelf:<version>
