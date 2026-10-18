@@ -17,8 +17,18 @@ On shutdown the database is closed.
 
 The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
-protected-resource metadata otherwise (§3.2.1). The SDK serves that metadata on the mount. The
-verifier reads the token store, so the lifespan binds it to the database once it is open.
+protected-resource metadata otherwise (§3.2.1). That metadata is served before the mount, by
+:func:`syncshelf.auth.oauth.protected_resource_route`, because the SDK's own can't advertise
+the scopes (§3.2.2). The verifier reads the token store, and tools reach the database and the
+clock through :func:`syncshelf.tools.services`, so the lifespan binds both to the database
+once it is open.
+
+Importing a tool module registers its tools on :data:`syncshelf.tools.REGISTRY`, so the
+production tool modules are imported here, where the registry is served.
+
+The authorization server's routes (:func:`syncshelf.auth.oauth.oauth_routes`) are served only
+when ``server.auth_mode`` is ``oauth``: dev mode disables them (§3.2.5), and with the key
+absent no token is accepted (#73), so there is nothing to sign in to.
 """
 
 import logging
@@ -37,13 +47,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
+from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import TokenVerifier
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
-from syncshelf.tools import REGISTRY, SyncShelfServer, ToolRegistry
+from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 
 __all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
 
@@ -141,16 +153,19 @@ def create_app(
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             verifier.bind(db)
+            mcp.bind(Services(db, clock))
             async with mcp.session_manager.run():
                 yield
         finally:
+            mcp.bind(None)
             verifier.bind(None)
             await db.close()
 
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            # Phase 2+ routes go here, before the mount.
+            *(oauth_routes(config.server) if config.server.auth_mode == "oauth" else []),
+            protected_resource_route(config.server),
             Mount("/", app=mcp_app),
         ],
         lifespan=lifespan,
