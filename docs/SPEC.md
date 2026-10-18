@@ -148,10 +148,11 @@ There is no `/register` route (DCR isn't offered), so it returns 404.
 4. Startup housekeeping:
    - mark any `runs` row still `running` as `aborted`;
    - compare the version against `meta.last_started_version`, and if it differs, release every quarantined change once (4a+). "The version" is the package version. A missing row counts as differing, so 4a's first start releases once. The row is written **after** the release succeeds, so a crash mid-release retries on the next start. Phase 4a starts writing it; phases 1–3 neither read nor write it. Decided in [Lifespan: when meta.last_started_version is written and compared](https://github.com/ryansull/syncshelf/issues/50);
-   - log the version, `sqlite3.sqlite_version` and the auth mode as configured (`server.auth_mode`, or null when absent), never secrets.
+   - log the version, `sqlite3.sqlite_version` and the auth mode as configured (`server.auth_mode`, or null when absent), never secrets;
+   - purge expired OAuth rows (§2.4 Retention), after the profile sync (2+).
 5. `async with mcp.session_manager.run():`. This is required; without it the first `/mcp` request fails with `Task group is not initialized`.
-6. Start the sync loops (4a+), resuming schedules from SQLite (§3.4a.9).
-7. On shutdown: cancel the loops, close the DB.
+6. Start the sync loops (4a+), resuming schedules from SQLite (§3.4a.9). Until the 4a scheduler takes it over, a lifespan background task repeats the OAuth purge every 24 hours (2+).
+7. On shutdown: cancel the loops and the purge task, close the DB.
 
 **Concurrency primitives**, all in-process (one worker is a hard requirement):
 
@@ -195,10 +196,10 @@ These three are decided in [Phase 1 config: confirm small calls the spec doesn't
 
 ```yaml
 server:
-  public_url: https://shelf.example.com     # ISSUER (no trailing slash); MCP_URL = public_url + "/mcp"
-  auth_mode: oauth                          # oauth | dev
+  public_url: https://shelf.example.com     # ISSUER, a bare origin (no path or trailing slash); MCP_URL = public_url + "/mcp"
+  auth_mode: oauth                          # oauth | dev; absent = /mcp accepts no token
   dev:                                      # only read when auth_mode: dev
-    token: ${SYNCSHELF_DEV_TOKEN}
+    token: ${SYNCSHELF_DEV_TOKEN}           # at least 32 characters
     profile: alice
   access:                                   # Cloudflare Access app guarding /authorize
     team_domain: https://example.cloudflareaccess.com
@@ -259,6 +260,15 @@ profiles:
 
 The not-yet-validated rule and the last three rules are decided in [Phase 1 config: confirm small calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/49) and, for `server.listen`, [Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51).
 
+From phase 2:
+- `server.public_url` is a bare origin in canonical form: `http` or `https` and a host, with an optional port. A lowercase host only; no path (not even `/`), query or fragment; and no explicit default port (`:443` for https, `:80` for http). Anything else is refused, never canonicalised, so the issuer, the PRM `resource` and a browser's `Origin` compare equal as strings. Decided in [Config: may server.public_url carry a path, an uppercase host or a default port?](https://github.com/ryansull/syncshelf/issues/98).
+- In oauth mode, an `http` `server.public_url` is refused unless its host is `localhost` or `127.0.0.1` (the MCP SDK's `validate_issuer_url` rule). Decided in [Config: must an oauth-mode public_url be https when its host isn't loopback?](https://github.com/ryansull/syncshelf/issues/122).
+- `server.auth_mode` is optional. When it's absent, `/mcp` accepts no token at all (every request gets 401) and the startup log shows null. Decided in [Config: is server.auth_mode required from phase 2, and what does an absent one mean?](https://github.com/ryansull/syncshelf/issues/73).
+- In oauth mode, `server.access.team_domain`, `server.access.aud` and `server.consent_hmac_key` are required. `team_domain` is `https://` and a host only, with no path (not even a trailing slash), because it's compared with the JWT's `iss` exactly and the JWKS URL is built under it ([Phase 2 /authorize: confirm calls the spec doesn't make (error codes, JWKS lifetime)](https://github.com/ryansull/syncshelf/issues/110)).
+- In dev mode, `server.dev.token` must be at least 32 characters ([Dev mode hardening: a minimum dev-token length, and binding loopback only](https://github.com/ryansull/syncshelf/issues/75)).
+- The profile names `me` and `household` are refused, since they're the `profile` argument's keywords (§2.8). Decided in [Profile names "me" and "household" collide with the profile argument's keywords](https://github.com/ryansull/syncshelf/issues/74).
+- `profiles.<name>.permissions` is optional, and absent means no permissions. When present it's a list of known permissions (today only `chaptarr`). Decided in [Config: is `profiles.<name>.permissions` required from phase 2, or does absence mean none?](https://github.com/ryansull/syncshelf/issues/71).
+
 **Profiles table sync** (phase 2):
 - At startup every profile name is upserted into `profiles`.
 - A name that disappeared from the file gets `removed_at`, and its live grants are revoked with `profile_deleted`. Its data is kept and its schedules stop.
@@ -313,8 +323,14 @@ From [Hosting the MCP server, ingest endpoint and scheduler in one process](http
   - `runs` older than 90 days are purged (their `change_log` rows keep `run_id = NULL`);
   - `change_log` is kept indefinitely;
   - the last 3 `ingest_batches` per profile are kept;
-  - `oauth_code` rows are purged after about a day, and `oauth_access_token` rows after expiry;
-  - rotated refresh-token rows are kept until their grant's `refresh_expires_at`.
+  - OAuth rows (phase 2), purged at startup and then every 24 hours (§2.2 steps 4 and 6):
+    - `oauth_code` rows whose `expires_at` is more than 1 day ago;
+    - `oauth_access_token` rows past their `expires_at`;
+    - `oauth_refresh_token` rows (rotated or not) whose grant's `refresh_expires_at` has passed, or whose grant was revoked more than 90 days ago;
+    - `oauth_grant` rows are never deleted;
+    - when anything was deleted, one INFO line with event `oauth_purged` gives the counts.
+
+  The OAuth purge is decided in [Retention: what purges expired OAuth codes and tokens, and when?](https://github.com/ryansull/syncshelf/issues/77).
 - **Container user:** fixed non-root `USER 10001:10001` (`syncshelf`), with no PUID/PGID. The host does `chown -R 10001:10001 /data`, and `profiles.yaml` must be readable by 10001.
 - **Volume:** `/data` is a **bind mount on local disk**, never NFS or SMB (WAL doesn't work over a network filesystem). Back up with `sqlite3 .backup` or `VACUUM INTO`, never a bare copy of a live `.db`.
 
@@ -326,6 +342,7 @@ From [SQLite schema and repo structure](https://github.com/ryansull/syncshelf/is
 LICENSE  pyproject.toml  uv.lock  Dockerfile  .gitattributes  .pre-commit-config.yaml
 .gitignore  profiles.example.yaml  .env.example  docs/SPEC.md
 README.md  CHANGELOG.md  AGENTS.md  CLAUDE.md                                   [1]
+changelog.d/README.md  scripts/changelog.py                    [#139, after 2]
 .github/workflows/ci.yml  .github/workflows/release.yml                          [1]
 .github/pull_request_template.md  .github/dependabot.yml                        [1]
 docs/runbook.md  deploy/compose.example.yaml                                    [7]
@@ -443,7 +460,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
 - **Signatures** are `async def` with typed parameters. Optional parameters have defaults. Results are structured JSON.
 - **Permissions** are per profile (`profiles.<p>.permissions`). A tool needing a permission the caller lacks is **filtered out of `tools/list`** for that identity and **refused** if called directly. The refusal is a tool error (`isError: true`, HTTP 200), never a 403, which Claude would treat as terminal. The only permission today is `chaptarr`, and both household profiles have it.
 - **Errors** are tool errors with one human line and, where it helps, an `action` naming the tool or step that fixes it.
-- **`profile` parameter on read tools:** `"me"` (default) | `"<name>"` | `"household"`.
+- **`profile` parameter on read tools:** `"me"` (default) | `"<name>"` | `"household"`. No profile can be named `me` or `household` (§2.3), so the argument is never ambiguous.
   - Asking for a profile that hasn't set `household_visible: true` is **refused**, not silently emptied.
   - Household rows carry a `profile` field.
   - **Shared:** status, rating, read dates and format. **Never shared:** review text and private notes.
@@ -487,7 +504,7 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
   - **Spec:** the § sections it implements, or "none".
   - **Tests:** what was added, what ran locally, and which live tests ran (if any), with their gates.
   - **Discrepancies:** any place the spec turned out wrong or silent, each linking the issue opened for it. "None" is a valid answer and must be written.
-  - **Checklist:** CI green; no secrets or homelab values; fixtures scrubbed; docs updated per `AGENTS.md`; `CHANGELOG.md` entry, or "no user-visible change".
+  - **Checklist:** CI green; no secrets or homelab values; fixtures scrubbed; docs updated per `AGENTS.md`; a `changelog.d/` fragment, or the `no-changelog` label for no user-visible change.
 - **Review and merge.** The owner reviews and merges. Agents open PRs and never merge their own. Merges are **squash merges**, with the PR title as the commit subject.
 - **Branch protection on `main`** (the owner turns it on in phase 1): PRs required, the CI check required, no force pushes, no deletion.
 - **Commit messages:** an imperative subject under ~72 characters, no type prefixes, with a body when the why isn't obvious. Commits use the noreply author (§2.6).
@@ -499,7 +516,10 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
 - Image tags have no `v` (`0.1.0`), plus `:latest`.
 
   The release-version and image-tag rules are decided in [Release: how the version reaches 0.1.0, and whether image tags keep the v](https://github.com/ryansull/syncshelf/issues/52).
-- **`CHANGELOG.md`** follows *Keep a Changelog*. Each PR with a user- or operator-visible change adds a line under `## [Unreleased]`, and tagging moves those lines under the new version. Migrations and new config keys are always listed.
+- **`CHANGELOG.md`** follows *Keep a Changelog*, assembled from per-PR fragments ([Changelog: per-PR fragments assembled at release](https://github.com/ryansull/syncshelf/issues/139)):
+  - Each PR with a user- or operator-visible change adds a fragment, `changelog.d/<issue-or-pr>.<added|changed|removed|fixed>.md`, holding its bullet(s) as they should read, and never edits `CHANGELOG.md`. Migrations and new config keys are always listed. `changelog.d/README.md` says how to write one.
+  - `## [Unreleased]` stays empty on `main`. CI runs `scripts/changelog.py check`, and fails a PR that changes `src/` without adding a fragment unless it's labelled `no-changelog`.
+  - The release-prep PR runs `scripts/changelog.py build --version … --date … --title …`, which writes the fragments under the new version heading in section order (Added, Changed, Removed, Fixed) and deletes them, alongside the version bump.
 
 **Docs**
 - **`README.md`** (from phase 1): what SyncShelf is, the current phase, dev setup (`uv sync`, `pre-commit install`, the test and lint commands), a pointer to `profiles.example.yaml` for configuration and to `docs/runbook.md` for deployment, and the licence. It follows the §2.6 placeholder rules.
@@ -665,7 +685,7 @@ Anything else gets an **error page**. Nothing is fetched and nothing is redirect
 - a JSON object whose `client_id` equals the URL exactly;
 - non-empty `redirect_uris`;
 - `token_endpoint_auth_method` absent or `"none"`, and no `client_secret`;
-- `grant_types` includes `authorization_code`.
+- `grant_types` includes `authorization_code`. A document without `grant_types` is refused, not defaulted to RFC 7591's `["authorization_code"]` ([Client gate and CIMD fetcher: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/102)).
 
 Issue refresh tokens only if `grant_types` also includes `refresh_token`.
 
@@ -682,6 +702,17 @@ Always reject:
 - a missing `redirect_uri`, which is always required and never defaulted.
 
 **Errors.** Errors **before** the client and redirect are validated render an HTML error page. Errors **after** redirect `302` to `redirect_uri` with `error`, `state` and `iss`.
+- **Error pages** carry the consent page's hardening headers, with `Referrer-Policy: no-referrer`. A refused client or redirect (including a missing or repeated `client_id` or `redirect_uri`, refused before any fetch) is HTTP 400. A CIMD document that can't be fetched, with nothing usable cached, is HTTP 502 ([Client gate and CIMD fetcher: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/102)).
+- **Redirect error codes** (RFC 6749 §4.1.2.1, RFC 7636 §4.4.1, RFC 8707 §2):
+  - a repeated parameter, a missing `response_type`, a `code_challenge_method` other than exactly `S256`, or a malformed `code_challenge`: `invalid_request`;
+  - a `response_type` other than `code`: `unsupported_response_type`;
+  - a missing `resource`, or one that isn't `MCP_URL` once canonicalised: `invalid_target`;
+  - a missing or invalid Access JWT: `access_denied`;
+  - the Access JWKS can't be fetched and no cached key fits: `temporarily_unavailable`.
+- A repeated `state` isn't echoed, since there's no single value to echo, so that redirect carries `error` and `iss` only. A request with no `state` gets none back.
+- **Order:** the client gate, the CIMD document and the redirect, then request hygiene, then the Access JWT, so a malformed request costs no JWKS fetch. The no-profile page therefore appears only for an otherwise valid request.
+
+The error codes, `state`, order, no-profile page and Access JWKS rules below are decided in [Phase 2 /authorize: confirm calls the spec doesn't make (error codes, JWKS lifetime)](https://github.com/ryansull/syncshelf/issues/110).
 
 **Request hygiene:**
 - reject repeated parameters;
@@ -692,14 +723,19 @@ Always reject:
 
 **Access JWT** (Access guards `/authorize`, GET and POST). Read `Cf-Access-Jwt-Assertion`, which arrives as `cf-access-jwt-assertion` in ASGI headers. Never trust `Cf-Access-Authenticated-User-Email` or any unsigned header.
 - **JWKS:** `<team_domain>/cdn-cgi/access/certs`. Cache it and re-fetch on an unknown `kid`. Keys rotate every 6 weeks, and the old key stays valid for 7 days. `PyJWKClient` fetches synchronously, so warm it at startup or run it in a thread.
+  - Each fetch replaces the whole set.
+  - The cached set expires **1 hour** after it was fetched. The next verification after that refetches it, and if the refetch fails the old set stays in use.
+  - Unknown-`kid` refetches are limited to **one per 60 seconds**. A JWT with an unknown `kid` inside that cooldown is refused without a fetch.
+  - The response body is capped at **64 KB**. A larger body is a fetch failure.
+  - Times come from the app's injectable clock.
 - **Checks:**
   - **RS256 only**;
   - `iss == team_domain`;
   - `aud` contains the `/authorize` app's AUD tag (`aud` is an array);
-  - require `exp` and `iat`, leeway 30 s;
+  - require `exp` and `iat`, and check `nbf` when present, all with leeway 30 s;
   - `type == "app"`;
   - non-empty `email`.
-- **Lowercase the email**, then look up the profile. **If no profile matches**, render "no SyncShelf profile for <email>" and **issue nothing**.
+- **Lowercase the email**, then look up the profile. **If no profile matches**, render "no SyncShelf profile for <email>" (HTTP 403, an error page) and **issue nothing**.
 
 **Consent page** (`GET` renders it). It reads: "Connect **claude.ai** to SyncShelf as **<email>**?" with one **Allow** button.
 - It shows the `client_id` host, never `client_name`.
@@ -708,17 +744,24 @@ Always reject:
   - `X-Frame-Options: DENY`;
   - `Content-Security-Policy: frame-ancestors 'none'; default-src 'self'`;
   - `Cache-Control: no-store`;
-  - `Referrer-Policy: no-referrer`.
+  - `Referrer-Policy: same-origin`, so the **Allow** POST carries a real `Origin` (a browser sends `Origin: null` under `no-referrer`) while no referrer reaches another site. Error pages and redirects keep `Referrer-Policy: no-referrer`. Decided in [Consent POST: Referrer-Policy no-referrer makes browsers send Origin: null](https://github.com/ryansull/syncshelf/issues/114).
 - Escape every echoed value.
 
 **Consent POST** (CSRF and binding).
-- `GET` puts the **validated** request in a hidden field, signed with HMAC-SHA256 under `server.consent_hmac_key`. The signed blob holds `client_id`, `redirect_uri`, `code_challenge`, `resource`, `state`, scopes, email, and a 10-minute expiry.
+- `GET` puts the **validated** request in a hidden field, signed with HMAC-SHA256 under `server.consent_hmac_key`. The signed blob holds `client_id`, `redirect_uri`, `code_challenge`, `resource`, `state`, scopes, email, and a 10-minute expiry. It also holds `refresh_allowed` (from the document's `grant_types`), because the POST never fetches CIMD again ([Phase 2 /authorize: confirm calls the spec doesn't make (error codes, JWKS lifetime)](https://github.com/ryansull/syncshelf/issues/110)).
 - `POST /authorize` re-verifies the Access JWT and requires:
   - its email equals the signed email;
   - the HMAC and expiry are valid;
-  - `Origin == ISSUER`.
+  - `Origin == ISSUER`, compared exactly.
 - On success it issues a code and redirects to `redirect_uri` with `code`, `state` and `iss`.
 - GET and POST share the `/authorize` path, so one Access rule covers both.
+- **Order:** the blob, then `Origin`, then the Access JWT and its email.
+- **A blob that doesn't verify** (missing, repeated, forged, malformed or past its 10 minutes) gets an HTML error page, HTTP 400, asking the person to start again from Claude. Nothing in it can be trusted, so nothing is redirected.
+- **Refusals after the blob verifies** go to the signed `redirect_uri` with `state` and `iss`: `access_denied` for a missing or wrong `Origin`, an email that isn't the signed one, or a missing or bad Access JWT; `temporarily_unavailable` when the Access keys can't be fetched (as for `GET`).
+- An email that no longer names a profile (possible only after a restart with a changed config) gets the same 403 no-profile page as `GET`.
+- When the client's document doesn't allow refresh, the code is bound to the scopes without `offline_access`, so the grant and the token response's `scope` omit it too. The `oauth_code` row has no column for `refresh_allowed`.
+
+The consent POST rules are decided in [Phase 2 consent POST and /token: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/115).
 
 #### 3.2.4 Codes and tokens
 
@@ -769,11 +812,42 @@ Always reject:
   | `resource` ≠ code's or grant's | `invalid_target` | 400 |
   | Any other `grant_type` (including `client_credentials` and `jwt-bearer`) | `unsupported_grant_type` | 400 |
 
+- **Code exchange details**, decided in [Phase 2 consent POST and /token: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/115):
+  - **Order.** Outside the transaction: the body is form-encoded; no parameter is repeated; `grant_type` is present and supported; `client_id` passes the gate (else `invalid_client`); `code`, `redirect_uri` and `code_verifier` are present; the verifier matches its pattern. Only then is the code touched. Inside the transaction: spend the code, then check `client_id`, `redirect_uri`, PKCE and `resource`.
+  - **A failed check after the spend still spends the code**, so nobody can guess at it, and a retry is then a replay (with no grant to revoke). Request-shape errors don't spend it.
+  - **Any exchange of a used code is a replay** and revokes its grant, even after the code's 120 s have passed.
+  - A profile removed since the code was issued gets `invalid_grant`.
+  - `resource` is canonicalised as at `/authorize` before it's compared with the code's.
+- **Refresh details**, decided in [Phase 2 refresh rotation: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/119):
+  - **Order.** Outside the transaction: the body is form-encoded, nothing is repeated, `grant_type` is present and supported, `client_id` passes the gate (else `invalid_client`), and `refresh_token` is present (else `invalid_request`). Inside one `BEGIN IMMEDIATE`: the token is known; its grant isn't revoked; the token row isn't revoked; the profile isn't removed; the sliding window hasn't passed; then reuse after the grace period (revoke); then `client_id` and `resource` against the grant; then a retry inside the grace period; then the rotation.
+  - **The 60 s boundary.** A reuse exactly 60 s after the rotation is outside the grace period and revokes, as a code at exactly 120 s is expired.
+  - **Reuse after the grace period revokes** whatever `client_id` or `resource` it's sent with. A token on an already-revoked grant, a removed profile or a passed window is refused without revoking.
+  - **A retry inside the grace period** from the wrong client or resource is refused (`invalid_grant` / `invalid_target`) without revoking, and the right client can still retry. From the right client it returns the held pair and changes nothing in the database (`last_used_at` and `refresh_expires_at` stay where the rotation put them). A retry with the original token after its successor was itself rotated, both inside 60 s, still returns the original successor pair.
+  - **Access tokens issued before a rotation** stay valid until their own expiry.
+  - The response's `scope` is the grant's scopes, and every rotation issues a refresh token.
+  - **The grace cache** lives in process memory, one per app, shared by `/token` and the tools. It's filled and read on the DB writer thread inside the rotation's transaction, so two racing refreshes with one token rotate it once and the second gets the first's pair. Expired entries are swept on each use. Each held raw token is registered with the log scrubber (§2.7) while held. `revoke_connection` (§3.2.7) and a code replay drop a revoked grant's entries. `profile_deleted` happens only in the startup profile sync, when the cache is empty.
+- **Responses**, decided in [Phase 2 consent POST and /token: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/115):
+  - `invalid_client` is 401 with no `WWW-Authenticate`, since these public clients never authenticate with `Authorization` (RFC 6749 §5.2);
+  - error bodies are `{"error": "<code>"}` only, with no `error_description`, so nothing from the request is echoed;
+  - the success body omits `refresh_token` when none is issued, rather than sending null;
+  - neither `/authorize` nor `/token` sets a request-body limit beyond the server's own.
+- **Auth log events** (INFO unless noted; raw codes and tokens are never logged):
+  - `code_issued` (`client_label`, `profile`); `grant_created` (`grant_id`, `client_label`) on each exchange;
+  - `refresh_rotated` (`grant_id`, `client_label`); `refresh_retried` for a retry served from the grace cache;
+  - WARNING `grant_revoked` (`grant_id`, `reason`: `code_replay` or `refresh_reuse`);
+  - `token_request_refused` (`reason`, `client_label`) for each refused token request. Refresh reasons are `refresh_unknown`, `grant_revoked`, `token_revoked`, `profile_removed`, `refresh_expired`, `refresh_reuse`, `client_mismatch`, `resource_mismatch` and `refresh_grace_lost` (the restart case).
+
+  The log events are decided in [Phase 2 consent POST and /token: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/115) and [Phase 2 refresh rotation: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/119).
+
 #### 3.2.5 Dev mode
 
 - **Setup:** `server.auth_mode: dev` with `server.dev.token` mapped to `server.dev.profile`, for Claude Code or MCP Inspector against a local instance. MCP Inspector can't pass the `claude.ai` client gate, so dev mode is how to use it.
 - It's a branch in the same `TokenVerifier`. **The AS routes are disabled** in dev mode.
 - **Startup refuses** dev mode when the `public_url` host isn't `localhost` or `127.0.0.1`, and logs a loud warning on every dev-mode start.
+- **Startup refuses** a `server.dev.token` shorter than 32 characters.
+- `server.listen` isn't restricted in dev mode, because a container must listen on `0.0.0.0` for a published port to reach it. Instead the README and the example config say: in dev mode, publish the port on loopback only (e.g. `127.0.0.1:8000:8000`) or listen on `127.0.0.1`.
+
+The token length and listen rules are decided in [Dev mode hardening: a minimum dev-token length, and binding loopback only](https://github.com/ryansull/syncshelf/issues/75).
 
 #### 3.2.6 CIMD fetch and SSRF limits
 
@@ -781,15 +855,19 @@ Always reject:
 - **Client:** `httpx2.AsyncClient(follow_redirects=False, timeout=Timeout(5.0, connect=3.0), trust_env=False)`, with TLS verification on.
 - **Response checks:**
   - only **200** succeeds; any 3xx is a failure (the CIMD draft says MUST NOT follow redirects);
-  - `Content-Type` must be `application/json`;
+  - `Content-Type` must be `application/json`, comparing the media type only and case-insensitively (`application/json; charset=utf-8` passes; `application/jsonp` or a missing header fails);
+  - the request sends `Accept-Encoding: identity`, and a body with any other `Content-Encoding` is refused, so the cap counts what's held in memory;
   - stream the body and abort past **5 KB**.
-- **Optional resolution check:** require every resolved address to be `ip_address(a).is_global`.
+- **Optional resolution check:** require every resolved address to be `ip_address(a).is_global`. Not built.
 - **Caching:**
   - cache **only valid documents**, keyed by `client_id`;
-  - freshness is `Cache-Control: max-age`, clamped to 5 min–24 h;
-  - a last-good copy is kept in `oauth_client_cache` and served **stale-on-error for up to 7 days**;
-  - single-flight per URL.
-- **A failure with no usable cache** aborts `/authorize` with an error page, never a redirect.
+  - freshness is `Cache-Control: max-age`, clamped to 5 min–24 h. A missing `Cache-Control`, `no-cache`/`no-store`, or an unparsable `max-age` counts as 0 and is clamped up to 5 minutes;
+  - a last-good copy is kept in `oauth_client_cache` and served **stale-on-error for up to 7 days**, counted from `fresh_until` (so until `fresh_until + 7 d`);
+  - the response's `ETag` is stored, but no conditional request is sent, since only a 200 succeeds;
+  - single-flight per URL. Requests queued behind a fetch that fails share its outcome (the stale copy or the error page) instead of each waiting out its own timeout. Nothing is cached, so the next request to arrive fetches again.
+- **A failure with no usable cache** aborts `/authorize` with an error page (HTTP 502, §3.2.3), never a redirect.
+
+The content-type, encoding, `max-age`, stale-window, ETag, queued-failure and resolution-check rules are decided in [Client gate and CIMD fetcher: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/102).
 
 #### 3.2.7 Tools
 
@@ -799,6 +877,14 @@ Always reject:
 | `revoke_connection(target: int \| "all_others" \| "all")` | Revokes the caller's own grant(s) with reason `user` and drops their grace-cache entries. `"all"` includes the current grant, so the next call gets 401 and Claude prompts to reconnect. Returns what was revoked. |
 
 Both tools are available to every profile (no permission) and touch only the caller's grants. There is no container CLI and no global kill switch. When Claude itself is unavailable, the fallback is a one-line `sqlite3` command, documented in the runbook (phase 7).
+
+Decided in [Connection tools: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/97):
+- **Results.** `revoke_connection` returns the revoked connections as a list in `my_connections`' row shape, with their values from before the revocation. `"all_others"` or `"all"` with nothing to revoke returns `[]`.
+- **An id that isn't an open grant of the caller's** (unknown, another profile's, or already revoked) is refused as a tool error with one message: "There is no open connection N on this SyncShelf profile. Call my_connections to see the connections that can be revoked." So another profile's grant isn't confirmed to exist. A grant revoked earlier keeps its first revocation.
+- **Timestamps.** `created_at` and `last_used_at` are ISO 8601 in UTC, with seconds and an explicit offset (`2100-01-01T00:00:00+00:00`).
+- **Client.** A grant with an unknown `client_label` (anything but `claude.ai` or `Claude Code`) is shown under its raw label rather than refused.
+- **Annotations.** `my_connections` sets `readOnlyHint: true`. `revoke_connection` sets none, since MCP's defaults for a tool that isn't read-only already read as destructive.
+- **Dev mode has no current connection.** The dev token carries no grant (`grant_id` is null), so `my_connections` marks nothing `current` and `"all_others"` revokes every open grant of the dev profile, the same as `"all"`. Neither ends the dev session: the dev token keeps working, so "the next call gets 401" doesn't happen in dev mode.
 
 #### 3.2.8 Tests
 
@@ -817,7 +903,7 @@ These are §6 levels 1–3 of the findings in [Building SyncShelf's OAuth server
      - reject `https://localhost:1/callback`, userinfo, `localhost.evil.com`, `/callback/`, `/callback?x=1`, `/%63allback`, the hosted callback with a trailing slash, and each client's redirect presented with the other's `client_id`.
    - **The CIMD fetcher.** 302, non-200, non-JSON, a 5 KB+1 body, a `client_id` mismatch, `max-age` honoured, stale-on-error, errors never cached, single flight.
    - PKCE helpers and parameter hygiene.
-2. **Flows through the ASGI app.** These use `httpx2.ASGITransport`, a temp DB, the injectable clock, a test RSA key signing fake Access JWTs, a mocked JWKS, and the real CIMD JSON captured 2026-10-17 as the fixture. Cases:
+2. **Flows through the ASGI app.** These use `httpx2.ASGITransport`, a temp DB, the injectable clock, a test RSA key signing fake Access JWTs, a mocked JWKS, and the two real CIMD documents. Those are fetched live (one public GET each, no credentials) and their exact JSON kept as plain test data in `tests/cimd_docs.py`, outside `tests/fixtures/` so the §2.9 scrubber doesn't blank their URLs, with the fetch date and `Cache-Control` in a comment. If either document differs from what the code accepts, that's an issue, not a code change. Decided in [CIMD fixture: the 2026-10-17 capture isn't in the repo, and the scrubber would blank its URLs](https://github.com/ryansull/syncshelf/issues/101). Cases:
    - the full code flow, then `/mcp` with a tool reading `get_access_token().subject`;
    - unknown email (no code issued);
    - code replay (`invalid_grant` + the grant revoked);
@@ -842,6 +928,7 @@ These are §6 levels 1–3 of the findings in [Building SyncShelf's OAuth server
 2. Does the Access app cover **POST** `/authorize` and forward `Cf-Access-Jwt-Assertion` there?
 3. Does Cloudflare bot protection on claude.ai ever block the server's CIMD fetch? The last-good cache is the mitigation.
 4. Which loopback host does Claude Code use? Does Claude send `resource` on refresh? Both are accepted either way.
+5. Does a real browser's **Allow** click pass the `Origin` check? ([Consent POST: Referrer-Policy no-referrer makes browsers send Origin: null](https://github.com/ryansull/syncshelf/issues/114))
 
 **Done when:** levels 1–3 pass in CI, and a local instance in dev mode serves `tools/list` (`my_connections`, `revoke_connection`) to Claude Code.
 
@@ -2257,7 +2344,7 @@ Decisions:
     - **Clients:** Claude Code, claude.ai web, Desktop, and use from mobile. Check `tools/list` per profile (Chaptarr tools present only with the permission).
     - **Refresh:** set the access TTL to 5 minutes in a staging config and confirm silent refresh.
     - **Revocation:** `revoke_connection("all")`, and confirm Claude asks to reconnect rather than erroring.
-    - **The phase 2 live checks** (§3.2.8): `iss` acceptance, Access on POST `/authorize`, whether the CIMD fetch is ever blocked, the loopback host, and `resource` on refresh.
+    - **The phase 2 live checks** (§3.2.8): `iss` acceptance, Access on POST `/authorize`, whether the CIMD fetch is ever blocked, the loopback host, `resource` on refresh, and that a real browser's Allow click passes the `Origin` check.
 
 **Tests:** the runbook steps are executed once end to end on the real deployment, and level 4 passes. The findings are recorded on the map.
 

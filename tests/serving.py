@@ -22,7 +22,7 @@ from syncshelf.config import Config, load_config
 from syncshelf.db import Database
 
 SECRET = "fake-consent-key"
-DEV_TOKEN = "fake-dev-token-for-tests"
+DEV_TOKEN = "fake-dev-token-for-tests-32-chars-or-more"  # config refuses under 32 (#75)
 BASE_URL = "http://localhost:8000"  # "localhost:*" only matches a Host with a port
 MCP_URL = f"{BASE_URL}/mcp"
 ACCESS_AUD = "fake-access-aud-tag"
