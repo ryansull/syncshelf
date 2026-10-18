@@ -35,6 +35,7 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Lint and format | `uv run ruff check .` and `uv run ruff format --check .` |
 | Types | `uv run pyright` |
 | Tests (offline, as CI runs them) | `uv run pytest` |
+| Tests while iterating | `uv run pytest <path> --no-cov -x` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
