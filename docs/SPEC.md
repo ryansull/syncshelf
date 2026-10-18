@@ -1,10 +1,6 @@
 # SyncShelf build spec
 
-**Status:** assembled 2026-10-17 from the planning map [Map: SyncShelf — MCP server + sync service](https://github.com/ryansull/syncshelf/issues/1) by [Assemble the SyncShelf build spec](https://github.com/ryansull/syncshelf/issues/21). **One section is pending** a decision and is marked ⏳ where it occurs:
-
-- ⏳ **Phase 4a, the Goodreads backfill**: [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32).
-
-Everything else is decided. Phases 1, 2 and 3 can be built now. Phase 4a can be built except for the backfill entry point and the first-observation rule.
+**Status:** assembled 2026-10-17 from the planning map [Map: SyncShelf — MCP server + sync service](https://github.com/ryansull/syncshelf/issues/1) by [Assemble the SyncShelf build spec](https://github.com/ryansull/syncshelf/issues/21). Every map decision is folded in, the last being [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32) (the Goodreads backfill, §3.4a.12). Nothing is pending. Every phase can be built in order.
 
 ---
 
@@ -286,7 +282,7 @@ From [Hosting the MCP server, ingest endpoint and scheduler in one process](http
   | 1 | `0001_meta` | `meta` |
   | 2 | `0002_auth` | `profiles`, `oauth_grant`, `oauth_code`, `oauth_refresh_token`, `oauth_access_token`, `oauth_client_cache` |
   | 3 | `0003_mirror` | `mirror_state`, `mirror_books`, `mirror_user_books`, `mirror_reads`, `mirror_list_items` |
-  | 4a | `0004_sync` | `links`, `source_rows`, `match_candidates`, `baseline_fields`, `runs`, `change_log`, `schedules`, `ingest_batches` |
+  | 4a | `0004_sync` | `links`, `source_rows`, `match_candidates`, `baseline_fields`, `runs`, `change_log`, `schedules`, `ingest_batches`, `backfills` |
   | 4b | `0005_goodreads_session` | `goodreads_sessions` |
   | 5 | none | reuses the 4a tables with `source = 'abs'` |
   | 6 | `0006_chaptarr` | `chaptarr_requests` |
@@ -348,7 +344,7 @@ src/syncshelf/
     writes.py            update_book, correct_read, remove_book                 [3]
     confirm.py           preview + confirm-token helper                         [3]
     sync.py              sync_now, sync_status, retry_failed [4a]; dismiss_attention [6]
-    matching.py          unmatched_books, resolve_match                         [4a]
+    matching.py          unmatched_books, resolve_match, rebaseline             [4a]
     goodreads.py         goodreads_sign_in, goodreads_verify                    [4b]
     chaptarr.py          chaptarr_request, library_status, chaptarr_queue       [6]
 tests/
@@ -1000,7 +996,9 @@ From [Reading history questions](https://github.com/ryansull/syncshelf/issues/17
 - the link's `hc_edition_id`, if the link's format matches the source format;
 - otherwise the book's `default_audio_edition` / `default_ebook_edition` / `default_physical_edition` for the source format.
 
-Reads logged by hand in Hardcover keep whatever the user picked. ⏳ Which edition a Goodreads **RSS-only** row's read carries (no Binding yet) is pending [#32](https://github.com/ryansull/syncshelf/issues/32).
+Reads logged by hand in Hardcover keep whatever the user picked.
+
+**A Goodreads row with no Binding observed yet** (RSS-only) takes its format from the link's `hc_edition_id`: a `gr_mapping` or ISBN hit is the edition the user shelved, so a Kindle row maps to a Kindle edition. That edition, with its `reading_format_id`, goes on the read. If the link has no edition (fuzzy or human), or the edition has no `reading_format_id`, the read is written **with no edition**, so it lands in the `unknown` bucket rather than a guessed print edition. Once Binding has been observed, it decides the format for later reads ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 7).
 
 #### 3.3.6 The write procedure: "make Hardcover match" (`sync/apply.py`)
 
@@ -1187,7 +1185,7 @@ Decisions:
 - [Sync cadence and Hardcover request budget](https://github.com/ryansull/syncshelf/issues/27)
 - [Failure policy: retries, quarantine and partial runs](https://github.com/ryansull/syncshelf/issues/28)
 - [Observability: sync_status payload, attention, and structured logs](https://github.com/ryansull/syncshelf/issues/30)
-- ⏳ [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32)
+- [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32)
 
 **Builds**
 - Clients: `clients/goodreads_rss.py` and `clients/goodreads_csv.py` (the parser, shared with `/ingest` and 4b).
@@ -1197,13 +1195,13 @@ Decisions:
   - `attention.py`.
 - Endpoints and tools:
   - `ingest.py` (`POST /ingest/goodreads-csv`);
-  - `tools/sync.py` (`sync_now`, `sync_status`, `retry_failed`) and `tools/matching.py` (`unmatched_books`, `resolve_match`).
+  - `tools/sync.py` (`sync_now`, `sync_status`, `retry_failed`) and `tools/matching.py` (`unmatched_books`, `resolve_match`, `rebaseline`).
 - Upgrades to earlier phases:
   - `/healthz` gains `status`/`profiles` (§3.4a.10);
   - the read tools gain `attention`;
   - mirror refreshes start following merges (§3.4a.4).
 
-**Tables:** `links`, `source_rows`, `match_candidates`, `baseline_fields`, `runs`, `change_log`, `schedules`, `ingest_batches` (`0004_sync`). The SQL-invariant tests for these tables ship here.
+**Tables:** `links`, `source_rows`, `match_candidates`, `baseline_fields`, `runs`, `change_log`, `schedules`, `ingest_batches`, `backfills` (`0004_sync`). The SQL-invariant tests for these tables ship here.
 
 #### 3.4a.1 Goodreads shelf RSS contract
 
@@ -1276,7 +1274,7 @@ From [Goodreads acquisition design](https://github.com/ryansull/syncshelf/issues
 - **`observed_at`:**
   - RSS: the fetch start time.
   - Automated CSV (4b): the generation time.
-  - `/ingest`: the optional `generated_at` the uploader states. **Without it, the batch is marked `stale`** (⏳ what a stale batch may change: [#32](https://github.com/ryansull/syncshelf/issues/32)).
+  - `/ingest`: the optional `generated_at` the uploader states. **Without it, the batch is marked `stale`**, and a stale batch **only fills** (§3.4a.8).
 - **`complete`:**
   - a CSV: always true when its header validates;
   - RSS: true only if every page was usable **and** paging ended on an empty page.
@@ -1297,10 +1295,10 @@ From [Goodreads acquisition design](https://github.com/ryansull/syncshelf/issues
 
 **A field a feed doesn't carry is *not observed*, never *cleared*.** The diff never treats RSS's missing `read_count`, `spoiler` or format as a change.
 
-**Binding → format** [assembly choice; confirmation pending in #32]:
+**Binding → format** (confirmed in [#32](https://github.com/ryansull/syncshelf/issues/32); a code constant, not config):
 - `Kindle Edition`, `Nook`, `ebook` (case-insensitive contains) → `ebook`;
 - `Audiobook`, `Audible Audio`, `Audio CD`, `MP3 CD`, `Audio Cassette` → `audio`;
-- anything else → `print`.
+- anything else → `print`. An unrecognised Binding value is logged once per distinct value, so the table can grow.
 
 #### 3.4a.4 Identity
 
@@ -1324,7 +1322,7 @@ From [Canonical book identity across Goodreads, Hardcover, ABS and Chaptarr](htt
    - **A vanished source id is left alone** (an ABS rescan, a Goodreads edition swap). Its `last_seen_at` freezes, and the new id gets its own link.
    - **No periodic re-verify job.**
 8. **Chaptarr is resolved live, and nothing about it is stored** (phase 6).
-9. **⏳ The map-only backfill** (§3.4a.12).
+9. **The map-only backfill** (§3.4a.12).
 
 #### 3.4a.5 The matcher
 
@@ -1387,13 +1385,14 @@ From [Goodreads to Hardcover diff: what 'Goodreads changed it' means](https://gi
    - **review:** HTML normalised (`<br>` → newline, entities decoded, other tags stripped, whitespace collapsed), then compared. It's written as `review_markdown`, with `spoiler` → `review_has_spoilers`.
 2. **Fields carried:** status, rating, date read, review and spoiler (plus `read_count` as a re-read signal). **Not carried:** non-exclusive shelves/tags, private notes, owned copies.
 3. **First sighting.**
-   - Rows present at the backfill take their observed values as the baseline, so **the backfill pushes nothing** (⏳ trigger and source: §3.4a.12).
-   - A row first seen **after** the backfill starts from an **empty baseline** (`observed_at NULL`), so every non-empty field is a change and is pushed. ⏳ How that interacts with `read_count`, and with a field first observed later, is pending [#32](https://github.com/ryansull/syncshelf/issues/32).
+   - Rows present at the backfill take their observed values as the baseline, so **the backfill pushes nothing** (§3.4a.12).
+   - A row first seen **after** the backfill starts from an **empty baseline** (`observed_at NULL`), so in **that first observation** every non-empty field is a change and is pushed.
+   - **A field's first-ever observation is otherwise a baseline, never a change** ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 4). On a row SyncShelf has already seen (every backfilled row included), a field that a feed carries for the first time (`read_count`, `spoiler` and Binding from the first CSV after RSS) only sets its baseline. So the first CSV after an RSS backfill pushes nothing. `spoiler` has no exception: a spoiler review written in the RSS window misses the flag until that review next changes.
    - The baseline is recorded **whatever the link state**. A `queued` row keeps one, and once resolved, its pending diff applies.
 4. **Removals are recorded and never pushed.** Only a **complete enumeration** may conclude that a row is gone. The source row gets `gone_at`, its `last_seen_at` freezes, a `change_log` row (`kind = gone`) is written, and it's counted in `sync_status`. A partial, filtered or empty feed concludes nothing about absence. A move to another shelf is a status change, not a removal.
 5. **Clears.** Rating → 0 clears the Hardcover rating, and an emptied review clears the review. **A vanished Date Read is never pushed**, because reads are history and missing dates are normal Goodreads noise. The baseline still updates in every case.
 6. **Reads and re-reads.** The diff never deletes reads, and touches only reads it created or matched by date.
-   - **A new read** only on an explicit signal: `read_count` goes up (CSV), or the status is seen going **Read → Currently Reading → Read**. That shows up as baseline `currently-reading`, `prev_value = read`, and a new observation `read`.
+   - **A new read** only on an explicit signal: `read_count` **rises from an observed value** (N → N+1, CSV), or the status is seen going **Read → Currently Reading → Read**. `read_count` never counts on its first observation, even on a brand-new row: a new row first seen as Read, with any `read_count`, inserts **exactly one** read, from the status change ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 5). That shows up as baseline `currently-reading`, `prev_value = read`, and a new observation `read`.
    - **Any other Date Read change is a correction.** It updates the read whose `finished_at` equals the old baseline date. If none matches, it inserts a read, unless an **adoptable read** exists.
    - **An undated finish** (normal for Kindle) gets the date part of RSS `user_date_added`, or failing that the date SyncShelf first saw the transition (`pending_since`). The `change_log.date_source` records which. A Currently Reading start date follows the same rule.
    - New reads carry an edition (§3.3.5).
@@ -1481,10 +1480,15 @@ From [The front door](https://github.com/ryansull/syncshelf/issues/11) and [Depl
   1. Validate the header (§3.4a.2).
   2. Store the batch in `ingest_batches`: `source = gr_csv_ingest`, `observed_at = generated_at` or NULL, `stale = generated_at absent`, `complete = 1`, and the payload as received. Keep the last 3 per profile.
   3. Nudge the profile's Goodreads loop (`trigger = 'ingest'`).
-  4. Return **202** `{"batch_id": …, "run": "started" | "already_running"}`. The client never waits on a sync.
+  4. Return **202** `{"batch_id": …, "run": "started" | "already_running", "stale": bool}`. When `stale` is true, the body also suggests resending with `generated_at`. The client never waits on a sync.
 
   Errors are `401` (unknown secret) and `400` (not a valid CSV, with the missing columns named).
-- **Schedule effect:** a `/ingest` CSV counts as a CSV success and pushes the CSV due date out (4b).
+- **Schedule effect:** a **dated** `/ingest` CSV counts as a CSV success and pushes the CSV due date out (4b).
+- **A stale batch only fills** ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 9). It may:
+  - set baselines for **never-observed** fields on **existing** rows (no push, per diff rule 3);
+  - refresh match inputs (ISBN13, Binding), re-matching queued rows whose input changed.
+
+  It **never** creates rows, pushes, marks rows gone, counts as the backfill, or moves the CSV due date. Under "newer observation wins" it could never beat an observed baseline anyway.
 
 #### 3.4a.9 Scheduler and cadence
 
@@ -1542,6 +1546,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
   sources: { gr_rss | gr_csv | abs: {
     enabled, last_result, last_run_at, last_success_at, last_observed_at,
     next_due_at, consecutive_failures, backoff_until,
+    backfill: {state: pending|done, done_at?, rows_linked?, rows_queued?},
     recent_runs: [{id, trigger, state, started_at, duration_s,
                    applied, failed, quarantined, first_error}] }},
   goodreads_session: {state, since, detail, action},                  # 4b
@@ -1578,31 +1583,38 @@ From [Observability: sync_status payload, attention, and structured logs](https:
 | `sync_status(profile: "me" \| "household" = "me")` | §3.4a.10. |
 | `retry_failed(change_id: int \| "all")` | Releases the caller's own quarantined change(s) (clears `quarantined_at`, `attempts`, `first_failed_at`) and queues an immediate run of the affected sources. |
 | `unmatched_books(source?: "goodreads" \| "abs", include_ignored=false, refresh=false)` | The caller's queue. Each entry has an opaque `entry_id` (`goodreads:<Book Id>`, `abs:<libraryItemId>`), source, reason and `queued_at`; the input as seen (title, author, ISBN/ASIN, format); the **pending diff in words** ("would mark Read, finished 2026-03-02, rate 4"); and candidates with title, subtitle, authors, release year, Hardcover URL, scores and method. `refresh=true` re-runs matching on the listed entries first. Claude can always propose a book that isn't a candidate, found through `search_books`. |
-| `resolve_match(entry_id, hardcover_book_id: int \| None)` | **With an id:** (1) validate that the book exists and follow `canonical_id`; (2) write a `human` link (shared unless the profile's library contradicts it) and set the row `linked`; (3) **apply that one row's pending diff immediately**, under the source's lock and the apply lock, without a `runs` row (its `change_log` rows have `run_id = NULL`) [assembly choice]; (4) return what was pushed or what failed. On failure the link stays and the baseline doesn't advance. **With `None`:** set the row `ignored`. It works on **any** source row, including linked ones, to correct a wrong automatic link. The old user_book is **left in place and named** in the result ("Book X still has a user_book from the old link"). SyncShelf never deletes it on its own. Claude can remove it with `remove_book` (§3.3.9), after the user confirms. |
+| `resolve_match(entry_id, hardcover_book_id: int \| None)` | **With an id:** (1) validate that the book exists and follow `canonical_id`; (2) write a `human` link (shared unless the profile's library contradicts it) and set the row `linked`; (3) **apply that one row's pending diff immediately** (for a backfill-queued row, see §3.4a.12), under the source's lock and the apply lock, without a `runs` row (its `change_log` rows have `run_id = NULL`) [assembly choice]; (4) return what was pushed or what failed. On failure the link stays and the baseline doesn't advance. **With `None`:** set the row `ignored`. It works on **any** source row, including linked ones, to correct a wrong automatic link. The old user_book is **left in place and named** in the result ("Book X still has a user_book from the old link"). SyncShelf never deletes it on its own. Claude can remove it with `remove_book` (§3.3.9), after the user confirms. |
+
+| `rebaseline(source: "goodreads" \| "abs", confirm?: str)` | **Preview + confirm token** (the `remove_book` pattern, §3.3.9), on the caller's own profile. It re-runs the backfill on that source: backfill matching (§3.4a.12) on queued rows and rows without a link (human links and `ignored` rows are kept), then every baseline of the source is reset to its latest observation, dropping pending changes. The preview counts what would happen ("12 rows re-match, 3 pending changes would be dropped"). The confirmed call rewrites the `backfills` row and **pushes nothing**. It's for a backfill that ran before the hand import into Hardcover finished. `goodreads` from 4a, `abs` from phase 5. |
 
 `attention` is added to all six read tools' results.
 
-#### 3.4a.12 ⏳ The map-only backfill: partly pending #32
+#### 3.4a.12 The map-only backfill
 
-**Decided** ([identity](https://github.com/ryansull/syncshelf/issues/12), decision 8; [diff](https://github.com/ryansull/syncshelf/issues/13), decision 3):
+From [identity](https://github.com/ryansull/syncshelf/issues/12) (decision 8), [diff](https://github.com/ryansull/syncshelf/issues/13) (decision 3), and [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32).
+
+**What it is:**
 - The **initial Goodreads → Hardcover import is done by hand** with Hardcover's own importer, and is out of scope. SyncShelf's map-only mode **reads Hardcover and never writes**.
 - It populates links and source rows from each profile's existing Hardcover library plus the Goodreads input.
 - **Linked automatically** only when the Goodreads `Book Id` resolves through `book_mappings`, or an exact ISBN-13/ISBN-10 resolves to an edition, **and** the resulting book (after `canonical_id`) is **in that profile's Hardcover library**.
-- **Queued:** a mapping to a book not in the library (`not_in_library`), any title/author-only candidate, or no hit. **There are no fuzzy auto-links during the backfill.**
+- **Queued:** a mapping to a book not in the library (`not_in_library`), any title/author-only candidate, or no hit. **There are no fuzzy auto-links during the backfill.** Rows it queues carry `source_rows.backfill_queued = 1`.
 - Backfilled rows take their observed values as the baseline, so **the backfill pushes nothing**.
-- **SyncShelf never creates reads for books already Read at backfill.** Backfilling old dates is out of scope.
+- **SyncShelf never creates reads for books already Read at backfill.** Backfilling old dates is out of scope. The one narrow exception is a user-resolved row, below.
 
-**Pending** in [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32):
-- what triggers it, and how its completion is recorded;
-- which feed it needs;
-- whether a field's first-ever observation on a backfilled row is a baseline or a change (`read_count` from the first CSV after an RSS backfill);
-- one read vs two for a new Read row;
-- what a stale `/ingest` batch may change;
-- what resolving a backfill-queued row pushes;
-- the edition for RSS-only rows;
-- confirming the ABS first sync uses the backfill matching rule.
+**Trigger: automatic, on the first complete enumeration.**
+- A profile's first Goodreads run whose batch is `complete` (§3.4a.3) **is** its backfill. That's either RSS `#ALL#` with every page usable and paging that ended on an empty page, or a **dated** CSV. A stale `/ingest` batch never counts.
+- Runs before that (incomplete RSS) store their batch and push nothing. 4a needs no manual onboarding step.
+- **Either feed suffices.** The backfill doesn't wait for a CSV, because the first-observation rule (§3.4a.6, rule 3) makes the first later CSV push nothing.
+- Completion is recorded in `backfills` (`profile`, `source`, `done_at`, `run_id`, `rows_linked`, `rows_queued`). Until that row exists, `sync_status` shows the source as `backfill: pending`.
+- **Re-run** with `rebaseline("goodreads")` (§3.4a.11).
 
-**Until #32 resolves, phase 4a must not run against a real profile's Hardcover account.** Everything else in 4a can be built and tested against the fakes.
+**Resolving a backfill-queued row.** When `resolve_match` resolves a row with `backfill_queued = 1`, the flag is cleared and:
+- **if the profile has no user_book for the chosen book**, the row is diffed against an **empty baseline**. Its status, rating and review are inserted (privacy per `hardcover_privacy`), plus a read **only when Goodreads has a real Date Read**, never an undated or invented one;
+- **if a user_book already exists**, nothing is pushed: the link only. The baseline stays the observation.
+
+This narrows the out-of-scope line above. A date the user stated, on a book the user explicitly adds, isn't a backfilled date, and every book already in the library still gets no historic read.
+
+**ABS uses the same rules** (§3.5, rule 8). The ABS first sync is its backfill: exact ids only (ASIN/ISBN), in the profile's library, with no fuzzy auto-link. It's stamped in `backfills` with `source = 'abs'`, re-run through `rebaseline("abs")`, and it shares the first-observation and push-if-absent rules.
 
 #### 3.4a.13 Tests
 
@@ -1616,7 +1628,8 @@ From [Observability: sync_status payload, attention, and structured logs](https:
   - commit-after-write and replay adoption;
   - a Claude edit untouched by an unchanged row, and last-writer-wins;
   - privacy on insert only;
-  - the ⏳ #32 cases once decided.
+  - the backfill cases: RSS backfill then first CSV (no push, no read from `read_count`); a new Read row with `read_count` 1 or 2 (one read); `read_count` N → N+1 (one re-read); `spoiler` first observed on an existing row (baseline); a stale batch (fills only, no rows, no gone, no due-date move); resolving a backfill-queued row with and without a user_book, and with and without a Date Read; `rebaseline` preview counts and keeping human/ignored rows;
+  - RSS-only read edition: the linked edition's format, else no edition.
 - **Golden `matcher.yaml`:** the chain order, `canonical_id` following, the title floor 60, and each fuzzy threshold and the margin, just above and just below.
 - **Golden `attention.yaml`:** each code raised and cleared; dismiss on event vs state items; own-profile-only on household queries.
 - **Matcher calibration** (`tests/live/calibrate_matcher.py`): run the real matcher over the Goodreads CSV in `local/`, read-only, against live Hardcover search through the limiter. Print every pair in the **near band** (title 80–98, author 80–95, or a margin under 15) for the user to label right or wrong. Set the thresholds from the labels, and commit the labelled pairs (public titles and ids only) into `matcher.yaml`.
@@ -1642,7 +1655,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
 - **`/ingest`:**
   - secret → profile, and an unknown secret → 401;
   - a bad header → 400 naming the columns;
-  - `generated_at` absent → stale;
+  - `generated_at` absent → stale, with `"stale": true` in the 202;
   - 202 without waiting;
   - last-3 retention.
 - **Scheduler:**
@@ -1652,7 +1665,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
   - the household view and `/healthz` contain no titles or values;
   - stored error strings are scrubbed before insert.
 
-**Done when:** for a test profile against the fakes, an RSS change (a Kindle finish, a rating, a review) reaches `FakeHardcover` with the right dates, edition and privacy. Partial and failed fetches never push removals. `sync_status` and `attention` report every failure path. The real-account run waits on ⏳ #32.
+**Done when:** for a test profile against the fakes, an RSS change (a Kindle finish, a rating, a review) reaches `FakeHardcover` with the right dates, edition and privacy. Partial and failed fetches never push removals. `sync_status` and `attention` report every failure path. The first real-account run is the backfill: it pushes nothing, and `sync_status` shows `backfill` done with link and queue counts.
 
 ---
 
@@ -1800,7 +1813,7 @@ From [Sync cadence and Hardcover request budget](https://github.com/ryansull/syn
 - The sign-in state machine, against a fake browser driver.
 - Sign-in is **never** automated in tests. The live check is the attended opening script.
 
-**Done when:** after the opening test, a profile with credentials runs an unattended night-window export, and it reaches Hardcover through the 4a engine (subject to ⏳ #32). Every failure state shows in `sync_status` and `attention` with the right action.
+**Done when:** after the opening test, a profile with credentials runs an unattended night-window export, and it reaches Hardcover through the 4a engine. Every failure state shows in `sync_status` and `attention` with the right action.
 
 ---
 
@@ -1893,7 +1906,7 @@ From [Audiobookshelf to Hardcover: what counts as finished](https://github.com/r
    - This contradicts the research's `finishedAt > X` cursor, because backdated device dates would fall behind a cursor.
    - A status change and its read edits are one change, carried on `abs_state`.
    - Commit timing is the 4a rule: write first, then advance the baseline. A replay adopts.
-8. **The first sync is baseline only.** On a profile's first ABS run, every row's current state becomes its baseline and **nothing is pushed**. Only transitions after onboarding reach Hardcover. (⏳ #32 confirms that this first sync uses the backfill matching rule: exact ids only, no fuzzy auto-link.)
+8. **The first sync is baseline only.** On a profile's first ABS run, every row's current state becomes its baseline and **nothing is pushed**. Only transitions after onboarding reach Hardcover. It **is** the ABS backfill and uses its rules (§3.4a.12): exact ids only, in the library, no fuzzy auto-link; stamped in `backfills`; re-run through `rebaseline("abs")`; and resolving a backfill-queued item pushes only if the book is absent from the library ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 10).
 9. **Matching scope.** Matching runs only for rows that are **started or finished**. Rows under 5 % never touch Hardcover or the unmatched queue. A queued row's pending diff reads, for example, "would mark Currently Reading from 2026-10-01" or "would mark Read, finished 2026-10-12".
 10. **`change_log`** records `trigger = isFinished | threshold` and `date_source = abs_finished_at | abs_last_update`.
 
@@ -2169,7 +2182,7 @@ Decisions:
     5. Through Claude, runs **`goodreads_sign_in()`** and answers any approval or code prompt (4b).
 
     **Then:**
-    - ⏳ The Goodreads backfill step, per [#32](https://github.com/ryansull/syncshelf/issues/32).
+    - **After** the hand import into Hardcover has finished, enable the profile's Goodreads source. Its first complete run is the backfill (§3.4a.12). If it ran too early, use `rebaseline("goodreads")`. Then work the queue with `unmatched_books`.
     - The ABS first sync runs by itself and is baseline only.
     - Confirm with `sync_status()`.
 11. **Live acceptance (level 4).** Log each `/authorize` and `/token` request's parameters, minus secrets, while testing.
@@ -2356,6 +2369,7 @@ CREATE TABLE source_rows (                          -- per profile; the unmatche
   first_seen_at   INTEGER NOT NULL,
   last_seen_at    INTEGER NOT NULL,                 -- freezes when gone or id swapped
   gone_at         INTEGER,                          -- set only by a complete enumeration
+  backfill_queued INTEGER NOT NULL DEFAULT 0 CHECK (backfill_queued IN (0,1)),  -- queued by the backfill; cleared on resolve
   PRIMARY KEY (profile, source, source_id),
   CHECK ((state = 'linked') = (hc_book_id IS NOT NULL)),
   CHECK ((state = 'queued') = (queue_reason IS NOT NULL AND queued_at IS NOT NULL))
@@ -2474,6 +2488,16 @@ CREATE TABLE ingest_batches (
   run_id       INTEGER REFERENCES runs(id) ON DELETE SET NULL
 );
 CREATE INDEX ingest_batches_profile ON ingest_batches(profile, received_at);
+
+CREATE TABLE backfills (                            -- one row per completed backfill (#32)
+  profile     TEXT NOT NULL REFERENCES profiles(name),
+  source      TEXT NOT NULL CHECK (source IN ('goodreads','abs')),
+  done_at     INTEGER NOT NULL,                     -- rewritten by rebaseline()
+  run_id      INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+  rows_linked INTEGER NOT NULL,
+  rows_queued INTEGER NOT NULL,
+  PRIMARY KEY (profile, source)
+);
 -- keep the last 3 per profile
 
 -- 0005_goodreads_session (phase 4b) -------------------------------------------
@@ -2567,7 +2591,7 @@ Every decision this spec states lives in one of these tickets. They're grouped b
 | Shared | [Hosting the MCP server, ingest endpoint and scheduler in one process](https://github.com/ryansull/syncshelf/issues/4) · [Public-repo hygiene: licence, secret scanning, config conventions](https://github.com/ryansull/syncshelf/issues/5) · [SQLite schema and repo structure](https://github.com/ryansull/syncshelf/issues/19) · [Testing strategy: fixtures, golden sets and live tests](https://github.com/ryansull/syncshelf/issues/29) · [Observability: sync_status payload, attention, and structured logs](https://github.com/ryansull/syncshelf/issues/30) · [Credentials and sample inputs in place](https://github.com/ryansull/syncshelf/issues/2) |
 | 2 | [Does a Claude custom connector work behind Cloudflare Access?](https://github.com/ryansull/syncshelf/issues/3) · [The front door: auth architecture](https://github.com/ryansull/syncshelf/issues/11) · [Building SyncShelf's OAuth server: SDK provider, Authlib, or hand-rolled?](https://github.com/ryansull/syncshelf/issues/22) · [OAuth policy leftovers: revocation, refresh reuse, absolute cap, scopes](https://github.com/ryansull/syncshelf/issues/23) |
 | 3 | [Hardcover write API: user_book mutations, statuses, rate limit](https://github.com/ryansull/syncshelf/issues/6) · [Hardcover read API: how rich can the reading history get?](https://github.com/ryansull/syncshelf/issues/7) · [Reading history questions: what should Claude be able to answer?](https://github.com/ryansull/syncshelf/issues/17) · [Read-side strategy: live Hardcover queries or a local mirror?](https://github.com/ryansull/syncshelf/issues/18) · [Sync cadence and Hardcover request budget](https://github.com/ryansull/syncshelf/issues/27) · [Direct Hardcover edits from Claude: which write tools, and abs_library_search](https://github.com/ryansull/syncshelf/issues/31) |
-| 4a | [Goodreads CSV and shelf RSS: what fields actually arrive](https://github.com/ryansull/syncshelf/issues/10) · [Canonical book identity across Goodreads, Hardcover, ABS and Chaptarr](https://github.com/ryansull/syncshelf/issues/12) · [Goodreads to Hardcover diff: what 'Goodreads changed it' means](https://github.com/ryansull/syncshelf/issues/13) · [Matching and the unmatched queue: thresholds and resolve_match](https://github.com/ryansull/syncshelf/issues/14) · [Failure policy: retries, quarantine and partial runs](https://github.com/ryansull/syncshelf/issues/28) · ⏳ [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32) |
+| 4a | [Goodreads CSV and shelf RSS: what fields actually arrive](https://github.com/ryansull/syncshelf/issues/10) · [Canonical book identity across Goodreads, Hardcover, ABS and Chaptarr](https://github.com/ryansull/syncshelf/issues/12) · [Goodreads to Hardcover diff: what 'Goodreads changed it' means](https://github.com/ryansull/syncshelf/issues/13) · [Matching and the unmatched queue: thresholds and resolve_match](https://github.com/ryansull/syncshelf/issues/14) · [Failure policy: retries, quarantine and partial runs](https://github.com/ryansull/syncshelf/issues/28) · [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32) |
 | 4b | [Goodreads session and library export: what can SyncShelf automate?](https://github.com/ryansull/syncshelf/issues/24) · [Goodreads acquisition design: starting, storing and reusing a session](https://github.com/ryansull/syncshelf/issues/25) |
 | 5 | [Audiobookshelf API: per-user progress and finished status](https://github.com/ryansull/syncshelf/issues/9) · [Audiobookshelf to Hardcover: what counts as finished](https://github.com/ryansull/syncshelf/issues/16) |
 | 6 | [Chaptarr API surface and how it models audiobook vs ebook](https://github.com/ryansull/syncshelf/issues/8) · [Chaptarr supervised write test: add, monitor, search, clean up](https://github.com/ryansull/syncshelf/issues/26) · [The Chaptarr request tool: making ebooks first-class](https://github.com/ryansull/syncshelf/issues/15) |
@@ -2605,7 +2629,7 @@ These are the small calls this spec made where no ticket spoke. Each is the bori
 | D8 | §3.3.7 | `get_my_library` sort keys; `get_book` by `book_id` only; the `reading_stats` period forms; pages from print/ebook reads and hours from audio reads; goals live; `search_books` sort values | The signatures were fixed, and their enumerations weren't. |
 | D9 | §3.3.7 | `check_books`: `exact` = the matcher's fuzzy auto-accept rule; `likely` = title ≥ 85 and author ≥ 80 with margin ≥ 10; anything else `not_found` | "Never guesses" was decided, and the band wasn't. Recalibrate it alongside the matcher. |
 | D10 | §3.4a.2 | The required CSV header set; `Spoiler` empty → false, else true | Spoiler's value form is unverified (empty in the sample). |
-| D11 | §3.4a.3 | Binding → format table | Confirmation is included in ⏳ #32. |
+| D11 | §3.4a.3 | Binding → format table | **Confirmed** by the owner in #32; no longer open to veto. |
 | D12 | §3.4a.4 | A vanished book is detected by a by-id lookup returning no row | The ticket decided the reaction, not the detection point. |
 | D13 | §3.4a.7 | `runs` rows only for `gr_rss`, `gr_csv` and `abs`; `mirror` and `chaptarr_watch` reserved | `mirror_state` and `chaptarr_requests` already carry that state; a row every 2 minutes would be noise. |
 | D14 | §3.4a.8 | `/ingest` uses `Authorization: Bearer <secret>`, a file part `file`, an optional `generated_at` field, and returns 202 `{batch_id, run}` | The ticket decided per-profile secrets, not the wire shape. |
