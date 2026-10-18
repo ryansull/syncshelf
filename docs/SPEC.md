@@ -14,7 +14,7 @@
   - **docs only**: taken from vendor docs.
 
   A build session re-checks a `source only` or `docs only` contract before relying on it, and records what it saw in the fixtures (§2.9).
-- **Assembly choices.** Where the tickets were silent on a small point, this spec picks the boring option and marks it **[assembly choice]**. All of them are listed in [Appendix D](#appendix-d-assembly-choices). Any of them can be overturned without reopening a decision.
+- **Assembly choices.** Where the tickets were silent on a small point, this spec picks the boring option and marks it **[assembly choice]**. All of them are listed in [Appendix D](#appendix-d-assembly-choices), and the owner accepted all of them as written.
 - **Don't decide in code.** A build session that finds something undecided, or a contract that no longer holds, opens a ticket on the map and leaves that point unbuilt rather than settling it in code.
 - **Placeholders.** Hostnames, IPs and emails in this document follow the hygiene rules (§2.6): `shelf.example.com`, `*.home.arpa`, `192.0.2.x`, `alice@example.com` / `bob@example.com`. Real values never enter the repo.
 
@@ -2615,7 +2615,7 @@ Every decision this spec states lives in one of these tickets. They're grouped b
 
 ## Appendix D: Assembly choices
 
-These are the small calls this spec made where no ticket spoke. Each is the boring option, and any of them can be overturned by a one-line answer, without reopening a decision.
+These are the small calls this spec made where no ticket spoke. Each is the boring option. **All were accepted by the owner as written on 2026-10-17** ([Assemble the SyncShelf build spec](https://github.com/ryansull/syncshelf/issues/21)), and they bind like any ticket decision.
 
 | # | Where | Choice | Why |
 |---|---|---|---|
@@ -2629,7 +2629,7 @@ These are the small calls this spec made where no ticket spoke. Each is the bori
 | D8 | §3.3.7 | `get_my_library` sort keys; `get_book` by `book_id` only; the `reading_stats` period forms; pages from print/ebook reads and hours from audio reads; goals live; `search_books` sort values | The signatures were fixed, and their enumerations weren't. |
 | D9 | §3.3.7 | `check_books`: `exact` = the matcher's fuzzy auto-accept rule; `likely` = title ≥ 85 and author ≥ 80 with margin ≥ 10; anything else `not_found` | "Never guesses" was decided, and the band wasn't. Recalibrate it alongside the matcher. |
 | D10 | §3.4a.2 | The required CSV header set; `Spoiler` empty → false, else true | Spoiler's value form is unverified (empty in the sample). |
-| D11 | §3.4a.3 | Binding → format table | **Confirmed** by the owner in #32; no longer open to veto. |
+| D11 | §3.4a.3 | Binding → format table | **Confirmed** by the owner in [Goodreads backfill: when it runs, from which feed, and what a field's first observation means](https://github.com/ryansull/syncshelf/issues/32). |
 | D12 | §3.4a.4 | A vanished book is detected by a by-id lookup returning no row | The ticket decided the reaction, not the detection point. |
 | D13 | §3.4a.7 | `runs` rows only for `gr_rss`, `gr_csv` and `abs`; `mirror` and `chaptarr_watch` reserved | `mirror_state` and `chaptarr_requests` already carry that state; a row every 2 minutes would be noise. |
 | D14 | §3.4a.8 | `/ingest` uses `Authorization: Bearer <secret>`, a file part `file`, an optional `generated_at` field, and returns 202 `{batch_id, run}` | The ticket decided per-profile secrets, not the wire shape. |
