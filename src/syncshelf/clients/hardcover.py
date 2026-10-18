@@ -26,6 +26,8 @@ __all__ = [
     "GOALS",
     "LIBRARY_PAGE",
     "Gate",
+    "LISTS_MORE",
+    "LIST_BOOKS_MORE",
     "HardcoverCapacityError",
     "HardcoverClient",
     "HardcoverError",
@@ -88,22 +90,45 @@ _BOOK_FIELDS = """
 
 _USER_BOOK_FIELDS = _SHELF_FIELDS + "    book {" + _BOOK_FIELDS + "    }\n"
 
+_USER_BOOKS_PAGE = (
+    "user_books(where: {user_id: {_eq: $user_id}, id: {_gt: $after}}, "
+    "order_by: {id: asc}, limit: $limit)"
+)
+_LISTS_PAGE = (
+    "lists(where: {user_id: {_eq: $user_id}, id: {_gt: $lists_after}}, "
+    "order_by: {id: asc}, limit: $limit) "
+    "{ id name list_books(order_by: {id: asc}, limit: $limit) { id book_id } }"
+)
+
 LIBRARY = f"""
-query Library($user_id: Int!, $limit: Int!, $offset: Int!) {{
-  user_books(where: {{user_id: {{_eq: $user_id}}}}, order_by: {{id: asc}},
-             limit: $limit, offset: $offset) {{{_USER_BOOK_FIELDS}  }}
-  lists(where: {{user_id: {{_eq: $user_id}}}}) {{ id name list_books {{ book_id }} }}
+query Library($user_id: Int!, $limit: Int!, $after: Int!, $lists_after: Int!) {{
+  {_USER_BOOKS_PAGE} {{{_USER_BOOK_FIELDS}  }}
+  {_LISTS_PAGE}
 }}
 """
-"""The library query of §3.3.1: the first page of user_books, plus the user's lists."""
+"""The library query of §3.3.1: the first page of user_books, plus the first of the lists."""
 
 LIBRARY_MORE = f"""
-query LibraryMore($user_id: Int!, $limit: Int!, $offset: Int!) {{
-  user_books(where: {{user_id: {{_eq: $user_id}}}}, order_by: {{id: asc}},
-             limit: $limit, offset: $offset) {{{_USER_BOOK_FIELDS}  }}
+query LibraryMore($user_id: Int!, $limit: Int!, $after: Int!) {{
+  {_USER_BOOKS_PAGE} {{{_USER_BOOK_FIELDS}  }}
 }}
 """
 """Later pages of user_books alone, so a page past the first costs 1 rather than 2."""
+
+LISTS_MORE = f"""
+query ListsMore($user_id: Int!, $limit: Int!, $lists_after: Int!) {{
+  {_LISTS_PAGE}
+}}
+"""
+"""Later pages of lists, for a user with more than 1000 (cost 1)."""
+
+LIST_BOOKS_MORE = """
+query ListBooksMore($list_id: Int!, $limit: Int!, $after: Int!) {
+  list_books(where: {list_id: {_eq: $list_id}, id: {_gt: $after}},
+             order_by: {id: asc}, limit: $limit) { id book_id }
+}
+"""
+"""Later pages of one list's books, for a list of more than 1000 (cost 1)."""
 
 BOOK = f"""
 query Book($book_id: Int!, $user_id: Int!) {{
@@ -387,31 +412,47 @@ class HardcoverClient:
 
     async def library(self, page_size: int = LIBRARY_PAGE) -> Library:
         """Fetch the whole library: every user_book with its reads, editions and book, plus
-        the user's lists.
+        the user's lists and their books.
 
-        Pages past Hardcover's silent 1000-row cap with a stable ``order_by: {id: asc}``. A
-        short page means the end, so ``page_size`` (smaller only in tests) is clamped to the
-        cap: a larger request would come back cut to 1000 rows and look like the last page.
+        Every list field is paged past Hardcover's silent 1000-row cap by keyset (``id``
+        after the last one seen, #103), so a row added or removed between pages can't make
+        another be skipped or repeated. A short page means the end, so ``page_size``
+        (smaller only in tests) is clamped to the cap: a larger request would come back cut
+        to 1000 rows and look like the last page.
         """
         page_size = min(page_size, LIBRARY_PAGE)
         user_id = await self.me_id()
         library = Library()
-        offset = 0
-        query = LIBRARY
-        while True:
-            result = await self.execute(
-                query, {"user_id": user_id, "limit": page_size, "offset": offset}
-            )
-            page = result.data.get("user_books") or []
-            library.user_books.extend(page)
-            if query is LIBRARY:
-                library.lists = result.data.get("lists") or []
+
+        async def run(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            result = await self.execute(query, {"user_id": user_id, "limit": page_size} | variables)
             library.cost += result.cost
             library.rate = result.rate
-            if len(page) < page_size:
-                return library
-            offset += page_size
-            query = LIBRARY_MORE
+            return result.data
+
+        data = await run(LIBRARY, {"after": 0, "lists_after": 0})
+        page = data.get("user_books") or []
+        lists = data.get("lists") or []
+        library.user_books.extend(page)
+        while len(page) == page_size:
+            page = (await run(LIBRARY_MORE, {"after": page[-1]["id"]})).get("user_books") or []
+            library.user_books.extend(page)
+        more_lists = lists
+        while len(more_lists) == page_size:
+            more_lists = (await run(LISTS_MORE, {"lists_after": more_lists[-1]["id"]})).get(
+                "lists"
+            ) or []
+            lists.extend(more_lists)
+        for lst in lists:
+            books = lst.get("list_books") or []
+            more = books
+            while len(more) == page_size:
+                variables = {"list_id": lst["id"], "after": more[-1]["id"]}
+                more = (await run(LIST_BOOKS_MORE, variables)).get("list_books") or []
+                books.extend(more)
+            lst["list_books"] = books
+        library.lists = lists
+        return library
 
 
 def check_mutation(data: Mapping[str, Any], mutation: str) -> dict[str, Any]:

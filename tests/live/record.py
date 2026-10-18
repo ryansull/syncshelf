@@ -59,7 +59,8 @@ async def record_hardcover(token: str, limit: int) -> None:
     try:
         me = await client.execute(ME)
         user_id = me.data["me"][0]["id"]
-        library = await client.execute(LIBRARY, {"user_id": user_id, "limit": limit, "offset": 0})
+        variables = {"user_id": user_id, "limit": limit, "after": 0, "lists_after": 0}
+        library = await client.execute(LIBRARY, variables)
         goals = await client.execute(GOALS)
         # A shelved book with reads if there is one, so the fixture shows a read's shape.
         shelved = library.data["user_books"]
