@@ -811,8 +811,10 @@ def test_committed_example_switches_to_dev_mode_as_its_comments_say(tmp_path: Pa
     )
     path = tmp_path / "profiles.yaml"
     path.write_text(local, encoding="utf-8")
-    # Only the dev token: a local instance needs none of oauth mode's secrets.
-    config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET})
+    # The dev token and the Hardcover tokens: a local instance needs none of oauth mode's
+    # secrets.
+    hardcover = {"HARDCOVER_TOKEN_ALICE": "a", "HARDCOVER_TOKEN_BOB": "b"}
+    config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET} | hardcover)
     assert config.server.dev_mode is not None
     assert config.server.dev_mode.profile in config.profiles
 
