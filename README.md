@@ -13,10 +13,9 @@ The build spec is [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Status
 
-**Phase 1 (skeleton), released as v0.1.0.** The package, CI and test harness exist.
-`uv run python -m syncshelf` starts the service on `0.0.0.0:8000` (set by `server.listen`),
-with an MCP endpoint and a `/healthz` liveness check. Phase 2 (front door and profiles) is
-built and awaiting its release: `/mcp` needs a bearer token, which Claude gets by signing in
+**Phase 2 (front door and profiles), released as v0.2.0.** `uv run python -m syncshelf`
+starts the service on `0.0.0.0:8000` (set by `server.listen`), with an MCP endpoint and a
+`/healthz` liveness check. `/mcp` needs a bearer token, which Claude gets by signing in
 through SyncShelf's own OAuth server in `oauth` mode, or which a local client sends as the
 static dev token in `dev` mode. Its data lives in `/data`, or the existing directory named by
 `SYNCSHELF_DATA_DIR`. Phases are listed in SPEC §3.
