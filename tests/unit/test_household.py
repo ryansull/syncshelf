@@ -160,3 +160,24 @@ async def test_a_cursor_is_bound_to_its_profile(connect: Any) -> None:
         first = await page(mcp, profile="household", limit=1)
         result = await call(mcp, profile="me", cursor=first["next_cursor"])
     assert result.is_error
+
+
+async def test_a_profile_with_no_copy_yet_leaves_the_rest_answered_and_flagged(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.fail_next("Me", "unavailable", user_id=BOB)  # bob's first fetch fails: no copy yet
+    async with connect() as mcp:
+        both = await page(mcp, profile="household")
+    assert [(b["profile"], b["book_id"]) for b in both["books"]] == [("alice", 7)]
+    assert both["stale"] is True
+    assert both["stale_reason"].startswith("bob: SyncShelf has no copy of this Hardcover library")
+
+
+async def test_with_no_copy_for_anyone_asked_about_it_is_refused(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.fail_next("Me", "unavailable", user_id=BOB)
+    async with connect() as mcp:
+        result = await call(mcp, profile="bob")
+    assert result.is_error
+    assert "no copy" in result.content[0].text
