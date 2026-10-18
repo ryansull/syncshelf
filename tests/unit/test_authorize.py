@@ -17,7 +17,7 @@ from starlette.applications import Starlette
 
 from syncshelf.app import create_app
 from syncshelf.auth.cimd import CLAUDE_APPS, CLAUDE_CODE, HOSTED_CALLBACK
-from syncshelf.auth.oauth import ConsentRequest, verify_consent
+from syncshelf.auth.oauth import ConsentRequest, error_page, verify_consent
 from syncshelf.db import Database
 from syncshelf.tools import ToolRegistry
 
@@ -35,6 +35,8 @@ PAGE_HEADERS = {
     "cache-control": "no-store",
     "referrer-policy": "no-referrer",
 }
+# The consent page alone lets its own Allow POST carry a real Origin (#114).
+CONSENT_HEADERS = PAGE_HEADERS | {"referrer-policy": "same-origin"}
 
 
 @pytest.fixture
@@ -82,6 +84,11 @@ def assert_error_page(response: httpx2.Response, status: int) -> None:
     for name, value in PAGE_HEADERS.items():
         assert response.headers[name] == value
     assert "access-control-allow-origin" not in response.headers
+
+
+async def test_the_error_page_sends_no_referrer() -> None:
+    # Only the consent page is relaxed to same-origin (#114); nothing else needs its Origin.
+    assert error_page("Start again.").headers["referrer-policy"] == "no-referrer"
 
 
 @pytest.mark.parametrize(
@@ -190,7 +197,7 @@ async def test_a_valid_request_gets_the_consent_page(
     response = await authorize(app, request_params(), access.token())
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    for name, value in PAGE_HEADERS.items():
+    for name, value in CONSENT_HEADERS.items():
         assert response.headers[name] == value
     assert "access-control-allow-origin" not in response.headers
     text = page_text(response)

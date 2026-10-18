@@ -163,6 +163,10 @@ _PAGE_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
 }
+# The consent page alone relaxes to same-origin (#114): under no-referrer the Fetch standard
+# sends `Origin: null` on its Allow form POST, which the Origin check would refuse. Same-origin
+# still sends no referrer to any other site.
+_CONSENT_HEADERS = _PAGE_HEADERS | {"Referrer-Policy": "same-origin"}
 
 _ERROR_PAGE = """<!doctype html>
 <html lang="en">
@@ -296,8 +300,8 @@ def oauth_routes(
             _log_refused("client_not_allowed")
             return error_page(_START_AGAIN)
         try:
-            # CSRF: only the consent page, served from the issuer, may post here (§3.2.3; #114
-            # asks whether browsers send it under the page's no-referrer policy).
+            # CSRF: only the consent page, served from the issuer, may post here (§3.2.3). Its
+            # same-origin referrer policy is what lets the browser send a real Origin (#114).
             if request.headers.get("origin") != server.public_url:
                 raise AuthorizeError("access_denied", "origin_mismatch")
             email = await access_email(request, access)
@@ -613,7 +617,9 @@ def consent_page(consent: ConsentRequest, blob: str) -> HTMLResponse:
     **Allow** button that posts ``blob`` back in :data:`CONSENT_FIELD`. It names the
     ``client_id`` host, never the document's ``client_name``, which the client chose. A
     loopback redirect adds a warning naming the address the code goes to. Every echoed value
-    is escaped, and the page can't be framed, cached or leak a referrer."""
+    is escaped, and the page can't be framed or cached. Its referrer policy is
+    ``same-origin``, not ``no-referrer``, so its Allow POST carries the real ``Origin``
+    (#114), and no referrer reaches any other site."""
     warning = ""
     redirect = urlsplit(consent.redirect_uri)
     if redirect.hostname in _LOOPBACK_HOSTS:
@@ -627,7 +633,7 @@ def consent_page(consent: ConsentRequest, blob: str) -> HTMLResponse:
         field=html.escape(CONSENT_FIELD),
         consent=html.escape(blob),
     )
-    return HTMLResponse(body, headers=_PAGE_HEADERS)
+    return HTMLResponse(body, headers=_CONSENT_HEADERS)
 
 
 # --- the consent blob -------------------------------------------------------------------
@@ -750,8 +756,8 @@ def _b64decode(text: str) -> bytes:
 def error_page(message: str, *, status_code: int = 400) -> HTMLResponse:
     """An HTML page showing ``message``, escaped, for an ``/authorize`` error that must not
     be redirected: one before the client and redirect are trusted (§3.2.3), or one with
-    nowhere safe to send it. It carries the consent page's headers, so it can't be framed or
-    cached.
+    nowhere safe to send it. It can't be framed or cached, and, unlike the consent page, it
+    sends no referrer at all, since it posts nothing.
     """
     return HTMLResponse(
         _ERROR_PAGE.format(message=html.escape(message)),
