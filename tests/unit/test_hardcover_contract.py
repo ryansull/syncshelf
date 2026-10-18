@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from syncshelf.clients.hardcover import LIBRARY, ME, HardcoverClient
+from syncshelf.clients.hardcover import GOALS, LIBRARY, ME, HardcoverClient
 
 from fakes.hardcover import URL, FakeHardcover
 
@@ -92,3 +92,13 @@ async def test_the_library_query_matches_the_recording(fake: FakeHardcover) -> N
     variables = {"user_id": 42, "limit": 1000, "after": 0, "lists_after": 0}
     result = await client.execute(LIBRARY, variables)
     assert_same_shape(shape({"data": result.data}), recorded("library"))
+
+
+async def test_goals_match_the_recording(fake: FakeHardcover) -> None:
+    fake.goals[42] = [
+        {"metric": "book", "goal": 30, "progress": 12.0, "start_date": "2026-01-01",
+         "end_date": "2026-12-31", "state": "active"}
+    ]  # fmt: skip
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(GOALS)
+    assert_same_shape(shape({"data": result.data}), recorded("goals"))

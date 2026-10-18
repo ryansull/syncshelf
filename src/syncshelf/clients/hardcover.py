@@ -22,6 +22,7 @@ import httpx2
 from syncshelf import __version__
 
 __all__ = [
+    "GOALS",
     "LIBRARY_PAGE",
     "Gate",
     "LISTS_MORE",
@@ -53,6 +54,9 @@ TIMEOUT = 35.0
 """A little over Hardcover's 30 s query timeout, so its own 408 arrives before ours fires."""
 
 ME = "query Me { me { id } }"
+
+GOALS = "query Goals { me { goals { metric goal progress start_date end_date state } } }"
+"""The token owner's reading goals with their progress (§3.3.7, ``reading_stats``)."""
 
 _USER_BOOK_FIELDS = """
     id book_id edition_id status_id rating has_review review_raw review_has_spoilers

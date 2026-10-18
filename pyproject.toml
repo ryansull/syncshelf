@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6",
     "rapidfuzz>=3,<4",
     "starlette>=1.8,<2",
+    "tzdata>=2025.2",
     "uvicorn>=0.54",
 ]
 

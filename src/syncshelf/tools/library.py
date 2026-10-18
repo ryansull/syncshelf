@@ -12,21 +12,36 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
+import re
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from syncshelf.clients.hardcover import GOALS, HardcoverClient, HardcoverError
+from syncshelf.config import ProfileConfig
 from syncshelf.sync.mirror import Freshness, Mirror, NoMirror
 from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
-__all__ = ["FORMATS", "SORTS", "STATUSES", "LibraryPage", "LibraryRow", "get_my_library"]
+__all__ = [
+    "FORMATS",
+    "SORTS",
+    "STATUSES",
+    "LibraryPage",
+    "LibraryRow",
+    "Stats",
+    "get_my_library",
+    "reading_stats",
+]
+
+log = logging.getLogger(__name__)
 
 STATUSES: dict[int, str] = {
     1: "want-to-read",
@@ -345,10 +360,9 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
     (user_book_id, book_id, status_id, rating, date_added, title, contributors_json, series_id,
      series_name, series_position, tags) = row  # fmt: skip
     contributors: list[dict[str, Any]] = json.loads(contributors_json) if contributors_json else []
-    genres: list[str] = json.loads(tags).get("genres", []) if tags else []
+    genres = _genres(tags)
     finished = [r.finished_on for r in reads if r.finished_on]
-    # cached_contributors gives authors no role, and narrators, editors or translators one.
-    authors = tuple(c["name"] for c in contributors if not c.get("role"))
+    authors = _authors(contributors)
     return _Book(
         user_book_id,
         date_added,
@@ -371,6 +385,17 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
         all_genres=tuple(genres),
         reads=tuple(reads),
     )
+
+
+def _authors(contributors: list[dict[str, Any]]) -> tuple[str, ...]:
+    """The authors among a book's stored contributors: the mirror stores an author's role as
+    null, and a narrator's, editor's or translator's as that role."""
+    return tuple(c["name"] for c in contributors if not c.get("role"))
+
+
+def _genres(tags_json: str | None) -> list[str]:
+    """A book's genres, most used first, from the mirror's ``tags_json``."""
+    return json.loads(tags_json).get("genres", []) if tags_json else []
 
 
 # --- paging and freshness -----------------------------------------------------------------
@@ -460,3 +485,311 @@ def _freshness(by_profile: dict[str, _Copy]) -> dict[str, Any]:
     elif reasons:
         out["stale_reason"] = "; ".join(f"{name}: {why}" for name, why in reasons.items())
     return out
+
+
+# --- reading_stats ------------------------------------------------------------------------
+
+GroupBy = Literal["month", "format", "genre", "author", "rating"]
+MAX_BUCKETS = 15
+"""Buckets shown per grouping before the rest are merged into ``other`` (§3.3.8)."""
+
+_PERIOD_RANGE = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
+
+
+class Totals(TypedDict):
+    books: int
+    """Distinct books with a read finished in the period."""
+    reads: int
+    pages: int
+    """From print and ebook reads: the book's page count, per read."""
+    hours: float
+    """From audio reads: the audio edition's length, per read."""
+    unknown_format_reads: int
+    """Reads with no format in Hardcover: counted in books and reads, not in pages or hours."""
+
+
+class Bucket(Totals):
+    key: str
+
+
+class Goal(TypedDict):
+    metric: str
+    goal: float
+    progress: float
+    start_date: str | None
+    end_date: str | None
+    state: str
+
+
+class NotCounted(TypedDict):
+    """What the stats can't see, so answers can say so rather than undercount quietly."""
+
+    undated_reads: int
+    """Reads of books shelved as read that have no finish date."""
+    read_without_reads: int
+    """Books shelved as read with no read logged at all (common for imported libraries)."""
+
+
+class Stats(TypedDict):
+    period: dict[str, str | None]
+    totals: Totals
+    groups: NotRequired[list[Bucket]]
+    goals: NotRequired[list[Goal]]
+    not_counted: NotCounted
+    as_of: str
+    stale: bool
+    stale_reason: NotRequired[str]
+
+
+@dataclass(frozen=True)
+class _StatRead:
+    book: tuple[str, int]  # (profile, user_book_id): a book on one shelf
+    finished_on: str
+    formats: tuple[str, ...]
+    pages: int | None
+    audio_seconds: int | None
+    genres: tuple[str, ...]
+    author: str | None
+    rating: float | None
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def reading_stats(period: str, group_by: GroupBy | None = None, profile: str = ME) -> Stats:
+    """Count books, pages and hours read in a period, optionally grouped, with goal progress.
+
+    Use this for "how many books, pages or hours this year?", "audiobooks vs ebooks this
+    year", "my favourite authors", "my top genres" and "how am I doing on my reading goal?".
+    It returns aggregates only, never a list of books; for the books themselves use
+    get_my_library with finished_from/finished_to.
+
+    Arguments:
+    - period: YYYY (a year), YYYY-MM (a month), last_30_days, last_12_months, all, or
+      YYYY-MM-DD..YYYY-MM-DD (inclusive). Relative periods are read in the profile's time
+      zone. A read counts in the period its finish date falls in.
+    - group_by: month, format (audio, ebook, print), genre (each book's top 3), author (the
+      first author) or rating (the book's rating). At most 15 groups, then "other", and always
+      an "unknown" group for reads without that information (no format, no genre, no author,
+      unrated).
+    - profile: "me" (the default), another profile's name, or "household" for everyone who
+      shares their books; their reads are counted together.
+
+    totals has books (distinct books with a read finished in the period), reads, pages (from
+    print and ebook reads), hours (from audio reads) and unknown_format_reads (reads Hardcover
+    has no format for: counted as books and reads, but in neither pages nor hours).
+    not_counted says what no period can include: undated_reads (finished but with no date)
+    and read_without_reads (books shelved as read with no read logged, which is common for
+    libraries imported into Hardcover). Mention these when they're large, so the user knows
+    the numbers are a floor. goals lists the profile's Hardcover reading goals with progress
+    (left out for household answers, or when Hardcover can't be reached). as_of and stale are
+    as in get_my_library.
+    """
+    caller = current_profile()
+    bound = services()
+    names = resolve_profiles(profile, caller, bound.profiles)
+    now = datetime.fromtimestamp(bound.clock(), UTC)
+    # Each profile's dates are in its own zone, so "today" is worked out per profile.
+    spans = {name: _period(period, now, bound.profiles[name]) for name in names}
+    one = len(names) == 1
+    async with asyncio.TaskGroup() as tg:
+        refreshing = tg.create_task(_refresh(bound.mirror, names, caller))
+        goals = tg.create_task(_goals(bound.hardcover[names[0]])) if one else None
+    freshness = refreshing.result()
+    in_period: list[_StatRead] = []
+    not_counted = NotCounted(undated_reads=0, read_without_reads=0)
+    for name in names:
+        shelf, undated, without = await bound.db.read(_stat_reads, name)
+        start, end = spans[name]
+        in_period += [
+            r
+            for r in shelf
+            if (start is None or r.finished_on >= start) and (end is None or r.finished_on <= end)
+        ]
+        not_counted["undated_reads"] += undated
+        not_counted["read_without_reads"] += without
+    start, end = spans[caller] if caller in spans else spans[names[0]]
+    result = Stats(
+        period={"from": start, "to": end},
+        totals=_totals(in_period),
+        not_counted=not_counted,
+        **_freshness(freshness),
+    )
+    if group_by is not None:
+        result["groups"] = _groups(in_period, group_by)
+    if goals is not None and (fetched := goals.result()) is not None:
+        result["goals"] = fetched
+    return result
+
+
+def _period(period: str, now: datetime, caller: ProfileConfig) -> tuple[str | None, str | None]:
+    """The inclusive ISO date range a ``period`` names, ``None`` for an open end."""
+    today = now.astimezone(caller.tzinfo()).date()
+    try:
+        if period == "all":
+            return (None, None)
+        if period == "last_30_days":
+            return ((today - timedelta(days=29)).isoformat(), today.isoformat())
+        if period == "last_12_months":
+            try:
+                year_ago = today.replace(year=today.year - 1)
+            except ValueError:  # 29 February, a year after a leap day
+                year_ago = today.replace(year=today.year - 1, day=28)
+            return ((year_ago + timedelta(days=1)).isoformat(), today.isoformat())
+        if re.fullmatch(r"\d{4}", period):
+            return (f"{period}-01-01", f"{period}-12-31")
+        if re.fullmatch(r"\d{4}-\d{2}", period):
+            first = date.fromisoformat(f"{period}-01")
+            last = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            return (first.isoformat(), last.isoformat())
+        if match := _PERIOD_RANGE.fullmatch(period):
+            start, end = (date.fromisoformat(d) for d in match.groups())
+            if start > end:
+                raise ToolError(
+                    "The period's first date is after its last; give the earlier one first."
+                )
+            return (start.isoformat(), end.isoformat())
+    except ValueError:
+        pass
+    raise ToolError(
+        "period must be YYYY, YYYY-MM, last_30_days, last_12_months, all, or "
+        "YYYY-MM-DD..YYYY-MM-DD."
+    )
+
+
+def _stat_reads(conn: sqlite3.Connection, profile: str) -> tuple[list[_StatRead], int, int]:
+    """The profile's dated reads with what grouping needs, plus the undated reads of read books
+    and the read books with no reads."""
+    rows = conn.execute(
+        "SELECT r.hc_user_book_id, r.finished_on, r.reading_format_id, b.pages, "
+        "b.audio_seconds, b.tags_json, b.contributors_json, ub.rating, ub.status_id "
+        "FROM mirror_reads r JOIN mirror_user_books ub "
+        "ON ub.profile = r.profile AND ub.hc_user_book_id = r.hc_user_book_id "
+        "LEFT JOIN mirror_books b ON b.profile = ub.profile AND b.hc_book_id = ub.hc_book_id "
+        "WHERE r.profile = ?",
+        (profile,),
+    )
+    reads: list[_StatRead] = []
+    undated = 0
+    for user_book_id, finished_on, format_id, pages, seconds, tags, people, rating, status in rows:
+        if finished_on is None:
+            undated += status == 3
+            continue
+        authors = _authors(json.loads(people) if people else [])
+        reads.append(
+            _StatRead(
+                book=(profile, user_book_id),
+                finished_on=finished_on[:10],
+                formats=FORMATS.get(format_id or 0, (UNKNOWN,)),
+                pages=pages,
+                audio_seconds=seconds,
+                genres=tuple(_genres(tags)[:TOP_GENRES]),
+                author=authors[0] if authors else None,
+                rating=rating,
+            )
+        )
+    [(without,)] = conn.execute(
+        "SELECT count(*) FROM mirror_user_books ub WHERE ub.profile = ? AND ub.status_id = 3 "
+        "AND NOT EXISTS (SELECT 1 FROM mirror_reads r WHERE r.profile = ub.profile "
+        "AND r.hc_user_book_id = ub.hc_user_book_id)",
+        (profile,),
+    )
+    return reads, undated, without
+
+
+@dataclass
+class _Tally:
+    books: set[tuple[str, int]] = field(default_factory=set)
+    reads: int = 0
+    pages: int = 0
+    seconds: int = 0
+    unknown: int = 0
+
+    def add(self, read: _StatRead) -> None:
+        self.books.add(read.book)
+        self.reads += 1
+        if UNKNOWN in read.formats:
+            self.unknown += 1
+        if {"print", "ebook"} & set(read.formats):
+            self.pages += read.pages or 0
+        if "audio" in read.formats:
+            self.seconds += read.audio_seconds or 0
+
+    def merge(self, other: _Tally) -> None:
+        self.books |= other.books
+        self.reads += other.reads
+        self.pages += other.pages
+        self.seconds += other.seconds
+        self.unknown += other.unknown
+
+    def totals(self) -> Totals:
+        return Totals(
+            books=len(self.books),
+            reads=self.reads,
+            pages=self.pages,
+            hours=round(self.seconds / 3600, 1),
+            unknown_format_reads=self.unknown,
+        )
+
+
+def _totals(reads: list[_StatRead]) -> Totals:
+    tally = _Tally()
+    for read in reads:
+        tally.add(read)
+    return tally.totals()
+
+
+def _keys(read: _StatRead, group_by: str) -> tuple[str, ...]:
+    """The buckets one read counts in; ``unknown`` when it has nothing to group by."""
+    if group_by == "month":
+        return (read.finished_on[:7],)
+    if group_by == "format":
+        return read.formats
+    if group_by == "genre":
+        return read.genres or (UNKNOWN,)
+    if group_by == "author":
+        return (read.author,) if read.author else (UNKNOWN,)
+    return (f"{read.rating:g}",) if read.rating is not None else (UNKNOWN,)
+
+
+def _groups(reads: list[_StatRead], group_by: str) -> list[Bucket]:
+    tallies: dict[str, _Tally] = {}
+    for read in reads:
+        for key in _keys(read, group_by):
+            tallies.setdefault(key, _Tally()).add(read)
+    unknown = tallies.pop(UNKNOWN, _Tally())
+    if group_by == "month":
+        order = sorted(tallies)
+    elif group_by == "rating":
+        order = sorted(tallies, key=float, reverse=True)
+    else:
+        order = sorted(tallies, key=lambda k: (-len(tallies[k].books), -tallies[k].reads, k))
+    shown, rest = order[:MAX_BUCKETS], order[MAX_BUCKETS:]
+    buckets = [Bucket(key=k, **tallies[k].totals()) for k in shown]
+    if rest:
+        other = _Tally()
+        for k in rest:
+            other.merge(tallies[k])
+        buckets.append(Bucket(key="other", **other.totals()))
+    buckets.append(Bucket(key=UNKNOWN, **unknown.totals()))
+    return buckets
+
+
+async def _goals(client: HardcoverClient) -> list[Goal] | None:
+    """The profile's reading goals, live (1 request); ``None`` when Hardcover can't answer, so
+    the stats still come back without them (§3.3.7)."""
+    try:
+        result = await client.execute(GOALS)
+        [me] = result.data["me"]
+        return [
+            Goal(
+                metric=g["metric"],
+                goal=g["goal"],
+                progress=g["progress"],
+                start_date=g.get("start_date"),
+                end_date=g.get("end_date"),
+                state=g["state"],
+            )
+            for g in me["goals"]
+        ]
+    except HardcoverError, KeyError, TypeError, ValueError:
+        log.info("reading goals unavailable", extra={"event": "goals_unavailable"})
+        return None

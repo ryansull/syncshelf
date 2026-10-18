@@ -202,7 +202,14 @@ def create_app(
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             mcp.bind(
-                Services(db=db, clock=clock, grace=grace, mirror=mirror, profiles=config.profiles)
+                Services(
+                    db=db,
+                    clock=clock,
+                    grace=grace,
+                    mirror=mirror,
+                    profiles=config.profiles,
+                    hardcover=hardcover,
+                )
             )
             async with AsyncExitStack() as stack:
                 purges = await stack.enter_async_context(anyio.create_task_group())

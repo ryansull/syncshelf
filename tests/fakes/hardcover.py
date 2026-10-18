@@ -45,6 +45,7 @@ class FakeHardcover:
         self.tokens: dict[str, int] = {}
         self.user_books: dict[int, list[dict[str, Any]]] = {}
         self.lists: dict[int, list[dict[str, Any]]] = {}
+        self.goals: dict[int, list[dict[str, Any]]] = {}
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
         self.callers: list[int] = []
@@ -161,6 +162,7 @@ class FakeHardcover:
     def _handlers(self) -> dict[str, Callable[[int, dict[str, Any]], dict[str, Any]]]:
         return {
             "Me": lambda uid, _v: {"me": [{"id": uid}]},
+            "Goals": lambda uid, _v: {"me": [{"goals": self.goals.get(uid, [])}]},
             "Library": self._library,
             "LibraryMore": self._library_more,
             "ListsMore": lambda uid, v: {"lists": self._lists_page(uid, v)},

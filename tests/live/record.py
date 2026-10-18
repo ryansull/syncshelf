@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 
-from syncshelf.clients.hardcover import LIBRARY, ME, HardcoverClient  # noqa: E402
+from syncshelf.clients.hardcover import GOALS, LIBRARY, ME, HardcoverClient  # noqa: E402
 from syncshelf.sync.limiter import HardcoverLimiter  # noqa: E402
 
 from scrub import write_fixture  # noqa: E402
@@ -51,10 +51,11 @@ async def record_hardcover(token: str, limit: int) -> None:
         user_id = me.data["me"][0]["id"]
         variables = {"user_id": user_id, "limit": limit, "after": 0, "lists_after": 0}
         library = await client.execute(LIBRARY, variables)
+        goals = await client.execute(GOALS)
     finally:
         await client.aclose()
     out = FIXTURES / "hardcover"
-    for name, data in (("me", me.data), ("library", library.data)):
+    for name, data in (("me", me.data), ("library", library.data), ("goals", goals.data)):
         write_fixture(
             out / f"{name}.json",
             {"data": data},
