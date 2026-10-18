@@ -1614,7 +1614,7 @@ From [identity](https://github.com/ryansull/syncshelf/issues/12) (decision 8), [
 
 This narrows the out-of-scope line above. A date the user stated, on a book the user explicitly adds, isn't a backfilled date, and every book already in the library still gets no historic read.
 
-**ABS uses the same rules** (§3.5, rule 8). The ABS first sync is its backfill: exact ids only (ASIN/ISBN), in the profile's library, with no fuzzy auto-link. It's stamped in `backfills` with `source = 'abs'`, re-run through `rebaseline("abs")`, and it shares the first-observation and push-if-absent rules.
+**ABS uses the same rules** (§3.5.2, rule 8). The ABS first sync is its backfill: exact ids only (ASIN/ISBN), in the profile's library, with no fuzzy auto-link. It's stamped in `backfills` with `source = 'abs'`, re-run through `rebaseline("abs")`, and it shares the first-observation and push-if-absent rules.
 
 #### 3.4a.13 Tests
 
