@@ -1,7 +1,8 @@
 """The forward-only migration runner (SPEC §2.4).
 
 Migrations are the numbered files ``migrations/NNNN_<name>.sql``, and ``PRAGMA user_version``
-records the last one applied. Before applying anything, the runner snapshots the database with
+records the last one applied. A database newer than the newest shipped migration is refused.
+Before applying anything to a database past version 0, the runner snapshots it with
 ``VACUUM INTO``, or reuses the snapshot an earlier failed start already took. Each pending
 file then runs in its own ``BEGIN IMMEDIATE`` transaction together with its ``user_version``
 bump, so a failure leaves the database at the last good version and the runner stops there.
@@ -51,7 +52,8 @@ class MigrationResult:
     to_version: int
     applied: list[int] = field(default_factory=list[int])
     snapshot: Path | None = None
-    """The pre-migration snapshot, or ``None`` when nothing was pending."""
+    """The pre-migration snapshot, or ``None`` when nothing was pending or the database was at
+    version 0 (a fresh install, with nothing to roll back to)."""
 
 
 def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
@@ -73,7 +75,6 @@ def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
 
 def snapshot_path(snapshot_dir: Path, version: int) -> Path:
     """The snapshot of a database at ``version``, taken before migrating it further."""
-    # NNNN as the snapshot's own version is provisional until #48 settles it.
     return snapshot_dir / f"pre-migration-{version:04d}.db"
 
 
@@ -91,21 +92,40 @@ def migrate(
     """Bring ``conn``'s database up to the newest migration in ``migrations_dir``.
 
     ``conn`` must be an autocommit connection from :func:`syncshelf.db.connect` with no
-    transaction open; in the service it is the writer. If anything is pending, the database is
-    first copied to ``pre-migration-NNNN.db`` in ``snapshot_dir`` (``NNNN`` being the version it
-    is at). If that snapshot already exists, it is kept as it is and reused: the database is
-    still at that version, so the file is its true pre-migration state (left by an earlier
-    start whose first pending migration failed). It is never overwritten. Raises
-    :class:`MigrationError` on any failure, after which the database is at the last version
-    that applied cleanly.
+    transaction open; in the service it is the writer. A database whose ``user_version`` is
+    above the newest migration is refused, as this code doesn't know its schema. If anything is
+    pending and the database is past version 0, it is first copied to ``pre-migration-NNNN.db``
+    in ``snapshot_dir`` (``NNNN`` being the version it is at). A fresh install at version 0 has
+    nothing to roll back to, so it gets no snapshot. If that snapshot already exists, it is kept
+    as it is and reused: the database is still at that version, so the file is its true
+    pre-migration state (left by an earlier start whose first pending migration failed). It is
+    never overwritten. Raises :class:`MigrationError` on any failure, after which the database
+    is at the last version that applied cleanly.
     """
     current = user_version(conn)
-    # A database newer than the shipped migrations passes through unchecked: see #48.
-    pending = [m for m in discover(migrations_dir) if m.version > current]
+    migrations = discover(migrations_dir)
+    newest = migrations[-1].version if migrations else 0
+    if current > newest:
+        raise MigrationError(
+            f"the database is at version {current}, but the newest migration this SyncShelf "
+            f"ships is {newest}"
+        )
+    pending = [m for m in migrations if m.version > current]
     if not pending:
         return MigrationResult(current, current)
 
-    snapshot = snapshot_path(snapshot_dir, current)
+    snapshot = (
+        None if current == 0 else _ensure_snapshot(conn, snapshot_path(snapshot_dir, current))
+    )
+
+    applied: list[int] = []
+    for migration in pending:
+        _apply(conn, migration)
+        applied.append(migration.version)
+    return MigrationResult(current, applied[-1], applied, snapshot)
+
+
+def _ensure_snapshot(conn: sqlite3.Connection, snapshot: Path) -> Path:
     if snapshot.exists():
         log.info(
             "reusing the existing pre-migration snapshot %s",
@@ -114,12 +134,7 @@ def migrate(
         )
     else:
         _take_snapshot(conn, snapshot)
-
-    applied: list[int] = []
-    for migration in pending:
-        _apply(conn, migration)
-        applied.append(migration.version)
-    return MigrationResult(current, applied[-1], applied, snapshot)
+    return snapshot
 
 
 def _take_snapshot(conn: sqlite3.Connection, snapshot: Path) -> None:

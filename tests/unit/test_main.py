@@ -1,7 +1,8 @@
 """The entrypoint (SPEC §2.1, §3.1): fail-fast config, one uvicorn worker with proxy headers,
-and uvicorn's lines as JSON with no query string in the access log."""
+and uvicorn's lines as JSON with no query string or client address in the access log."""
 
 import json
+import logging
 import socket
 from pathlib import Path
 from textwrap import dedent
@@ -104,6 +105,22 @@ def test_main_refuses_a_public_url_that_is_not_localhost(
     assert "server.public_url" in line["msg"]
 
 
+def test_configure_logging_aliases_the_public_and_access_hosts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = write_config(tmp_path)
+    with path.open("a", encoding="utf-8") as f:
+        f.write("  access:\n    team_domain: https://example.cloudflareaccess.com\n")
+    entry.configure_logging(load_config(path, environ={}))
+
+    logging.getLogger("syncshelf.x").warning(
+        "via http://localhost:8000 and example.cloudflareaccess.com", extra={"event": "e"}
+    )
+
+    [line] = json_lines(capsys.readouterr().out)
+    assert line["msg"] == "via http://public:8000 and access"
+
+
 async def serve_once(app_config: uvicorn.Config, path: str) -> int:
     """Serve on a loopback socket, make one request, and shut down."""
     server = uvicorn.Server(app_config)
@@ -123,7 +140,7 @@ async def serve_once(app_config: uvicorn.Config, path: str) -> int:
 
 
 @pytest.mark.anyio
-async def test_the_real_server_logs_json_with_no_query_string(
+async def test_the_real_server_logs_json_with_no_query_string_or_client(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = load_config(write_config(tmp_path), environ={})
@@ -136,6 +153,7 @@ async def test_the_real_server_logs_json_with_no_query_string(
 
     lines = json_lines(capsys.readouterr().out)
     access = [line for line in lines if line["logger"] == "uvicorn.access"]
-    assert [line["msg"].split(" - ", 1)[1] for line in access] == ['"GET /healthz HTTP/1.1" 200']
+    assert [line["msg"] for line in access] == ['"GET /healthz HTTP/1.1" 200']
+    assert all("127.0.0.1" not in json.dumps(line) for line in access)
     assert all("abc123" not in json.dumps(line) for line in lines)
     assert any(line.get("event") == "startup" for line in lines)

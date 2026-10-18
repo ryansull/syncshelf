@@ -18,6 +18,21 @@ All notable changes to SyncShelf are recorded here. The format follows
 - The service listens on `0.0.0.0:8000` by default instead of uvicorn's `127.0.0.1:8000`, so
   a published port (`docker run -p`) or Traefik reaches it. The image's health check still
   probes `127.0.0.1:8000`.
+- uvicorn's access log line no longer includes the client address (IP and port), so it reads
+  `"GET /healthz HTTP/1.1" 200`. Traefik and Cloudflare already log callers (#46).
+- Log lines and stored error strings now show the `server.public_url` host as `public` and
+  the `server.access.team_domain` host as `access`, like the service hosts already are (#49).
+  A service alias wins where a service shares one of those hosts. In phase 1 the public host
+  is `localhost` or `127.0.0.1`, so those names are logged as `public` when they appear as a
+  whole hostname; longer names that contain them are left alone.
+- A fresh install (a database at version 0) no longer writes a `pre-migration-0000.db`
+  snapshot, as there is nothing to roll back to. Upgrades still snapshot first (#48).
+
+### Fixed
+
+- Startup now stops when the database's `user_version` is above the newest migration the
+  release ships (an older image started on a newer database), with an error naming both
+  versions. Before, it started on a schema it didn't know (#48).
 
 ## [0.1.0] - 2026-10-17
 

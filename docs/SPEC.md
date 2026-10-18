@@ -131,6 +131,8 @@ One process serves the MCP endpoint, the OAuth routes, `/ingest`, `/healthz` and
 
 There is no `/register` route (DCR isn't offered), so it returns 404.
 
+**Listening and health.** uvicorn binds `server.listen` (§2.3, default `0.0.0.0:8000`). A failing `/healthz` returns 503 `{"status":"unavailable","version":…}` and logs a WARNING line with event `healthz_failed`. Decided in [Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51).
+
 **MCP server settings:**
 - `MCPServer("syncshelf", token_verifier=..., auth=AuthSettings(issuer_url=ISSUER, resource_server_url=MCP_URL, validate_token_resource=True))`. Set `validate_token_resource=True` explicitly.
 - `mcp.streamable_http_app(stateless_http=True, transport_security=TransportSecuritySettings(allowed_hosts=[<public host>, "localhost:*", "127.0.0.1:*"]))`. Without the public host in the allowlist, every request gets **421**.
@@ -140,13 +142,13 @@ There is no `/register` route (DCR isn't offered), so it returns 404.
 
 **Lifespan** (a mounted sub-app's own lifespan never runs, so everything goes in the top-level one):
 
-1. Load and validate config (§2.3). Fail fast.
-2. Check that `/data` and `/data/goodreads/` are writable. Fail with a message naming the path.
-3. Open the DB (§2.4): snapshot if migrations are pending, migrate, sync the `profiles` table.
+1. Config loads and validates in `__main__`, before the lifespan (§2.3). uvicorn needs `server.forwarded_allow_ips`, `server.listen` and the log level before the app starts, and the MCP mount's host allowlist needs `server.public_url` when the app is built. A bad config fails fast with a line naming the key and exit 1. The lifespan starts at step 2. Decided in [Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51).
+2. Check that `/data` and `/data/goodreads/` are writable. `/data/goodreads/` is created when absent. `/data` itself is never created: it's the volume, so it must already exist. Fail with a message naming the path.
+3. Open the DB (§2.4): snapshot if migrations are pending, migrate, sync the `profiles` table. When migrations apply, a separate INFO line with event `migrated` gives the from and to versions and the snapshot path.
 4. Startup housekeeping:
    - mark any `runs` row still `running` as `aborted`;
-   - compare the version against `meta.last_started_version`, and if it differs, release every quarantined change once (4a+);
-   - log the version, `sqlite3.sqlite_version` and the auth mode, never secrets.
+   - compare the version against `meta.last_started_version`, and if it differs, release every quarantined change once (4a+). "The version" is the package version. A missing row counts as differing, so 4a's first start releases once. The row is written **after** the release succeeds, so a crash mid-release retries on the next start. Phase 4a starts writing it; phases 1–3 neither read nor write it. Decided in [Lifespan: when meta.last_started_version is written and compared](https://github.com/ryansull/syncshelf/issues/50);
+   - log the version, `sqlite3.sqlite_version` and the auth mode as configured (`server.auth_mode`, or null when absent), never secrets.
 5. `async with mcp.session_manager.run():`. This is required; without it the first `/mcp` request fails with `Task group is not initialized`.
 6. Start the sync loops (4a+), resuming schedules from SQLite (§3.4a.9).
 7. On shutdown: cancel the loops, close the DB.
@@ -180,7 +182,14 @@ Decided in [Public-repo hygiene: licence, secret scanning, config conventions](h
 | SQLite (`/data/syncshelf.db` + `-wal`/`-shm`) | Sync state, the identity catalog, the mirror, OAuth grants and token **hashes**, and Chaptarr request records. **No third-party secret is ever written to SQLite.** |
 | Filesystem | `/data/goodreads/<profile>.cookies.json` (mode 0600, phase 4b) and `/data/pre-migration-NNNN.db` snapshots. |
 
+**Data directory.** `/data` in this spec is the data directory. Env `SYNCSHELF_DATA_DIR` overrides it, default `/data`. Decided in [Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51).
+
 **Secret references.** Any secret key `k` can be written as `k: ${VAR}`, which **SyncShelf** expands from its own environment at load time (not compose interpolation), or as `k_file: /run/secrets/...`. A missing variable or file fails startup with a message naming the **key**, never the value. A literal secret is never inlined.
+- `${VAR}` expands only in secret keys. Non-secret keys are taken literally.
+- An empty variable counts as missing.
+- A `*_file` secret has its trailing newline stripped.
+
+These three are decided in [Phase 1 config: confirm small calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/49).
 
 **File shape.** One file holds everything [assembly choice]. `profiles.example.yaml` is committed; the real `profiles.yaml` is git-ignored.
 
@@ -196,6 +205,7 @@ server:
     aud: ${ACCESS_AUD}
   consent_hmac_key: ${CONSENT_HMAC_KEY}     # signs the consent form blob
   forwarded_allow_ips: 192.0.2.0/24         # the Traefik network
+  listen: 0.0.0.0:8000                      # host:port uvicorn binds; default shown
   log_level: INFO
 
 services:
@@ -238,11 +248,16 @@ profiles:
 ```
 
 **Validation.**
-- A key becomes required when the phase that reads it ships. Sections for features not yet built may be absent.
+- A key becomes required when the phase that reads it ships. Sections for features not yet built may be absent. A key isn't validated until the phase that reads it ships.
 - Profile names must match `^[a-z][a-z0-9_]{0,31}$`.
 - Emails are lowercased and must be unique.
 - `shelf_map` values must be in 1–5. Status 6 (Ignored) is never written by sync.
 - Durations are written as `<n>m` / `<n>h`.
+- `server.forwarded_allow_ips` is required, with no default, and `*` is refused.
+- `server.listen` is `host:port`, default `0.0.0.0:8000`.
+- Goodreads has no configured URL, so its hosts are fixed in code for host aliasing (§2.7).
+
+The not-yet-validated rule and the last three rules are decided in [Phase 1 config: confirm small calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/49) and, for `server.listen`, [Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51).
 
 **Profiles table sync** (phase 2):
 - At startup every profile name is upserted into `profiles`.
@@ -272,10 +287,16 @@ From [Hosting the MCP server, ingest endpoint and scheduler in one process](http
 - **Enums are complete from the start.** Enum `CHECK`s list every future value from the migration that creates the table, so later phases add rows, never table rebuilds.
 - **Migrations.**
   - Forward-only numbered files in `src/syncshelf/db/migrations/NNNN_<name>.sql`, tracked by `PRAGMA user_version`.
-  - Before applying any pending migration, take `VACUUM INTO /data/pre-migration-NNNN.db`.
+  - Before applying any pending migration, take `VACUUM INTO /data/pre-migration-NNNN.db`, where `NNNN` is the database's `user_version` before migrating.
+    - The snapshot is written as `pre-migration-NNNN.db.tmp` and renamed once complete. A leftover `.tmp` is deleted and retaken.
+    - An existing snapshot is reused, never overwritten. The runner logs `snapshot_reused` and migrates.
+    - A database at version 0 (a fresh install) gets no snapshot.
   - Each pending file runs in its own `BEGIN IMMEDIATE` transaction together with its `user_version` bump.
   - A failed migration aborts startup.
-  - Table rebuilds follow SQLite's 12-step procedure. There are no down-migrations.
+  - Startup refuses when `user_version` is above the highest shipped migration, with an error naming both versions.
+  - Table rebuilds follow SQLite's 12-step procedure. There are no down-migrations. Handling a rebuild that needs `foreign_keys=OFF` is deferred until a migration first needs one.
+
+  The snapshot, newer-database and rebuild rules are decided in [Migration runner: snapshot naming, reruns, fresh installs and a newer DB](https://github.com/ryansull/syncshelf/issues/48).
 - **Migrations map one-to-one onto phases:**
 
   | Phase | Migration | Tables |
@@ -389,6 +410,7 @@ From [Observability: sync_status payload, attention, and structured logs](https:
 
 - **Format.** stdlib `logging` with a ~40-line JSON-lines formatter on stdout, and no new dependency. Uvicorn's loggers use it too. Rotation is Docker's `json-file` `max-size`/`max-file` (runbook).
 - **Every line** carries `ts` (ISO-8601 UTC), `level`, `logger`, `event` (a stable snake_case name) and `msg`. When set, `contextvars` add `profile`, `source`, `run_id`, `change_id`, `tool` and `request_id`.
+- **Default `event`.** A third-party logger's line without an explicit `event` gets the logger name in snake_case (`uvicorn.access` → `uvicorn_access`). Every SyncShelf (`syncshelf.*`) logger call passes an explicit `event`, and a test fails on one that doesn't. Decided in [Logging: what 'event' do lines without one carry?](https://github.com/ryansull/syncshelf/issues/47).
 - **Level** from `server.log_level` (default `INFO`).
 
 | Level | What |
@@ -405,8 +427,8 @@ From [Observability: sync_status payload, attention, and structured logs](https:
    - emails;
    - tokens, cookies, CSRF values or passwords.
 
-   Request and response bodies and headers are never logged. Uvicorn's access log drops query strings. Change lines carry only status, rating and date values. A `review` value is logged as its length plus an 8-character sha256 prefix.
-2. **Host aliasing.** Configured service URLs are logged as `hardcover`, `abs`, `chaptarr`, `goodreads` or `browser`. Exception text has those hosts, and any other configured host, rewritten to the alias before it's logged or stored.
+   Request and response bodies and headers are never logged. Uvicorn's access log drops query strings and the client address, since Traefik and Cloudflare already log callers ([Logging: should the uvicorn access log keep the client IP?](https://github.com/ryansull/syncshelf/issues/46)). Change lines carry only status, rating and date values. A `review` value is logged as its length plus an 8-character sha256 prefix.
+2. **Host aliasing.** Configured service URLs are logged as `hardcover`, `abs`, `chaptarr`, `goodreads` or `browser`. The `server.public_url` host is logged as `public` and the `server.access.team_domain` host as `access` ([Phase 1 config: confirm small calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/49)). Exception text has those hosts, and any other configured host, rewritten to the alias before it's logged or stored.
 3. **Secret scrub.** A final logging filter replaces every configured secret value and every live in-memory token with `***`. The same function scrubs error strings **before they're stored** in `runs.first_error`, `baseline_fields.last_error`, `mirror_state.last_error` and `goodreads_sessions.detail`.
 
 **Service-specific never-log rules:**
@@ -473,6 +495,10 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
 **Versions and releases**
 - Tags are `v0.<n>.<patch>`, where `<n>` counts phase releases in order: phase 1 → `v0.1.0`, 2 → `v0.2.0`, 3 → `v0.3.0`, 4a → `v0.4.0`, 4b → `v0.5.0`, 5 → `v0.6.0`, 6 → `v0.7.0`. Phase 7's live acceptance tags **`v1.0.0`**. Patches between phases bump `<patch>`.
 - A phase is tagged only when its "Done when" holds. The tag triggers `release.yml`.
+- The release PR bumps the version in `pyproject.toml` and `uv.lock`, and that commit is tagged. `release.yml` refuses a tag that isn't `v` + the package version.
+- Image tags have no `v` (`0.1.0`), plus `:latest`.
+
+  The release-version and image-tag rules are decided in [Release: how the version reaches 0.1.0, and whether image tags keep the v](https://github.com/ryansull/syncshelf/issues/52).
 - **`CHANGELOG.md`** follows *Keep a Changelog*. Each PR with a user- or operator-visible change adds a line under `## [Unreleased]`, and tagging moves those lines under the new version. Migrations and new config keys are always listed.
 
 **Docs**
@@ -503,19 +529,19 @@ Each phase section lists what it builds, the tables it introduces, the contracts
 
 **Builds**
 - `pyproject.toml` (uv, package `syncshelf`, `src/` layout), `uv.lock`, and the dependencies from §2.1 that this phase uses.
-- `__main__.py`: uvicorn with **one worker**, `--proxy-headers`, and `--forwarded-allow-ips` from `server.forwarded_allow_ips`.
-- `app.py`: the outer Starlette app with the route order from §2.2 and the lifespan steps that apply (config, data-dir check, DB, migrations, startup log, `mcp.session_manager.run()`).
+- `__main__.py`: loads and validates config (§2.2 step 1), then runs uvicorn with **one worker**, `--proxy-headers`, `--forwarded-allow-ips` from `server.forwarded_allow_ips`, and the bind address from `server.listen`.
+- `app.py`: the outer Starlette app with the route order from §2.2 and the lifespan steps that apply (data-dir check, DB, migrations, startup log, `mcp.session_manager.run()`).
 - The **MCP mount with no tools**, so the lifespan wiring, the 421 allowlist and the route order are proven before auth arrives. Phase 1 has no auth, so it enforces the dev-mode guard: startup **refuses** a `server.public_url` whose host isn't `localhost` or `127.0.0.1` [assembly choice].
 - `config.py`: loader, `${VAR}` / `*_file` expansion, and fail-fast validation (§2.3) for the keys phase 1 reads.
 - `db/`: writer executor, read connections, PRAGMAs, `migrate.py` (runner + `VACUUM INTO` snapshot), and `0001_meta`.
 - `logging.py`: JSON formatter, contextvars, scrub filter and host aliasing (§2.7), wired for uvicorn too.
-- `/healthz` (liveness): 200 `{"status":"ok","version":…}` when `SELECT 1` on a read connection succeeds, 503 otherwise.
+- `/healthz` (liveness): 200 `{"status":"ok","version":…}` when `SELECT 1` on a read connection succeeds, 503 `{"status":"unavailable","version":…}` otherwise (§2.2).
 - `Dockerfile` [assembly choice: in phase 1, so every phase is deployable]:
   - `python:3.14-slim` (Debian trixie, SQLite 3.46.1, accepted);
   - non-root `USER 10001:10001`;
-  - `HEALTHCHECK` on `http://127.0.0.1:<port>/healthz`, using Python's `urllib` because slim has no curl;
+  - `HEALTHCHECK` on `http://127.0.0.1:8000/healthz` ([Phase 1 serving: confirm calls the spec doesn't make](https://github.com/ryansull/syncshelf/issues/51)), using Python's `urllib` because slim has no curl;
   - `VOLUME /data`; the config at `/config/profiles.yaml` (read-only).
-- `.github/workflows/ci.yml` (ruff check and format, pyright, pytest with `pytest-socket` and a coverage report, gitleaks) and `release.yml`, which on version tags builds **multi-arch** (amd64/arm64) images and pushes `ghcr.io/<owner>/syncshelf:<version>` and `:latest`.
+- `.github/workflows/ci.yml` (ruff check and format, pyright, pytest with `pytest-socket` and a coverage report, gitleaks) and `release.yml`, which on version tags builds **multi-arch** (amd64/arm64) images and pushes `ghcr.io/<owner>/syncshelf:<version>` (no `v`, §2.10) and `:latest`.
 - The process files from §2.10:
   - `README.md` and `CHANGELOG.md` (with `## [Unreleased]`);
   - `.github/pull_request_template.md` and `.github/dependabot.yml`;
@@ -537,7 +563,7 @@ Each phase section lists what it builds, the tables it introduces, the contracts
 - Redaction:
   - a configured secret in an exception → `***`;
   - a configured host → its alias;
-  - the access log has no query string.
+  - the access log has no query string and no client address.
 - `/healthz` 200/503, and the localhost-only guard.
 - The SQL-invariant tests from the testing ticket (sticky-human trigger, state CHECKs, one-pending index) are **harnessed** here and **written with the migration that creates each table** (4a, 6). Phase 1 has no such tables.
 

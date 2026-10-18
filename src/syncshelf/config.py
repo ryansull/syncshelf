@@ -166,31 +166,26 @@ class Config:
         return frozenset(self.secrets.values())
 
     def host_aliases(self) -> dict[str, str]:
-        """Each configured service host (lowercased, without the port) mapped to its alias.
+        """Each configured host (lowercased, without the port) mapped to the alias it is
+        logged as (§2.7).
 
-        Only services that are configured appear. If two services share a host, the later
-        one in ``SERVICE_ALIASES`` order wins.
+        The ``server.public_url`` host is ``public`` and, when set, the
+        ``server.access.team_domain`` host is ``access`` (#49, point 5). Then each configured
+        service host is its ``SERVICE_ALIASES`` alias. A service alias wins over ``public``
+        or ``access`` on a shared host, because it says more about the failing call. If two
+        services share a host, the later one in ``SERVICE_ALIASES`` order wins.
         """
         aliases: dict[str, str] = {}
+        if self.server.public_host:
+            aliases[self.server.public_host] = "public"
+        team_domain = self.server.access_team_domain
+        if team_domain and (host := urlsplit(team_domain).hostname):
+            aliases[host] = "access"
         for key, alias in SERVICE_ALIASES.items():
             url = getattr(self.services, key)
             if url and (host := urlsplit(url).hostname):
                 aliases[host] = alias
         return aliases
-
-    def other_hosts(self) -> frozenset[str]:
-        """Configured hosts that aren't services: ``server.public_url`` and, when set,
-        ``server.access.team_domain``.
-
-        Not wired into logging yet: §2.7 says these hosts are aliased too but names no alias
-        for them, and #49 (point 5) leaves that open. Until it's decided, nothing calls this
-        and these hosts are logged as they are.
-        """
-        hosts = {self.server.public_host}
-        if self.server.access_team_domain:
-            hosts.add(urlsplit(self.server.access_team_domain).hostname or "")
-        hosts.discard("")
-        return frozenset(hosts)
 
 
 def config_path(environ: Mapping[str, str] | None = None) -> Path:
