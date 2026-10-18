@@ -76,7 +76,7 @@ async def test_another_profile_is_read_with_its_own_token(
     async with connect() as mcp:
         bobs = await page(mcp, profile="bob")
     assert [(b["book_id"], b["rating"]) for b in bobs["books"]] == [(8, None), (7, 2.5)]
-    assert "profile" not in bobs["books"][0]
+    assert {b["profile"] for b in bobs["books"]} == {"bob"}  # not the caller's own shelf
     library_callers = {
         c for (op, _), c in zip(fake.requests, fake.callers, strict=True) if op == "Library"
     }
@@ -133,11 +133,26 @@ async def test_a_stale_copy_for_one_profile_marks_the_answer_stale(
     async with connect() as mcp:
         await page(mcp, profile="household")
         clock.advance(TTL)
-        # The caller's copy refreshes first, so alice's fails and bob's succeeds.
-        fake.fail_next("Library", "unavailable")
+        fake.fail_next("Library", "unavailable", user_id=ALICE)
         stale = await page(mcp, profile="household")
     assert stale["stale"] is True
     assert stale["stale_reason"] == "alice: Hardcover returned HTTP 503"
+
+
+async def test_me_and_the_callers_own_name_share_a_cursor(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.add_user_book(ALICE, 10, date_added="2026-01-05")
+    async with connect() as mcp:
+        first = await page(mcp, profile="me", limit=1)
+        second = await page(mcp, profile="alice", limit=1, cursor=first["next_cursor"])
+    assert [b["book_id"] for b in first["books"] + second["books"]] == [10, 7]
+
+
+async def test_the_callers_own_rows_carry_no_profile(connect: Any) -> None:
+    async with connect() as mcp:
+        mine = await page(mcp)
+    assert all("profile" not in b for b in mine["books"])
 
 
 async def test_a_cursor_is_bound_to_its_profile(connect: Any) -> None:

@@ -8,6 +8,7 @@ failed and the copy was served anyway.
 Reads without a format are reported in an explicit ``unknown`` bucket, never guessed (§3.3.2).
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -22,8 +23,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from syncshelf.sync.mirror import Freshness, NoMirror
-from syncshelf.tools import HOUSEHOLD, ME, REGISTRY, current_profile, resolve_profiles, services
+from syncshelf.sync.mirror import Freshness, Mirror, NoMirror
+from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
 
 __all__ = ["FORMATS", "SORTS", "STATUSES", "LibraryPage", "LibraryRow", "get_my_library"]
 
@@ -151,9 +152,10 @@ async def get_my_library(
 ) -> LibraryPage:
     """List books on Hardcover shelves, the caller's by default, filtered and sorted.
 
-    Use this for questions about the user's own library: what they're currently reading,
-    what's on their want-to-read (by author, in a genre), what they read in a period, what
-    they rated highest last year, and how many of each. For one book's full record (reads with
+    Use this for questions about the user's library, or a household member's (see profile):
+    what they're currently reading, what's on their want-to-read (by author, in a genre), what
+    they read in a period, what they rated highest last year, what both have read, and how
+    many of each. For one book's full record (reads with
     dates, review, series, tags) use get_book instead. Every filter is optional, and filters
     combine (all must match).
 
@@ -206,25 +208,20 @@ async def get_my_library(
         min_rating=min_rating,
         finished_from=finished_from.isoformat() if finished_from else None,
         finished_to=finished_to.isoformat() if finished_to else None,
-        profile=profile,
     )
-    after = _after(cursor, sort, wanted.digest())
     bound = services()
     # Refused here, before any refresh, when a named profile hasn't opted in (§3.3.4).
     names = resolve_profiles(profile, caller, bound.profiles)
-    freshness: dict[str, Freshness] = {}
+    # Bound to the profiles resolved, so "me" and the caller's own name share cursors.
+    digest = wanted.digest(names)
+    after = _after(cursor, sort, digest)
+    freshness = await _refresh(bound.mirror, names, caller)
+    # Rows name their shelf whenever the answer isn't only the caller's own.
+    tag = names != (caller,)
     books: list[_Book] = []
     for name in names:
-        try:
-            # Each profile's copy refreshes with that profile's own token.
-            freshness[name] = await bound.mirror.fresh(name)
-        except NoMirror as exc:
-            whose = "" if name == caller else f"For {name}: "
-            raise ToolError(whose + str(exc)) from None
         shelf = await bound.db.read(_library, name)
-        if profile == HOUSEHOLD:
-            shelf = [replace(b, row=_tagged(b.row, name)) for b in shelf]
-        books += shelf
+        books += [replace(b, row=_tagged(b.row, name)) for b in shelf] if tag else shelf
     books = [b for b in books if wanted.match(b)]
     key, descending = SORTS[sort]
     books.sort(key=key, reverse=descending)
@@ -240,7 +237,7 @@ async def get_my_library(
     result = LibraryPage(
         books=[b.row for b in page],
         total=len(books),
-        next_cursor=_cursor(sort, wanted.digest(), key(page[-1])) if len(rest) > limit else None,
+        next_cursor=_cursor(sort, digest, key(page[-1])) if len(rest) > limit else None,
         **_freshness(freshness),
     )
     if len(books) > len(page):
@@ -257,8 +254,6 @@ class _Filters:
     status: str | None
     query: str | None
     author: str | None
-    profile: str
-    """Not a filter on rows: carried so a cursor can't be reused for another profile."""
     genre: str | None
     series: str | None
     format: str | None
@@ -288,10 +283,10 @@ class _Filters:
         # One read must match both: "audiobooks finished last year" means a listen that year.
         return not by_read or any(self._read(r) for r in b.reads)
 
-    def digest(self) -> str:
-        """A short fingerprint of these filters, which a cursor carries so it can't be reused
-        under different ones."""
-        text = json.dumps(asdict(self), sort_keys=True)
+    def digest(self, profiles: tuple[str, ...]) -> str:
+        """A short fingerprint of these filters and the shelves read, which a cursor carries
+        so it can't be reused under different ones."""
+        text = json.dumps([asdict(self), profiles], sort_keys=True)
         return hashlib.sha256(text.encode()).hexdigest()[:12]
 
     def _series(self, b: _Book) -> bool:
@@ -411,6 +406,27 @@ def _after(cursor: str | None, sort: str, digest: str) -> _Key | None:
             "That cursor isn't one this tool gave out. Pass next_cursor from the previous "
             "page, or leave cursor out to start from the beginning."
         ) from None
+
+
+async def _refresh(mirror: Mirror, names: tuple[str, ...], caller: str) -> dict[str, Freshness]:
+    """Make each profile's copy fresh, at the same time: each has its own token, limiter and
+    lock. A profile with no copy refuses the whole answer, naming it (#116)."""
+    freshness: dict[str, Freshness] = {}
+
+    async def one(name: str) -> None:
+        try:
+            freshness[name] = await mirror.fresh(name)
+        except NoMirror as exc:
+            whose = "" if name == caller else f"For {name}: "
+            raise ToolError(whose + str(exc)) from None
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for name in names:
+                tg.create_task(one(name))
+    except* ToolError as group:
+        raise group.exceptions[0] from None
+    return {name: freshness[name] for name in names}
 
 
 def _tagged(row: LibraryRow, profile: str) -> LibraryRow:
