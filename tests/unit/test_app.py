@@ -1,16 +1,19 @@
 """The outer app (SPEC §2.2, §3.1): route order, the Phase 1 lifespan, the MCP mount's host
 allowlist, and ``/healthz``. Everything goes through the real ASGI app."""
 
+import asyncio
 import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import anyio
 import pytest
 from starlette.routing import Mount, Route
 
+import syncshelf.app
 from syncshelf import __version__
-from syncshelf.app import StartupError, allowed_hosts, create_app
+from syncshelf.app import PURGE_TASK, StartupError, allowed_hosts, create_app
 from syncshelf.tools import ToolRegistry
 
 from clock import FakeClock
@@ -159,6 +162,63 @@ class TestLifespan:
         await start("alice", "bob")
         assert rows() == {"alice": False, "bob": False}
 
+    async def test_startup_purges_expired_oauth_rows_and_logs_the_counts(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path)
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        assert not [r for r in caplog.records if getattr(r, "event", None) == "oauth_purged"]
+        _expired_oauth_rows(data_dir / "syncshelf.db", int(clock.time()))
+        clock.advance(2 * 86400)
+
+        caplog.clear()
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            assert _oauth_rows(data_dir / "syncshelf.db") == (0, 0, 1)
+        [purged] = [r for r in caplog.records if getattr(r, "event", None) == "oauth_purged"]
+        counts = {k: purged.__dict__[k] for k in ("codes", "access_tokens", "refresh_tokens")}
+        assert counts == {"codes": 1, "access_tokens": 1, "refresh_tokens": 0}
+
+    async def test_the_purge_repeats_while_running_and_stops_at_shutdown(
+        self, tmp_path: Path, data_dir: Path, clock: FakeClock
+    ) -> None:
+        app = create_app(
+            make_config(tmp_path), data_dir=data_dir, clock=clock.time, purge_interval=0.01
+        )
+        async with running(app):
+            assert [t for t in asyncio.all_tasks() if t.get_name() == PURGE_TASK]
+            _expired_oauth_rows(data_dir / "syncshelf.db", int(clock.time()))
+            clock.advance(2 * 86400)
+            with anyio.fail_after(10):
+                while _oauth_rows(data_dir / "syncshelf.db")[:2] != (0, 0):
+                    await anyio.sleep(0.01)
+        assert not [t for t in asyncio.all_tasks() if t.get_name() == PURGE_TASK]
+
+    async def test_a_failing_purge_is_logged_and_never_stops_the_app(
+        self,
+        tmp_path: Path,
+        data_dir: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = 0
+
+        def broken(conn: sqlite3.Connection, now: int) -> None:
+            nonlocal calls
+            calls += 1
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(syncshelf.app, "purge_expired", broken)
+        app = create_app(make_config(tmp_path), data_dir=data_dir, purge_interval=0.01)
+        async with running(app) as client:
+            with anyio.fail_after(10):
+                while calls < 3:
+                    await anyio.sleep(0.01)
+            assert (await client.get("/healthz")).status_code == 200
+        failures = [r for r in caplog.records if getattr(r, "event", None) == "oauth_purge_failed"]
+        assert len(failures) >= 3
+
     async def test_shutdown_closes_the_database(self, tmp_path: Path, data_dir: Path) -> None:
         app = create_app(make_config(tmp_path), data_dir=data_dir)
         async with running(app):
@@ -190,3 +250,40 @@ class TestLifespan:
         with pytest.raises(StartupError, match=r"nowhere"):
             async with running(app):
                 pass
+
+
+def _expired_oauth_rows(db_file: Path, now: int) -> None:
+    """One grant, live at ``now``, with a code, an access token and a refresh token that are
+    all fresh at ``now``; two days later only the refresh token is still worth keeping."""
+    with closing(sqlite3.connect(db_file)) as conn, conn:
+        conn.execute(
+            "INSERT INTO oauth_grant (id, profile, email, client_id, client_label, resource, "
+            "scopes, created_at, last_used_at, refresh_expires_at) VALUES (1, 'alice', "
+            "'alice@example.com', 'c', 'claude.ai', 'r', 'syncshelf', ?, ?, ?)",
+            (now, now, now + 90 * 86400),
+        )
+        conn.execute(
+            "INSERT INTO oauth_code (code_hash, client_id, redirect_uri, code_challenge, "
+            "resource, scopes, profile, email, created_at, expires_at, grant_id) VALUES "
+            "('h', 'c', 'u', 'x', 'r', 'syncshelf', 'alice', 'alice@example.com', ?, ?, 1)",
+            (now, now + 120),
+        )
+        conn.execute(
+            "INSERT INTO oauth_access_token (token_hash, grant_id, created_at, expires_at) "
+            "VALUES ('a', 1, ?, ?)",
+            (now, now + 3600),
+        )
+        conn.execute(
+            "INSERT INTO oauth_refresh_token (token_hash, grant_id, created_at) VALUES ('r', 1, ?)",
+            (now,),
+        )
+
+
+def _oauth_rows(db_file: Path) -> tuple[int, int, int]:
+    """How many code, access-token and refresh-token rows are left."""
+    with closing(sqlite3.connect(db_file)) as conn:
+        tables = ("oauth_code", "oauth_access_token", "oauth_refresh_token")
+        codes, access, refresh = (
+            conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in tables
+        )
+        return codes, access, refresh

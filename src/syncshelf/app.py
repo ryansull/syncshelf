@@ -8,12 +8,15 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
    (``__main__`` loads it and fails fast; #51 asks the spec to confirm this order);
 2. the data directory and its ``goodreads/`` directory must be writable;
 3. the database is opened and migrated, and the ``profiles`` table is synced with the
-   config (:mod:`syncshelf.profiles`);
+   config (:mod:`syncshelf.profiles`), and expired OAuth rows are purged
+   (:func:`syncshelf.auth.tokens.purge_expired`, #77);
 4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret,
    and dev mode logs a warning at every start (§3.2.5);
-5. the MCP session manager runs for as long as the app does.
+5. the MCP session manager runs for as long as the app does, and so does a background task
+   that purges expired OAuth rows again every :data:`PURGE_INTERVAL` (#77), until the Phase 4a
+   scheduler takes the job over.
 
-On shutdown the database is closed.
+On shutdown the purge task is cancelled and the database is closed.
 
 The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
@@ -46,6 +49,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import httpx2
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
@@ -59,20 +63,30 @@ from syncshelf import __version__
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
-from syncshelf.auth.tokens import RefreshGrace, TokenVerifier
+from syncshelf.auth.tokens import RefreshGrace, TokenVerifier, purge_expired
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 
-__all__ = ["DB_FILENAME", "StartupError", "allowed_hosts", "create_app"]
+__all__ = [
+    "DB_FILENAME",
+    "PURGE_INTERVAL",
+    "PURGE_TASK",
+    "StartupError",
+    "allowed_hosts",
+    "create_app",
+]
 
 DB_FILENAME = "syncshelf.db"
 """The database file inside the data directory."""
 
 GOODREADS_DIR = "goodreads"
 """The data subdirectory for the Goodreads cookie jars (phase 4b), checked from phase 1."""
+
+PURGE_INTERVAL = 24 * 3600
+"""Seconds between purges of expired OAuth rows after the one at startup (#77)."""
 
 LOOPBACK_HOSTS = ("localhost:*", "127.0.0.1:*")
 """Always allowed on the MCP mount, for local clients and the container health check."""
@@ -110,6 +124,7 @@ def create_app(
     clock: Callable[[], float] = time.time,
     registry: ToolRegistry = REGISTRY,
     http_transport: httpx2.AsyncBaseTransport | None = None,
+    purge_interval: float = PURGE_INTERVAL,
 ) -> Starlette:
     """Build the app for a loaded config. Nothing touches the disk until its lifespan runs.
 
@@ -124,6 +139,9 @@ def create_app(
     ``http_transport`` carries the app's outbound HTTP calls (so far the client-document
     fetch and the Access key fetch) in place of the network; tests pass a ``MockTransport``
     (§2.9).
+
+    ``purge_interval`` is the seconds between purges of expired OAuth rows,
+    :data:`PURGE_INTERVAL` by default; tests shorten it rather than wait a day.
 
     Each call builds a fresh MCP server, because the SDK's session manager can be run only
     once per instance.
@@ -172,6 +190,7 @@ def create_app(
         try:
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
+            await _purge(db, clock)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
             _log_startup(config, db)
             if (dev := config.server.dev_mode) is not None:
@@ -181,6 +200,10 @@ def create_app(
             verifier.bind(db)
             mcp.bind(Services(db, clock, grace))
             async with AsyncExitStack() as stack:
+                purges = await stack.enter_async_context(anyio.create_task_group())
+                purges.start_soon(_purge_every, purge_interval, db, clock, name=PURGE_TASK)
+                # Unwound first, so the purge task is cancelled before the group waits for it.
+                stack.callback(purges.cancel_scope.cancel)
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
                     await stack.enter_async_context(access.running())
@@ -235,6 +258,40 @@ def _check_writable(path: Path, *, create: bool = False) -> None:
         message = f"the data directory {path} is not writable ({type(exc).__name__})"
         log.error(message, extra={"event": "startup_failed"})
         raise StartupError(message) from None
+
+
+PURGE_TASK = "oauth_purge"
+"""The name of the lifespan's purge task, so a test can find it."""
+
+
+async def _purge(db: Database, clock: Callable[[], float]) -> None:
+    """Purge expired OAuth rows once, logging what went. A failure is logged and swallowed:
+    the rows only cost space, so a failed purge must never stop the service."""
+    try:
+        purged = await db.write(purge_expired, int(clock()))
+    except Exception:
+        log.exception("purging expired OAuth rows failed", extra={"event": "oauth_purge_failed"})
+        return
+    if purged:
+        log.info(
+            "purged expired OAuth rows: %d codes, %d access tokens, %d refresh tokens",
+            purged.codes,
+            purged.access_tokens,
+            purged.refresh_tokens,
+            extra={
+                "event": "oauth_purged",
+                "codes": purged.codes,
+                "access_tokens": purged.access_tokens,
+                "refresh_tokens": purged.refresh_tokens,
+            },
+        )
+
+
+async def _purge_every(interval: float, db: Database, clock: Callable[[], float]) -> None:
+    """Purge every ``interval`` seconds until cancelled."""
+    while True:
+        await anyio.sleep(interval)
+        await _purge(db, clock)
 
 
 def _log_profile_sync(synced: ProfileSync) -> None:

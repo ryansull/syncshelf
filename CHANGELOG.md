@@ -6,6 +6,14 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Expired OAuth rows are purged at every start and then every 24 hours (#77): authorization
+  codes a day after they expire, access tokens once they expire, and a connection's refresh
+  tokens once its refresh window closes or 90 days after it was revoked. Connections
+  themselves are never deleted. A purge that deletes anything logs one `oauth_purged` line
+  with the counts; a failed purge logs `oauth_purge_failed` and the service carries on.
+
 ### Changed
 
 - `my_connections`' description now says that a local dev-mode session isn't a connection,
