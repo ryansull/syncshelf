@@ -8,7 +8,14 @@ import pytest
 import yaml
 
 from syncshelf.sync import matcher
-from syncshelf.sync.matcher import Scored, author_score, auto_accepts, is_likely, normalise
+from syncshelf.sync.matcher import (
+    Scored,
+    author_score,
+    auto_accepts,
+    full_title_score,
+    is_likely,
+    normalise,
+)
 
 GOLDEN = yaml.safe_load(
     (Path(__file__).parents[1] / "golden" / "matcher.yaml").read_text(encoding="utf-8")
@@ -24,6 +31,13 @@ def test_normalise(case: dict[str, Any]) -> None:
     assert normalise(case["in"]) == case["out"]
 
 
+@pytest.mark.parametrize(
+    "case", GOLDEN["normalise_author"], ids=ids(GOLDEN["normalise_author"], "in")
+)
+def test_normalise_author(case: dict[str, Any]) -> None:
+    assert normalise(case["in"], author=True) == case["out"]
+
+
 def check_bound(score: float, case: dict[str, Any]) -> None:
     if "at_least" in case:
         assert score >= case["at_least"], score
@@ -37,6 +51,13 @@ def test_title_score(case: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize(
+    "case", GOLDEN["full_title_score"], ids=ids(GOLDEN["full_title_score"], "candidate")
+)
+def test_full_title_score(case: dict[str, Any]) -> None:
+    check_bound(full_title_score(case["source"], case["candidate"]), case)
+
+
+@pytest.mark.parametrize(
     "case", GOLDEN["author_score"], ids=ids(GOLDEN["author_score"], "candidates")
 )
 def test_author_score(case: dict[str, Any]) -> None:
@@ -45,7 +66,7 @@ def test_author_score(case: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("case", GOLDEN["decide"], ids=ids(GOLDEN["decide"], "candidates"))
 def test_decisions(case: dict[str, Any]) -> None:
-    ranked = [Scored(title, author) for title, author in case["candidates"]]
+    ranked = [Scored(*scores) for scores in case["candidates"]]
     assert auto_accepts(ranked) is case["auto_accept"]
     assert is_likely(ranked) is case["likely"]
 
