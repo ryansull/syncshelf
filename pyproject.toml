@@ -39,7 +39,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
 # Harness helpers in tests/, imported through pytest's pythonpath.
-known-local-folder = ["clock", "image", "invariants", "scrub", "serving"]
+known-local-folder = ["clock", "fakes", "image", "invariants", "scrub", "serving"]
 
 [tool.pyright]
 include = ["src"]

@@ -34,10 +34,11 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Types | `uv run pyright` |
 | Tests (offline, as CI runs them) | `uv run pytest` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
+| Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 
 Tests block outbound network access. Live tests read credentials from the git-ignored
-repo-root `.env`; see `.env.example`.
+repo-root `.env` (or the file in `SYNCSHELF_LIVE_ENV`, for a worktree); see `.env.example`.
 
 To stop real values (your domain, emails, LAN hostnames) ever being committed, list them one per
 line in the git-ignored `local/denylist.txt`. The pre-commit hook then refuses any commit that
@@ -51,7 +52,9 @@ Configuration goes in `profiles.yaml` (git-ignored), modelled on
 [`profiles.example.yaml`](profiles.example.yaml). SyncShelf reads it from the path in
 `SYNCSHELF_CONFIG`, default `/config/profiles.yaml`. Secrets never go in the file: each is a
 `${VAR}` reference to the environment (see `.env.example`) or a `*_file` path. Startup stops on
-bad config with a message naming the key. The file is the only source of profiles: at each
+bad config with a message naming the key. From phase 3, `services.hardcover_url` and each
+profile's `hardcover_token` (the Hardcover API token, without its `Bearer ` prefix) are
+required. The file is the only source of profiles: at each
 start, a profile removed from it is marked removed and its Claude connections are revoked, and
 a name added back is restored.
 

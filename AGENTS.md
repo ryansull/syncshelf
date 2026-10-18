@@ -27,6 +27,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 | Types | `uv run pyright` |
 | Tests (offline, as CI runs them) | `uv run pytest` |
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
+| Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
 | All pre-commit hooks (gitleaks, private denylist) | `uv run pre-commit run --all-files` |
 
 ## How work lands (SPEC §2.10)

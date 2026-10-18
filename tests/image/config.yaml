@@ -1,11 +1,15 @@
 # The config CI's image job mounts at /config/profiles.yaml (.github/workflows/ci.yml). It's the
 # smallest config the service starts with: a loopback public_url, since OAuth isn't complete,
 # proxy headers trusted only from loopback, since nothing proxies the test container, and one
-# profile, since the profiles section is required from phase 2. It isn't named profiles.yaml
+# profile, since the profiles section is required from phase 2, with the Hardcover keys phase 3
+# requires. It isn't named profiles.yaml
 # because .gitignore ignores that name everywhere, to keep real configs out.
 server:
   public_url: http://localhost
   forwarded_allow_ips: 127.0.0.1
   log_level: INFO
+services:
+  hardcover_url: https://api.hardcover.app/v1/graphql
 profiles:
-  alice: {}
+  alice:
+    hardcover_token: ${HARDCOVER_TOKEN_ALICE}   # a placeholder: CI never calls Hardcover

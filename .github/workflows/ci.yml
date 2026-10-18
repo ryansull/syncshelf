@@ -88,6 +88,7 @@ jobs:
           docker volume create syncshelf-data
           docker run -d --name syncshelf \
             -p 127.0.0.1:8000:8000 \
+            -e HARDCOVER_TOKEN_ALICE=ci-placeholder \
             -v syncshelf-data:/data \
             -v "$PWD/tests/image/config.yaml:/config/profiles.yaml:ro" \
             "$IMAGE"

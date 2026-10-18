@@ -46,8 +46,9 @@ server:
   log_level: INFO
 
 services:
-  # Each URL is optional, and must have a host when present. Log lines show its host as the
-  # service's alias (hardcover, abs, chaptarr, browser).
+  # Each URL must have a host. hardcover_url is required; the others are optional until the
+  # phase that uses them. Log lines show each host as the service's alias (hardcover, abs,
+  # chaptarr, browser).
   hardcover_url: https://api.hardcover.app/v1/graphql
   abs_url: https://abs.home.arpa            # HTTPS form; http 302s
   chaptarr_url: http://chaptarr.home.arpa
@@ -73,7 +74,9 @@ profiles:
     # timezone: Etc/UTC
     permissions: [chaptarr]                 # the only permission; [] grants none
     household_visible: false                # true opts in to appearing in bob's answers
-    # hardcover_token: ${HARDCOVER_TOKEN_ALICE}
+    # Hardcover -> Settings -> API. Give the token without the "Bearer " Hardcover shows in
+    # front of it; SyncShelf adds its own.
+    hardcover_token: ${HARDCOVER_TOKEN_ALICE}
     # hardcover_privacy: private
     # ingest_secret: ${INGEST_SECRET_ALICE}
     # goodreads:
@@ -91,3 +94,4 @@ profiles:
     email: bob@example.com
     permissions: [chaptarr]
     household_visible: false
+    hardcover_token: ${HARDCOVER_TOKEN_BOB}
