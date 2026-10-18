@@ -1,0 +1,19 @@
+# Install with `uv run pre-commit install`. Both hooks guard the public repo (SPEC §2.6).
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      # Blocks any staged file, or the commit message, that contains a line of the git-ignored
+      # local/denylist.txt. Passes silently when that file is absent (contributors, CI).
+      - id: private-denylist
+        name: private denylist
+        entry: python scripts/check_denylist.py
+        language: python
+        stages: [pre-commit, commit-msg]
