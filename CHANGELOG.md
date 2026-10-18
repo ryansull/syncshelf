@@ -55,9 +55,9 @@ All notable changes to SyncShelf are recorded here. The format follows
   tool is refused as a tool error.
 - With `server.auth_mode: oauth`, `/mcp` accepts SyncShelf's own access tokens (`ssat_…`),
   checked against the token store: a token is refused with 401 once it has expired (after an
-  hour), when it or its connection is revoked, or when its profile is removed. Nothing issues
-  tokens yet (the sign-in flow follows). Only token hashes are stored and raw tokens are never
-  logged. A refused token logs a DEBUG `token_refused` line with the `grant_id` and reason.
+  hour), when it or its connection is revoked, or when its profile is removed. Only token
+  hashes are stored and raw tokens are never logged. A refused token logs a DEBUG
+  `token_refused` line with the `grant_id` and reason.
 - With `server.auth_mode: oauth`, OAuth discovery works: the authorization-server metadata
   is served at `/.well-known/oauth-authorization-server`, built from `server.public_url`. It
   offers client ID metadata documents and no dynamic client registration, so `/register` is
@@ -126,6 +126,11 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ### Changed
 
+- With `server.auth_mode: oauth`, `server.public_url` may name any host, such as
+  `https://shelf.example.com`, so Claude can connect to a deployed instance. Dev mode still
+  refuses any host but `localhost` or `127.0.0.1`, and so does a config without
+  `server.auth_mode` (#73). `profiles.example.yaml` now shows oauth mode as the production
+  setup, with the dev section commented out for local use.
 - The `profiles` section of the config is now required, since the `profiles` table follows
   it: a file without it stops startup (`profiles: required`) rather than revoking every
   connection. `profiles: {}` is still accepted.

@@ -25,6 +25,7 @@ dev = [
     "pytest>=9.1",
     "pytest-cov>=7",
     "pytest-socket>=0.8",
+    "pytest-timeout>=2.3",
     "ruff>=0.14",
 ]
 
@@ -61,6 +62,9 @@ addopts = [
     "--cov=syncshelf",
     "--cov-report=term-missing",
 ]
+# Per test, not per run. The slowest test takes about 3 s; a hang fails with a stack trace
+# instead of stalling the run.
+timeout = 60
 markers = [
     "live: talks to a real service; collected only with --live and SYNCSHELF_LIVE=1",
 ]
