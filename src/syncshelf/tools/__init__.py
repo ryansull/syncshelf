@@ -12,9 +12,14 @@ and turns a ``ToolError`` into an ``isError`` result. Both run inside the reques
 ``get_access_token()`` gives the caller, so overriding those two public methods filters per
 identity without touching private SDK state. (The SDK's server middleware could do the same,
 but its signature is marked provisional.)
+
+A tool reaches the database and the clock through :func:`services`. The app binds them to its
+server once the lifespan has opened the database, and :meth:`SyncShelfServer.call_tool` puts
+them in a context variable for the call, the same way the SDK carries the caller.
 """
 
 from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from inspect import iscoroutinefunction
 from typing import Any
@@ -27,16 +32,19 @@ from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
 from mcp.types import Tool as MCPTool
 
 from syncshelf.config import PERMISSIONS, ProfileConfig
+from syncshelf.db import Database
 
 __all__ = [
     "HOUSEHOLD",
     "ME",
     "REGISTRY",
     "RegisteredTool",
+    "Services",
     "SyncShelfServer",
     "ToolRegistry",
     "current_profile",
     "resolve_profiles",
+    "services",
 ]
 
 ME = "me"
@@ -98,6 +106,27 @@ REGISTRY = ToolRegistry()
 """The production registry, which every tool module registers on."""
 
 
+@dataclass(frozen=True)
+class Services:
+    """What a tool reaches beyond its arguments and its caller."""
+
+    db: Database
+    clock: Callable[[], float]
+    """Wall-clock epoch seconds: ``create_app``'s one clock (§2.9)."""
+
+
+_services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)
+
+
+def services() -> Services:
+    """The running app's database and clock, for the tool being called."""
+    bound = _services.get()
+    if bound is None:
+        # Tools run only inside a call, after the lifespan has bound the server.
+        raise RuntimeError("no SyncShelf services are bound to this call")
+    return bound
+
+
 class SyncShelfServer(MCPServer[Any]):
     """An ``MCPServer`` serving a registry's tools, each only to the profiles allowed it."""
 
@@ -111,8 +140,13 @@ class SyncShelfServer(MCPServer[Any]):
         super().__init__(*args, **kwargs)
         self._profiles = profiles
         self._permissions = {tool.name: tool.permission for tool in registry}
+        self._services: Services | None = None
         for tool in registry:
             self.add_tool(tool.fn, annotations=tool.annotations)
+
+    def bind(self, bound: Services | None) -> None:
+        """Give tools ``bound`` from now on, or nothing again when ``None``."""
+        self._services = bound
 
     async def list_tools(self) -> list[MCPTool]:
         """The tools the caller's profile may use."""
@@ -130,7 +164,11 @@ class SyncShelfServer(MCPServer[Any]):
                 f"The {name} tool needs the {self._permissions[name]} permission, "
                 "which this SyncShelf profile doesn't have."
             )
-        return await super().call_tool(name, arguments, context)
+        reset = _services.set(self._services)
+        try:
+            return await super().call_tool(name, arguments, context)
+        finally:
+            _services.reset(reset)
 
     def _allowed(self, name: str) -> bool:
         # Only registry tools are served: anything added to the server another way is hidden.

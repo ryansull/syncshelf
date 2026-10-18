@@ -44,6 +44,12 @@ All notable changes to SyncShelf are recorded here. The format follows
   404. In dev mode, or with `server.auth_mode` absent, it isn't served.
 - The protected-resource metadata advertises `scopes_supported: ["syncshelf", "offline_access"]`
   in every mode, so Claude asks for a refresh token.
+- Tools `my_connections` and `revoke_connection`, for every profile: list the caller's own
+  Claude connections (which client, when connected and last used, and which one is making
+  the call), and revoke one by its `grant_id`, `"all_others"`, or `"all"`, which also ends the
+  current session. Only the caller's own connections can be revoked. Each revocation logs an
+  INFO `grant_revoked` line with the `grant_id`. In dev mode no connection is current, and
+  the dev token keeps working (#97).
 
 ### Changed
 
