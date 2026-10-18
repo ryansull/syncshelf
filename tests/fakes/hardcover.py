@@ -178,8 +178,9 @@ class FakeHardcover:
         return book
 
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
+        list_id = next(self._ids)
         list_books = [{"id": next(self._ids), "book_id": b} for b in book_ids]
-        self.lists[user_id].append({"id": next(self._ids), "name": name, "list_books": list_books})
+        self.lists[user_id].append({"id": list_id, "name": name, "list_books": list_books})
 
     def fail_next(
         self,
