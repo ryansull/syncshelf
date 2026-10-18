@@ -22,6 +22,10 @@ import httpx2
 from syncshelf import __version__
 
 __all__ = [
+    "UPDATE_READ",
+    "INSERT_READ",
+    "DELETE_READ",
+    "BOOK_EDITIONS",
     "USER_BOOK",
     "UPDATE_USER_BOOK",
     "INSERT_USER_BOOK",
@@ -223,6 +227,38 @@ mutation UpdateUserBook($id: Int!, $object: UserBookUpdateInput!) {
 }
 """
 """Changes a shelved book's status, rating or review: only the fields in ``object``."""
+
+BOOK_EDITIONS = """
+query BookEditions($book_id: Int!) {
+  books(where: {id: {_eq: $book_id}}) {
+    default_audio_edition { id }
+    default_ebook_edition { id }
+    default_physical_edition { id }
+  }
+}
+"""
+"""A book's default edition per format, for a read on a book not yet shelved (§3.3.5)."""
+
+INSERT_READ = """
+mutation InsertRead($user_book_id: Int!, $read: DatesReadInput!) {
+  insert_user_book_read(user_book_id: $user_book_id, user_book_read: $read) { id error }
+}
+"""
+"""Adds one read. Always a full object (§3.3.1 trap 2: never ``upsert_user_book_reads``)."""
+
+UPDATE_READ = """
+mutation UpdateRead($id: Int!, $read: DatesReadInput!) {
+  update_user_book_read(id: $id, object: $read) { id error }
+}
+"""
+"""Rewrites one read. Always a full object: a field left out may be reset."""
+
+DELETE_READ = """
+mutation DeleteRead($id: Int!) {
+  delete_user_book_read(id: $id) { id error }
+}
+"""
+"""Deletes one read."""
 
 SIMILAR = """
 query Similar($ids: [Int!]!) {
