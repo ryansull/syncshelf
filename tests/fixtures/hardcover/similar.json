@@ -1,0 +1,323 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "books": [
+        {
+          "id": 427970,
+          "title": "Columbus Day",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 233073,
+                "slug": "scrubbed",
+                "name": "Craig Alanson",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 438798,
+          "title": "Empire of Silence",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 238070,
+                "slug": "scrubbed",
+                "name": "Christopher Ruocchio",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 462038,
+          "title": "System Collapse",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 168073,
+                "slug": "scrubbed",
+                "name": "Martha Wells",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 620124,
+          "title": "Light Bringer",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 232665,
+                "slug": "scrubbed",
+                "name": "Pierce Brown",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 646066,
+          "title": "The Perfect Run",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 380116,
+                "slug": "scrubbed",
+                "name": "Maxime J. Durand",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 818989,
+          "title": "The Eye of the Bedlam Bride",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 241306,
+                "slug": "scrubbed",
+                "name": "Matt Dinniman",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 824777,
+          "title": "The Strength of the Few",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 238975,
+                "slug": "scrubbed",
+                "name": "James Islington",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 1078966,
+          "title": "The Mercy of Gods",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 85052,
+                "slug": "scrubbed",
+                "name": "James S. A. Corey",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 1432670,
+          "title": "Not Till We Are Lost",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 233077,
+                "slug": "scrubbed",
+                "name": "Dennis E. Taylor",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        },
+        {
+          "id": 1974594,
+          "title": "Children of Strife",
+          "release_year": 0,
+          "rating": 0.0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 183892,
+                "slug": "scrubbed",
+                "name": "Adrian Tchaikovsky",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

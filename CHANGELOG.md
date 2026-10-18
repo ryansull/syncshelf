@@ -34,6 +34,10 @@ All notable changes to SyncShelf are recorded here. The format follows
   month, date range, the last 30 days or 12 months, or all time, optionally grouped by month,
   format, genre, author or rating, with Hardcover goal progress. It says how many reads it
   can't place in any period (undated, or shelved as read with no read logged).
+- MCP tool `get_book(book, profile?)`: one book's full record, live from Hardcover: details,
+  contributors and narrators, series, top tags, content warnings, ten similar books with shelf
+  status, and the caller's shelf (reads, lists, and their own review). `household` adds each
+  sharing profile's shelf, never their review. What it reads is written back to the copy.
 - New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
   zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
   names resolve on any system.

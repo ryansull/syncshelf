@@ -26,7 +26,14 @@ from syncshelf.clients.hardcover import HardcoverClient, HardcoverError, Library
 from syncshelf.db import Database
 from syncshelf.logging import scrub
 
-__all__ = ["TAG_CATEGORIES", "Freshness", "Mirror", "NoMirror", "replace_library"]
+__all__ = [
+    "TAG_CATEGORIES",
+    "Freshness",
+    "Mirror",
+    "NoMirror",
+    "replace_library",
+    "store_user_book",
+]
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +78,16 @@ class Mirror:
         self._locks = {profile: asyncio.Lock() for profile in clients}
         self._attempts = dict.fromkeys(clients, 0)
         self._last: dict[str, Freshness | NoMirror] = {}
+
+    async def write_through(
+        self, profile: str, book_id: int, user_book: Mapping[str, Any] | None
+    ) -> None:
+        """Bring one book's rows in ``profile``'s copy up to date with what Hardcover just
+        said: ``user_book`` in the library query's shape (``book`` included), or ``None`` when
+        the book isn't on the shelf. Called after a live read or a SyncShelf write, so the copy
+        doesn't wait for the TTL (§3.3.4, Write-through)."""
+        async with self._locks[profile]:
+            await self._db.write(store_user_book, profile, book_id, user_book)
 
     async def fresh(self, profile: str) -> Freshness:
         """Make ``profile``'s copy current enough to read, refreshing it if it's older than
@@ -166,6 +183,26 @@ def _record_failure(conn: sqlite3.Connection, profile: str, now: int, error: str
 
 
 _TABLES = ("mirror_books", "mirror_user_books", "mirror_reads", "mirror_list_items")
+
+
+def store_user_book(
+    conn: sqlite3.Connection, profile: str, book_id: int, user_book: Mapping[str, Any] | None
+) -> None:
+    """Replace ``profile``'s rows for one book, inside the caller's transaction. List
+    membership is left alone: it comes only from the full refresh."""
+    conn.execute(
+        "DELETE FROM mirror_reads WHERE profile = ? AND hc_user_book_id IN (SELECT "
+        "hc_user_book_id FROM mirror_user_books WHERE profile = ? AND hc_book_id = ?)",
+        (profile, profile, book_id),
+    )
+    conn.execute(
+        "DELETE FROM mirror_user_books WHERE profile = ? AND hc_book_id = ?", (profile, book_id)
+    )
+    conn.execute(
+        "DELETE FROM mirror_books WHERE profile = ? AND hc_book_id = ?", (profile, book_id)
+    )
+    if user_book is not None:
+        _insert_user_book(conn, profile, user_book)
 
 
 def replace_library(conn: sqlite3.Connection, profile: str, library: Library, now: int) -> None:
