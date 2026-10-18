@@ -2,10 +2,18 @@
 
 The goal is that any log line, and any stored error string, can be pasted into a public issue.
 This module takes plain inputs (a level, secret values, a host → alias map) and never reads
-config itself, so the caller wires it up once at startup::
+config itself, so the caller wires it up once at startup, as ``syncshelf.__main__`` does::
 
-    configure(level=cfg.log_level, secrets=cfg.secret_values, host_aliases=cfg.host_aliases)
-    uvicorn.run(app, ..., log_config=None)  # uvicorn's loggers then propagate to our handler
+    configure(
+        level=config.server.log_level,
+        secrets=config.secret_values(),
+        host_aliases=config.host_aliases(),
+    )
+    app = create_app(config)  # builds the MCP server, after logging is set up
+    uvicorn.Server(uvicorn.Config(app, ..., log_config=None)).run()
+
+``log_config=None`` stops uvicorn configuring logging itself, so its loggers propagate to the
+handler installed here.
 
 ``scrub`` is the same redaction for strings that are about to be stored, and ``add_secret``
 registers a token that only exists at runtime (an issued access token, a session cookie).
@@ -300,10 +308,13 @@ def configure(
     """Send all logging to stdout as scrubbed JSON lines at ``level`` (``server.log_level``),
     with query strings dropped from uvicorn's access lines.
 
-    Replaces root's handlers (``MCPServer`` adds a stderr one via ``basicConfig``), so call it
-    after building the MCP server and pass ``log_config=None`` to uvicorn so it leaves logging
-    alone. Calling it again replaces the previous setup. Raises ``ValueError`` for an unknown
-    level name.
+    Replaces root's handlers. ``__main__`` calls it before :func:`syncshelf.app.create_app`
+    builds the MCP server, and that order is safe: ``MCPServer`` calls ``logging.basicConfig``
+    without ``force=True``, which does nothing once root has a handler, so it neither adds its
+    stderr handler nor changes the level. Called after an ``MCPServer`` was built, it removes
+    that handler instead. Pass ``log_config=None`` to uvicorn so it leaves logging alone.
+    Calling it again replaces the previous setup. Raises ``ValueError`` for an unknown level
+    name.
     """
     name = level.upper()
     if name not in _LEVELS:

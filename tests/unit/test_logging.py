@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 import pytest
+from mcp.server import MCPServer
 
 from syncshelf import logging as slog
 
@@ -262,6 +263,17 @@ def test_configure_replaces_existing_root_handlers(capsys: pytest.CaptureFixture
     assert len(logging.getLogger().handlers) == 1
     logging.getLogger("x").warning("once")
     assert len(lines(capsys)) == 1
+
+
+def test_building_the_mcp_server_after_configure_leaves_logging_alone() -> None:
+    # __main__ configures logging before create_app builds the MCPServer. Its basicConfig has
+    # no force=True, so with a root handler already in place it must change nothing.
+    slog.configure(level="WARNING")
+    root = logging.getLogger()
+    handlers = root.handlers[:]
+    MCPServer("test")
+    assert root.handlers == handlers
+    assert root.level == logging.WARNING
 
 
 def test_http_client_loggers_stay_quiet_even_at_debug(capsys: pytest.CaptureFixture[str]) -> None:
