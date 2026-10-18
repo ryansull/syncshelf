@@ -1,0 +1,14 @@
+# SPEC §2.10: weekly update PRs for the Python lockfile and the workflow actions.
+# mcp, starlette and playwright bumps must re-run their contract tests; a playwright bump also
+# moves the browser sidecar image tag (SPEC §2.1).
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
