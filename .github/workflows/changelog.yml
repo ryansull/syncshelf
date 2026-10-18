@@ -1,0 +1,41 @@
+# SPEC §2.10 and #139: every PR with a user- or operator-visible change adds a changelog.d/
+# fragment and never edits CHANGELOG.md. Its own workflow so that adding or removing the
+# no-changelog label reruns only this check. It uses no secrets.
+name: Changelog
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fragments:
+    name: Changelog fragments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The script is standard library only, so the runner's Python is enough.
+      - name: Fragments are well formed and [Unreleased] is empty
+        run: python3 scripts/changelog.py check
+      - name: A PR that changes src/ adds a fragment, or is labelled no-changelog
+        if: >-
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'no-changelog')
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD)
+          if echo "$changed" | grep -q '^src/' &&
+             ! echo "$changed" | grep -qE '^changelog\.d/[1-9][0-9]*\.(added|changed|removed|fixed)\.md$'; then
+            echo "::error::This PR changes src/ but adds no changelog.d/ fragment. Add one (see changelog.d/README.md), or label the PR no-changelog if nothing user- or operator-visible changed."
+            exit 1
+          fi
