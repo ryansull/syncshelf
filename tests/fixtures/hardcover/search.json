@@ -115,6 +115,9 @@
                     "contributor_role_blurb": "scrubbed",
                     "contributor_role_id": 0,
                     "contributor_role_name": "scrubbed",
+                    "contributor_specialization_blurb": null,
+                    "contributor_specialization_id": null,
+                    "contributor_specialization_name": null,
                     "primary": false
                   }
                 ],
@@ -1743,6 +1746,9 @@
                     "contributor_role_blurb": "scrubbed",
                     "contributor_role_id": 0,
                     "contributor_role_name": "scrubbed",
+                    "contributor_specialization_blurb": null,
+                    "contributor_specialization_id": null,
+                    "contributor_specialization_name": null,
                     "primary": false
                   }
                 ],

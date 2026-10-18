@@ -45,6 +45,9 @@ async def test_get_my_library_answers_from_the_real_library(
             book = await mcp.call_tool("get_book", {"book": first}) if first else None
             series = await mcp.call_tool("series_progress", {})
             found = await mcp.call_tool("search_books", {"genre": "Fantasy", "sort": "popular"})
+            # A classic with a graphic-novel adaptation, the tie #138 settled.
+            candidates = [{"title": "A Wizard of Earthsea", "author": "Ursula K. Le Guin"}]
+            checked = await mcp.call_tool("check_books", {"candidates": candidates})
         assert not result.is_error, (var, result.content)
         page = result.structured_content
         assert page is not None
@@ -55,6 +58,9 @@ async def test_get_my_library_answers_from_the_real_library(
         assert not series.is_error, (var, series.content)
         assert not found.is_error, (var, found.content)
         assert (found.structured_content or {}).get("books"), var
+        assert not checked.is_error, (var, checked.content)
+        [row] = (checked.structured_content or {})["books"]
+        assert row["match"] == "exact", (var, row)
         if book is not None:
             assert not book.is_error, (var, book.content)
             record = book.structured_content

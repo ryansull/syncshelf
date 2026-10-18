@@ -149,6 +149,26 @@ class FakeHardcover:
         }
         doc.update({**defaults, **fields, "id": str(book_id), "title": title})
         self.search_index.append(doc)
+        # The same book, as the books table has it, unless a test already put it there.
+        if book_id not in self.catalog:
+            self.add_book(
+                book_id,
+                title=title,
+                subtitle=doc["subtitle"],
+                release_year=doc.get("release_year"),
+                rating=doc["rating"] or None,
+                pages=doc.get("pages"),
+                cached_contributors=[
+                    {"author": {"id": n, "name": name}, "contribution": "Author"}
+                    for n, name in enumerate(doc["author_names"])
+                ],
+                cached_featured_series=doc["featured_series"] or {},
+                genres=[{"tag": g} for g in doc["genres"]],
+                default_audio_edition={"id": book_id * 10 + 2}
+                if doc.get("has_audiobook")
+                else None,
+                default_ebook_edition={"id": book_id * 10 + 4} if doc.get("has_ebook") else None,
+            )
         return doc
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
@@ -246,6 +266,7 @@ class FakeHardcover:
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
             "Search": self._search,
+            "BooksById": self._books_by_id,
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -336,6 +357,14 @@ class FakeHardcover:
             hits.append(hit)
         results = {**_search_results(), "found": len(docs), "page": page, "hits": hits}
         return {"search": {"ids": [int(d["id"]) for d in shown], "results": results}}
+
+    def _books_by_id(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        fields = (
+            "id", "title", "subtitle", "release_year", "rating", "pages", "cached_contributors",
+            "cached_featured_series", "genres", "default_audio_edition", "default_ebook_edition",
+        )  # fmt: skip
+        found = sorted(i for i in variables["ids"] if i in self.catalog)
+        return {"books": [{f: self.catalog[i].get(f) for f in fields} for i in found]}
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.

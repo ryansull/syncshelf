@@ -17,6 +17,7 @@ import pytest
 
 from syncshelf.clients.hardcover import (
     BOOK,
+    BOOKS_BY_ID,
     GOALS,
     LIBRARY,
     ME,
@@ -156,3 +157,16 @@ async def test_search_matches_the_recording(fake: FakeHardcover) -> None:
     variables = {"q": "dune", "filter": None, "sort": None, "per": 3, "page": 1}
     result = await client.execute(SEARCH, variables)
     assert_same_shape(shape({"data": result.data}), recorded("search"))
+
+
+async def test_books_by_id_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.catalog[7].update(
+        rating=4.2,
+        default_audio_edition={"id": 71},
+        default_ebook_edition={"id": 72},
+        genres=[{"tag": "SF", "count": 3}],
+        cached_featured_series={"series": {"id": 2, "name": "S"}, "position": 1.0},
+    )
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(BOOKS_BY_ID, {"ids": [7]})
+    assert_same_shape(shape({"data": result.data}), recorded("books_by_id"))

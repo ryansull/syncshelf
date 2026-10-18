@@ -1,0 +1,165 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "books": [
+        {
+          "id": 1464466,
+          "title": "This Inevitable Ruin",
+          "subtitle": "Dungeon Crawler Carl, Book 7",
+          "release_year": 0,
+          "rating": 0.0,
+          "pages": 0,
+          "cached_contributors": [
+            {
+              "author": {
+                "id": 241306,
+                "slug": "scrubbed",
+                "name": "Matt Dinniman",
+                "image": {
+                  "id": 0,
+                  "url": "https://example.com/",
+                  "color": "scrubbed",
+                  "width": 0,
+                  "height": 0,
+                  "color_name": "scrubbed"
+                }
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            },
+            {
+              "author": {
+                "id": 1164835,
+                "slug": "scrubbed",
+                "name": "Erik Wilson",
+                "image": {}
+              },
+              "contribution": "scrubbed",
+              "contributor_role_id": 0,
+              "contributor_specialization_id": null,
+              "contributor_role_name": "scrubbed",
+              "contributor_specialization_name": null,
+              "contributor_role_blurb": "scrubbed",
+              "contributor_specialization_blurb": null,
+              "primary": false
+            }
+          ],
+          "cached_featured_series": {
+            "id": 0,
+            "series": {
+              "id": 0,
+              "name": "Dungeon Crawler Carl",
+              "slug": "scrubbed",
+              "books_count": 0,
+              "primary_books_count": 0
+            },
+            "details": "scrubbed",
+            "featured": false,
+            "position": 0.0,
+            "collection": false,
+            "unreleased": false
+          },
+          "genres": [
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            },
+            {
+              "tag": "scrubbed",
+              "count": 0,
+              "tagSlug": "scrubbed",
+              "category": "scrubbed",
+              "categorySlug": "scrubbed",
+              "spoilerRatio": 0.0
+            }
+          ],
+          "default_audio_edition": {
+            "id": 0
+          },
+          "default_ebook_edition": {
+            "id": 0
+          }
+        }
+      ]
+    }
+  }
+}
