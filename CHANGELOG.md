@@ -24,7 +24,9 @@ All notable changes to SyncShelf are recorded here. The format follows
   (no review text). An upgrade snapshots the database to `pre-migration-0002.db` first.
 - MCP tool `get_my_library`: the caller's shelves as compact rows, filtered by shelf, text,
   author, genre, series, format, minimum rating and finish dates, sorted by date added, last
-  finished, rating, title or author, with totals and per-shelf counts. It reads the copy, refreshed when
+  finished, rating, title or author, with totals and per-shelf counts. `profile` reads another
+  profile's shelves, or `household` everyone's who opted in with `household_visible`, each copy
+  refreshed with that profile's own token; reviews are never shared. It reads the copy, refreshed when
   older than `cadence.mirror_ttl`; when Hardcover can't be reached it answers from the older
   copy flagged `stale`, and refuses only when there is no copy yet. Each refresh logs
   `mirror_refreshed`, and a failed one `mirror_refresh_failed`.
