@@ -38,6 +38,12 @@ All notable changes to SyncShelf are recorded here. The format follows
   hour), when it or its connection is revoked, or when its profile is removed. Nothing issues
   tokens yet (the sign-in flow follows). Only token hashes are stored and raw tokens are never
   logged. A refused token logs a DEBUG `token_refused` line with the `grant_id` and reason.
+- With `server.auth_mode: oauth`, OAuth discovery works: the authorization-server metadata
+  is served at `/.well-known/oauth-authorization-server`, built from `server.public_url`. It
+  offers client ID metadata documents and no dynamic client registration, so `/register` is
+  404. In dev mode, or with `server.auth_mode` absent, it isn't served.
+- The protected-resource metadata advertises `scopes_supported: ["syncshelf", "offline_access"]`
+  in every mode, so Claude asks for a refresh token.
 
 ### Changed
 
