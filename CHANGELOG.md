@@ -17,6 +17,11 @@ All notable changes to SyncShelf are recorded here. The format follows
   a browser's **Allow** click sends the real `Origin` and passes the POST's Origin check.
   Under `no-referrer` browsers send `Origin: null` and every sign-in would be refused (#114).
   Error pages and redirects still send no referrer.
+- The cached Cloudflare Access signing keys now expire 1 hour after they were fetched, so a
+  key Access has retired stops verifying sign-ins. If the refetch fails, the old keys are
+  kept. A sign-in JWT with an unknown key ID fetches the keys at most once a minute; inside
+  that minute it is refused without a fetch. A key-set response over 64 KB counts as a
+  failed fetch.
 
 ## [0.2.0] - 2026-10-18
 
