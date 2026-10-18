@@ -359,10 +359,9 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
     (user_book_id, book_id, status_id, rating, date_added, title, contributors_json, series_id,
      series_name, series_position, tags) = row  # fmt: skip
     contributors: list[dict[str, Any]] = json.loads(contributors_json) if contributors_json else []
-    genres: list[str] = json.loads(tags).get("genres", []) if tags else []
+    genres = _genres(tags)
     finished = [r.finished_on for r in reads if r.finished_on]
-    # cached_contributors gives authors no role, and narrators, editors or translators one.
-    authors = tuple(c["name"] for c in contributors if not c.get("role"))
+    authors = _authors(contributors)
     return _Book(
         user_book_id,
         date_added,
@@ -385,6 +384,17 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
         all_genres=tuple(genres),
         reads=tuple(reads),
     )
+
+
+def _authors(contributors: list[dict[str, Any]]) -> tuple[str, ...]:
+    """The authors among a book's stored contributors: the mirror stores an author's role as
+    null, and a narrator's, editor's or translator's as that role."""
+    return tuple(c["name"] for c in contributors if not c.get("role"))
+
+
+def _genres(tags_json: str | None) -> list[str]:
+    """A book's genres, most used first, from the mirror's ``tags_json``."""
+    return json.loads(tags_json).get("genres", []) if tags_json else []
 
 
 # --- paging and freshness -----------------------------------------------------------------
@@ -565,20 +575,27 @@ async def reading_stats(period: str, group_by: GroupBy | None = None, profile: s
     caller = current_profile()
     bound = services()
     names = resolve_profiles(profile, caller, bound.profiles)
-    start, end = _period(period, datetime.fromtimestamp(bound.clock(), UTC), bound.profiles[caller])
-    freshness = await _refresh(bound.mirror, names, caller)
-    reads: list[_StatRead] = []
+    now = datetime.fromtimestamp(bound.clock(), UTC)
+    # Each profile's dates are in its own zone, so "today" is worked out per profile.
+    spans = {name: _period(period, now, bound.profiles[name]) for name in names}
+    one = len(names) == 1
+    async with asyncio.TaskGroup() as tg:
+        refreshing = tg.create_task(_refresh(bound.mirror, names, caller))
+        goals = tg.create_task(_goals(bound.hardcover[names[0]])) if one else None
+    freshness = refreshing.result()
+    in_period: list[_StatRead] = []
     not_counted = NotCounted(undated_reads=0, read_without_reads=0)
     for name in names:
         shelf, undated, without = await bound.db.read(_stat_reads, name)
-        reads += shelf
+        start, end = spans[name]
+        in_period += [
+            r
+            for r in shelf
+            if (start is None or r.finished_on >= start) and (end is None or r.finished_on <= end)
+        ]
         not_counted["undated_reads"] += undated
         not_counted["read_without_reads"] += without
-    in_period = [
-        r
-        for r in reads
-        if (start is None or r.finished_on >= start) and (end is None or r.finished_on <= end)
-    ]
+    start, end = spans[caller] if caller in spans else spans[names[0]]
     result = Stats(
         period={"from": start, "to": end},
         totals=_totals(in_period),
@@ -587,8 +604,8 @@ async def reading_stats(period: str, group_by: GroupBy | None = None, profile: s
     )
     if group_by is not None:
         result["groups"] = _groups(in_period, group_by)
-    if len(names) == 1 and (goals := await _goals(bound.hardcover[names[0]])) is not None:
-        result["goals"] = goals
+    if goals is not None and (fetched := goals.result()) is not None:
+        result["goals"] = fetched
     return result
 
 
@@ -601,7 +618,10 @@ def _period(period: str, now: datetime, caller: ProfileConfig) -> tuple[str | No
         if period == "last_30_days":
             return ((today - timedelta(days=29)).isoformat(), today.isoformat())
         if period == "last_12_months":
-            year_ago = today.replace(year=today.year - 1, day=min(today.day, 28))
+            try:
+                year_ago = today.replace(year=today.year - 1)
+            except ValueError:  # 29 February, a year after a leap day
+                year_ago = today.replace(year=today.year - 1, day=28)
             return ((year_ago + timedelta(days=1)).isoformat(), today.isoformat())
         if re.fullmatch(r"\d{4}", period):
             return (f"{period}-01-01", f"{period}-12-31")
@@ -642,8 +662,7 @@ def _stat_reads(conn: sqlite3.Connection, profile: str) -> tuple[list[_StatRead]
         if finished_on is None:
             undated += status == 3
             continue
-        contributors = json.loads(people) if people else []
-        authors = [c["name"] for c in contributors if not c.get("role")]
+        authors = _authors(json.loads(people) if people else [])
         reads.append(
             _StatRead(
                 book=(profile, user_book_id),
@@ -651,7 +670,7 @@ def _stat_reads(conn: sqlite3.Connection, profile: str) -> tuple[list[_StatRead]
                 formats=FORMATS.get(format_id or 0, (UNKNOWN,)),
                 pages=pages,
                 audio_seconds=seconds,
-                genres=tuple((json.loads(tags).get("genres", []) if tags else [])[:TOP_GENRES]),
+                genres=tuple(_genres(tags)[:TOP_GENRES]),
                 author=authors[0] if authors else None,
                 rating=rating,
             )

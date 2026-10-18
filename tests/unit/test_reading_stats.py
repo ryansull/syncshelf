@@ -5,6 +5,7 @@ The fake clock starts at 2100-01-01T00:00Z, so "this year" is 2100 and last year
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ import pytest
 from mcp import Client
 
 from syncshelf.app import create_app
+from syncshelf.config import ProfileConfig
+from syncshelf.tools.library import _period  # pyright: ignore[reportPrivateUsage]
 
 from clock import FakeClock
 from fakes.hardcover import FakeHardcover
@@ -266,3 +269,16 @@ async def test_household_counts_everyone_and_leaves_goals_out(
     assert (both["totals"]["books"], both["totals"]["reads"]) == (5, 6)
     assert "goals" not in both
     assert all(op != "Goals" for op, _ in shelf.requests)
+
+
+@pytest.mark.parametrize(
+    ("today", "span"),
+    [
+        ("2026-10-31", ("2025-11-01", "2026-10-31")),  # a 31st: exactly twelve months
+        ("2025-03-01", ("2024-03-02", "2025-03-01")),
+        ("2028-02-29", ("2027-03-01", "2028-02-29")),  # a leap day: last year has none
+    ],
+)
+def test_last_12_months_is_exactly_twelve_months(today: str, span: tuple[str, str]) -> None:
+    now = datetime.fromisoformat(f"{today}T12:00:00+00:00").astimezone(UTC)
+    assert _period("last_12_months", now, ProfileConfig("alice", timezone="Etc/UTC")) == span

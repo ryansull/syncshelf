@@ -840,3 +840,12 @@ def test_committed_example_sets_the_keys_phase_3_requires() -> None:
 def test_real_profiles_yaml_is_git_ignored() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "profiles.yaml" in ignored
+
+
+def test_without_a_timezone_the_containers_tz_variable_is_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    assert str(ProfileConfig("alice").tzinfo()) == "America/New_York"
+    monkeypatch.setenv("TZ", "not a zone")
+    assert ProfileConfig("alice").tzinfo() is not None  # falls back to the clock's offset

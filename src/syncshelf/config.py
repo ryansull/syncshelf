@@ -201,11 +201,16 @@ class ProfileConfig:
     the user says ("last 30 days", "yesterday") are read in it."""
 
     def tzinfo(self) -> tzinfo:
-        """The profile's time zone: :attr:`timezone`, else the container's."""
+        """The profile's time zone: :attr:`timezone`, else the container's. That is its ``TZ``
+        variable when it names a zone (so daylight saving is followed), else the clock's
+        current UTC offset."""
         if self.timezone is not None:
             return ZoneInfo(self.timezone)
-        local = datetime.now().astimezone().tzinfo
-        return local if local is not None else UTC
+        try:
+            return ZoneInfo(os.environ.get("TZ", ""))
+        except ValueError, ZoneInfoNotFoundError:
+            local = datetime.now().astimezone().tzinfo
+            return local if local is not None else UTC
 
 
 @dataclass(frozen=True)
