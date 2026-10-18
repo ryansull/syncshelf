@@ -84,21 +84,14 @@ class TestMcpMount:
     def test_the_allowlist_is_the_public_host_and_loopback(self, tmp_path: Path) -> None:
         server = make_config(tmp_path, "http://127.0.0.1:8000").server
         assert allowed_hosts(server) == ["127.0.0.1:8000", "localhost:*", "127.0.0.1:*"]
-        server = make_config(tmp_path, "http://LOCALHOST").server
+        server = make_config(tmp_path, "http://localhost").server
         assert allowed_hosts(server) == ["localhost", "localhost:*", "127.0.0.1:*"]
 
-    @pytest.mark.parametrize("public_url", ["http://localhost:80", "https://localhost:443"])
-    def test_the_allowlist_drops_the_schemes_default_port(
-        self, tmp_path: Path, public_url: str
-    ) -> None:
-        # Clients leave a default port out of the Host header, so listing it would 421 them.
-        server = make_config(tmp_path, public_url).server
-        assert allowed_hosts(server) == ["localhost", "localhost:*", "127.0.0.1:*"]
-
-    async def test_an_explicit_default_port_still_admits_the_host(
+    async def test_a_public_url_without_a_port_admits_the_bare_host(
         self, tmp_path: Path, data_dir: Path
     ) -> None:
-        app = create_app(make_config(tmp_path, "http://localhost:80"), data_dir=data_dir)
+        # Config refuses a default port (#98), so the portless form is the one clients send.
+        app = create_app(make_config(tmp_path, "http://localhost"), data_dir=data_dir)
         async with running(app) as client:
             response = await client.post(
                 "/mcp", json=INIT, headers={**MCP_HEADERS, "host": "localhost"}

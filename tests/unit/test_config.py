@@ -28,7 +28,8 @@ server:
   forwarded_allow_ips: 192.0.2.0/24
 """
 
-SECRET = "s3cr3t-value-never-shown"
+# 32 characters or more, so it also passes as a dev token (#75).
+SECRET = "s3cr3t-value-never-shown-anywhere"
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -215,6 +216,35 @@ def test_malformed_public_url_is_rejected(tmp_path: Path, url: str) -> None:
     assert "server.public_url" in load_error(tmp_path, MINIMAL.replace("http://localhost", url))
 
 
+# --- public_url is a bare origin in canonical form (#98) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "reason"),
+    [
+        ("http://localhost/", "path"),
+        ("http://localhost/shelf", "path"),
+        ("http://localhost:8000/mcp", "path"),
+        ("http://LOCALHOST", "lowercase"),
+        ("http://Localhost:8000", "lowercase"),
+        ("http://localhost:80", "default port"),
+        ("https://localhost:443", "default port"),
+        ("http://u@localhost", "user"),
+        ("http://localhost:08000", "canonical"),
+        ('"http://localhost:"', "canonical"),  # quoted, or YAML reads a mapping
+    ],
+)
+def test_public_url_must_be_a_bare_canonical_origin(tmp_path: Path, url: str, reason: str) -> None:
+    message = load_error(tmp_path, MINIMAL.replace("http://localhost", url))
+    assert message.startswith("server.public_url:")
+    assert reason in message
+
+
+@pytest.mark.parametrize("url", ["http://localhost:443", "https://localhost:80"])
+def test_the_other_schemes_default_port_is_kept(tmp_path: Path, url: str) -> None:
+    assert load(tmp_path, MINIMAL.replace("http://localhost", url)).server.public_url == url
+
+
 # --- other server keys ------------------------------------------------------------------
 
 
@@ -296,11 +326,36 @@ def test_the_team_domain_is_only_a_scheme_and_host(tmp_path: Path, domain: str) 
 
 
 @pytest.mark.parametrize(
-    "url", ["https://shelf.example.com", "https://shelf.example.com:8443", "http://localhost"]
+    "url",
+    [
+        "https://shelf.example.com",
+        "https://shelf.example.com:8443",
+        "http://localhost",
+        "http://127.0.0.1:8000",
+    ],
 )
-def test_oauth_mode_accepts_any_public_url(tmp_path: Path, url: str) -> None:
+def test_oauth_mode_accepts_https_or_a_loopback_public_url(tmp_path: Path, url: str) -> None:
     config = load(tmp_path, OAUTH.replace("http://localhost", url), OAUTH_ENV)
     assert config.server.public_url == url
+
+
+@pytest.mark.parametrize(
+    "url", ["http://shelf.example.com", "http://192.0.2.10:8000", "http://[::1]:8000"]
+)
+def test_oauth_mode_refuses_http_unless_the_host_is_loopback(tmp_path: Path, url: str) -> None:
+    # The MCP SDK's validate_issuer_url rule (#122): an issuer is https, or a loopback name.
+    message = load_error(tmp_path, OAUTH.replace("http://localhost", url), OAUTH_ENV)
+    assert message.startswith("server.public_url:")
+    assert "https" in message
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://shelf.example.com:443", "https://Shelf.example.com", "https://shelf.example.com/x"],
+)
+def test_oauth_mode_also_needs_a_canonical_origin(tmp_path: Path, url: str) -> None:
+    message = load_error(tmp_path, OAUTH.replace("http://localhost", url), OAUTH_ENV)
+    assert message.startswith("server.public_url:")
 
 
 def test_other_modes_do_not_read_the_oauth_keys(tmp_path: Path) -> None:
@@ -324,6 +379,20 @@ def test_dev_mode_reads_the_dev_token_and_profile(tmp_path: Path) -> None:
 def test_dev_mode_requires_its_keys(tmp_path: Path, key: str) -> None:
     text = "\n".join(line for line in DEV.splitlines() if f"    {key}:" not in line) + "\n"
     assert f"server.dev.{key}" in load_error(tmp_path, text, DEV_ENV)
+
+
+@pytest.mark.parametrize("token", ["short-dev-token", "z" * 31])
+def test_dev_mode_refuses_a_short_token_without_showing_it(tmp_path: Path, token: str) -> None:
+    message = load_error(tmp_path, DEV, {"DEV_TOKEN": token})
+    assert message.startswith("server.dev.token:")
+    assert "32" in message
+    assert token not in message
+
+
+def test_dev_mode_accepts_a_32_character_token(tmp_path: Path) -> None:
+    dev = load(tmp_path, DEV, {"DEV_TOKEN": "z" * 32}).server.dev
+    assert dev is not None
+    assert dev.token == "z" * 32
 
 
 def test_dev_mode_requires_the_dev_section(tmp_path: Path) -> None:
@@ -435,6 +504,14 @@ def test_profile_names_matching_the_pattern_are_accepted(tmp_path: Path, name: s
 @pytest.mark.parametrize("name", ["Alice", "2bob", "_x", "a-b", "a" * 33, '"al ice"'])
 def test_profile_names_outside_the_pattern_are_rejected(tmp_path: Path, name: str) -> None:
     assert "profile name" in load_error(tmp_path, MINIMAL + f"profiles:\n  {name}: {{}}\n")
+
+
+@pytest.mark.parametrize("name", ["me", "household"])
+def test_the_profile_argument_keywords_are_not_profile_names(tmp_path: Path, name: str) -> None:
+    # A profile named like a keyword would make the profile argument ambiguous (#74).
+    message = load_error(tmp_path, MINIMAL + f"profiles:\n  {name}: {{}}\n")
+    assert message.startswith(f"profiles.{name}:")
+    assert "keyword" in message
 
 
 def test_profile_emails_are_lowercased(tmp_path: Path) -> None:

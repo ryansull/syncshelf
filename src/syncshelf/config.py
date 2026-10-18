@@ -44,6 +44,20 @@ published port reach it, and so does the container health check on ``127.0.0.1:8
 PROFILE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,31}")
 """A profile name, matched in full (§1.1)."""
 
+ME = "me"
+"""The ``profile`` argument for the caller's own profile, and its default (§2.8). Defined
+here rather than in :mod:`syncshelf.tools`, which imports this module, so config can refuse
+it as a profile name (#74)."""
+
+HOUSEHOLD = "household"
+"""The ``profile`` argument for the caller plus every profile that opted in (§2.8)."""
+
+MIN_DEV_TOKEN_LENGTH = 32
+"""The shortest ``server.dev.token`` accepted (#75). ``openssl rand -hex 32``, which
+``.env.example`` suggests, gives 64."""
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 """The levels §2.7 defines for ``server.log_level``."""
 
@@ -423,9 +437,13 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
     if "public_url" not in raw:
         raise ConfigError("server.public_url: required")
     public_url = raw["public_url"]
-    parts = _url(public_url, "server.public_url", ("http", "https"))
-    if parts.query or parts.fragment or public_url.endswith("/"):
-        raise ConfigError("server.public_url: must have no trailing slash, query or fragment")
+    parts = _public_url(public_url)
+    if parts.hostname not in LOCAL_HOSTS and auth_mode == "oauth" and parts.scheme != "https":
+        # The MCP SDK's validate_issuer_url rule (#122): an issuer is https unless loopback.
+        raise ConfigError(
+            "server.public_url: oauth mode needs an https URL unless the host is localhost "
+            "or 127.0.0.1"
+        )
     if parts.hostname not in LOCAL_HOSTS and auth_mode != "oauth":
         if auth_mode == "dev":
             # Dev mode's one static token would let anyone who reached a public name in.
@@ -470,12 +488,43 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
     )
 
 
+def _public_url(value: Any) -> SplitResult:
+    """Check ``server.public_url`` is a bare origin in canonical form (#98).
+
+    It is the issuer and the base of every metadata URL, compared exactly, while the MCP
+    SDK's ``AnyHttpUrl`` lowercases the host and drops a default port. Only the canonical
+    form reads the same both ways. The routes are served at the root, so no path either.
+    """
+    key = "server.public_url"
+    parts = _url(value, key, ("http", "https"))
+    if parts.path or parts.query or parts.fragment or value.endswith(("?", "#")):
+        raise ConfigError(f"{key}: must have no path (not even /), query or fragment")
+    if "@" in parts.netloc:
+        raise ConfigError(f"{key}: must have no user name or password")
+    if parts.netloc != parts.netloc.lower():
+        raise ConfigError(f"{key}: the host must be lowercase")
+    if parts.port is not None and parts.port == _DEFAULT_PORTS[parts.scheme]:
+        raise ConfigError(f"{key}: leave out the {parts.scheme} default port :{parts.port}")
+    # Catches what the checks above don't name, like "host:" or a port with a leading zero.
+    host = f"[{parts.hostname}]" if ":" in (parts.hostname or "") else parts.hostname
+    canonical = host if parts.port is None else f"{host}:{parts.port}"
+    if parts.netloc != canonical:
+        raise ConfigError(f"{key}: must be written in canonical form, scheme://host[:port]")
+    return parts
+
+
 def _dev(secrets: Mapping[str, str], raw: Any, profiles: Mapping[str, ProfileConfig]) -> DevConfig:
     """``server.dev``, which dev mode requires. ``raw`` is a mapping or ``None``:
     :func:`_expand_secrets` has already refused anything else."""
     token = secrets.get("server.dev.token")
     if token is None:
         raise ConfigError("server.dev.token: required when server.auth_mode is dev")
+    if len(token) < MIN_DEV_TOKEN_LENGTH:
+        # It is the only credential on /mcp in dev mode. Never echo it, or its length.
+        raise ConfigError(
+            f"server.dev.token: must be at least {MIN_DEV_TOKEN_LENGTH} characters "
+            "(generate one with openssl rand -hex 32)"
+        )
     profile = (raw or {}).get("profile")
     if profile is None:
         raise ConfigError("server.dev.profile: required when server.auth_mode is dev")
@@ -591,6 +640,12 @@ def _profiles(
             # The name itself is only a profile key, but it may be someone's real name.
             raise ConfigError("profiles: a profile name must match ^[a-z][a-z0-9_]{0,31}$")
         prefix = f"profiles.{name}"
+        if name in (ME, HOUSEHOLD):
+            # Named in full: these two are keywords, not anyone's real name.
+            raise ConfigError(
+                f"{prefix}: {ME} and {HOUSEHOLD} are the profile argument's keywords, "
+                "so neither can be a profile name"
+            )
         if not isinstance(body, dict):
             raise ConfigError(f"{prefix}: must be a mapping")
         _expand_secrets(body, prefix, _PROFILE_SECRETS, env, secrets)
