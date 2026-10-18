@@ -185,7 +185,7 @@ def create_app(
             app.state.db = db
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
-            mcp.bind(Services(db, clock, mirror))
+            mcp.bind(Services(db, clock, mirror, config.profiles))
             async with AsyncExitStack() as stack:
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))

@@ -117,6 +117,8 @@ class Services:
     """Wall-clock epoch seconds: ``create_app``'s one clock (§2.9)."""
     mirror: Mirror
     """Each profile's copy of its Hardcover library (§3.3.4)."""
+    profiles: Mapping[str, ProfileConfig]
+    """The configured profiles, for resolving a read tool's ``profile`` argument (§2.8)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)

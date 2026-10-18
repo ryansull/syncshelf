@@ -14,7 +14,7 @@ import json
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
@@ -23,7 +23,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from syncshelf.sync.mirror import Freshness, NoMirror
-from syncshelf.tools import REGISTRY, current_profile, services
+from syncshelf.tools import HOUSEHOLD, ME, REGISTRY, current_profile, resolve_profiles, services
 
 __all__ = ["FORMATS", "SORTS", "STATUSES", "LibraryPage", "LibraryRow", "get_my_library"]
 
@@ -73,6 +73,8 @@ class LibraryRow(TypedDict):
     read_count: int
     series: Series | None
     genres: list[str]
+    profile: NotRequired[str]
+    """Whose shelf the row is from, on ``household`` answers."""
 
 
 class LibraryPage(TypedDict):
@@ -145,8 +147,9 @@ async def get_my_library(
     sort: Sort = "date_added",
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
     cursor: str | None = None,
+    profile: str = ME,
 ) -> LibraryPage:
-    """List books on the caller's Hardcover shelves, filtered and sorted.
+    """List books on Hardcover shelves, the caller's by default, filtered and sorted.
 
     Use this for questions about the user's own library: what they're currently reading,
     what's on their want-to-read (by author, in a genre), what they read in a period, what
@@ -170,6 +173,12 @@ async def get_my_library(
       "Highest rated last year" is finished_from/finished_to for that year with sort=rating.
     - limit: rows per page, 1 to 100 (default 25).
     - cursor: the next_cursor from the previous page, with the same filters and sort.
+    - profile: "me" (the default), another profile's name, or "household" for the caller's
+      shelves and those of every profile that shares its books. Use it for "what have we both
+      read?" or "what did my partner think of X?". On household answers each row has a
+      profile field saying whose shelf it's from, and a book both have is two rows. A profile
+      that hasn't opted in to sharing is refused. Status, rating, dates and formats are
+      shared; reviews never are.
 
     Each row has book_id, title, author (the first author), status, rating (0.5–5 in half
     stars, or null), formats (of its reads: audio, ebook, print, or unknown when Hardcover
@@ -184,7 +193,7 @@ async def get_my_library(
     when it was taken, and stale is true (with stale_reason) when Hardcover couldn't be reached
     and an older copy was used. An edit just made in Hardcover itself may not show yet.
     """
-    profile = current_profile()
+    caller = current_profile()
     if finished_from and finished_to and finished_from > finished_to:
         raise ToolError("finished_from is after finished_to; give the earlier date first.")
     wanted = _Filters(
@@ -197,14 +206,25 @@ async def get_my_library(
         min_rating=min_rating,
         finished_from=finished_from.isoformat() if finished_from else None,
         finished_to=finished_to.isoformat() if finished_to else None,
+        profile=profile,
     )
     after = _after(cursor, sort, wanted.digest())
     bound = services()
-    try:
-        freshness = await bound.mirror.fresh(profile)
-    except NoMirror as exc:
-        raise ToolError(str(exc)) from None
-    books = await bound.db.read(_library, profile)
+    # Refused here, before any refresh, when a named profile hasn't opted in (§3.3.4).
+    names = resolve_profiles(profile, caller, bound.profiles)
+    freshness: dict[str, Freshness] = {}
+    books: list[_Book] = []
+    for name in names:
+        try:
+            # Each profile's copy refreshes with that profile's own token.
+            freshness[name] = await bound.mirror.fresh(name)
+        except NoMirror as exc:
+            whose = "" if name == caller else f"For {name}: "
+            raise ToolError(whose + str(exc)) from None
+        shelf = await bound.db.read(_library, name)
+        if profile == HOUSEHOLD:
+            shelf = [replace(b, row=_tagged(b.row, name)) for b in shelf]
+        books += shelf
     books = [b for b in books if wanted.match(b)]
     key, descending = SORTS[sort]
     books.sort(key=key, reverse=descending)
@@ -237,6 +257,8 @@ class _Filters:
     status: str | None
     query: str | None
     author: str | None
+    profile: str
+    """Not a filter on rows: carried so a cursor can't be reused for another profile."""
     genre: str | None
     series: str | None
     format: str | None
@@ -391,11 +413,23 @@ def _after(cursor: str | None, sort: str, digest: str) -> _Key | None:
         ) from None
 
 
-def _freshness(freshness: Freshness) -> dict[str, Any]:
+def _tagged(row: LibraryRow, profile: str) -> LibraryRow:
+    tagged = LibraryRow(**row)
+    tagged["profile"] = profile
+    return tagged
+
+
+def _freshness(by_profile: dict[str, Freshness]) -> dict[str, Any]:
+    """``as_of`` and ``stale`` for an answer drawn from one or more copies: the oldest copy's
+    ``as_of``, and stale when any copy is, with each stale profile's reason."""
+    oldest = min(f.as_of for f in by_profile.values())
     out: dict[str, Any] = {
-        "as_of": datetime.fromtimestamp(freshness.as_of, UTC).isoformat(),
-        "stale": freshness.stale,
+        "as_of": datetime.fromtimestamp(oldest, UTC).isoformat(),
+        "stale": any(f.stale for f in by_profile.values()),
     }
-    if freshness.stale_reason is not None:
-        out["stale_reason"] = freshness.stale_reason
+    reasons = {name: f.stale_reason for name, f in by_profile.items() if f.stale_reason}
+    if len(by_profile) == 1 and reasons:
+        out["stale_reason"] = next(iter(reasons.values()))
+    elif reasons:
+        out["stale_reason"] = "; ".join(f"{name}: {why}" for name, why in reasons.items())
     return out

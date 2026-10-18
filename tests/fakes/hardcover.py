@@ -46,6 +46,8 @@ class FakeHardcover:
         self.lists: dict[int, list[dict[str, Any]]] = {}
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
+        self.callers: list[int] = []
+        """The user id whose token sent each request, in the same order."""
         self.daily_remaining = 5000
         self._faults: dict[str, list[_Fault]] = {}
         self._ids = count(1)
@@ -117,6 +119,7 @@ class FakeHardcover:
         match = _OPERATION.search(query)
         operation = match.group(1) if match else ""
         self.requests.append((operation, variables))
+        self.callers.append(user_id)
 
         faults = self._faults.get(operation)
         if faults:
