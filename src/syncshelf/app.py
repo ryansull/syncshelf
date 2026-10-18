@@ -48,7 +48,9 @@ GOODREADS_DIR = "goodreads"
 LOOPBACK_HOSTS = ("localhost:*", "127.0.0.1:*")
 """Always allowed on the MCP mount, for local clients and the container health check."""
 
-log = logging.getLogger(__name__)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+log =logging.getLogger(__name__)
 
 
 class StartupError(Exception):
@@ -59,11 +61,16 @@ def allowed_hosts(server: ServerConfig) -> list[str]:
     """The MCP mount's Host allowlist: the public host, then loopback on any port (§2.2).
 
     The public host is written as a Host header carries it: with its port only when
-    ``public_url`` gives one. Without it in the list, every request through the public name
-    gets 421.
+    ``public_url`` gives one other than the scheme's default. Clients leave a default port
+    out of the header, so ``http://localhost:80`` is listed as ``localhost``. Without the right
+    entry, every request through the public name gets 421.
     """
     parts = urlsplit(server.public_url)
-    public = server.public_host if parts.port is None else f"{server.public_host}:{parts.port}"
+    port = parts.port
+    if port is None or port == _DEFAULT_PORTS.get(parts.scheme):
+        public = server.public_host
+    else:
+        public = f"{server.public_host}:{port}"
     return [public, *LOOPBACK_HOSTS]
 
 

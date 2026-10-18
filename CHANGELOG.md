@@ -36,7 +36,8 @@ All notable changes to SyncShelf are recorded here. The format follows
   opens and migrates `/data/syncshelf.db`, and logs the version, the SQLite version and the
   auth mode.
 - An MCP endpoint at `/mcp` with no tools yet: stateless Streamable HTTP that answers 421 to
-  any Host other than the public host or loopback. `/register` is 404.
+  any Host other than the public host or loopback. A default port written in
+  `server.public_url` (`:80` for http, `:443` for https) is ignored, as clients omit it. `/register` is 404.
 - `GET /healthz`: 200 `{"status":"ok","version":…}` while the database answers, 503 otherwise.
 - A container image (`Dockerfile`): `python:3.14-slim`, running as `10001:10001`, with a
   `/data` volume, config read from `/config/profiles.yaml`, and a `HEALTHCHECK` on
