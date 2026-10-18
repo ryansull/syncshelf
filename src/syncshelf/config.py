@@ -56,10 +56,10 @@ PERMISSIONS = ("chaptarr",)
 """The values ``profiles.<name>.permissions`` may list (§2.8): ``chaptarr`` is the only one."""
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
-"""The only ``server.public_url`` hosts dev mode accepts (§3.2.5), and, until OAuth mode is
-complete (#69), the only ones any mode accepts (§3.1, Appendix D4). This guards the configured
-name only: with ``server.listen``'s default ``0.0.0.0`` bind, anything that can reach the port
-reaches it."""
+"""The only ``server.public_url`` hosts dev mode accepts (§3.2.5), and the only ones accepted
+with ``server.auth_mode`` absent (§3.1, Appendix D4, #73). Only ``oauth`` mode serves a public
+name (#69). This guards the configured name only: with ``server.listen``'s default ``0.0.0.0``
+bind, anything that can reach the port reaches it."""
 
 SERVICE_ALIASES: Mapping[str, str] = {
     "hardcover_url": "hardcover",
@@ -451,13 +451,14 @@ def _server(raw: Mapping[str, Any]) -> ServerConfig:
     parts = _url(public_url, "server.public_url", ("http", "https"))
     if parts.query or parts.fragment or public_url.endswith("/"):
         raise ConfigError("server.public_url: must have no trailing slash, query or fragment")
-    if parts.hostname not in LOCAL_HOSTS:
+    if parts.hostname not in LOCAL_HOSTS and auth_mode != "oauth":
         if auth_mode == "dev":
             # Dev mode's one static token would let anyone who reached a public name in.
             raise ConfigError("server.public_url: dev mode serves only localhost or 127.0.0.1")
-        # Lifted for oauth mode once it is complete (#69).
+        # With the mode absent no token is accepted (#73), so a public name would serve
+        # nothing; the Phase 1 guard stays until #73 decides what an absent mode means.
         raise ConfigError(
-            "server.public_url: OAuth sign-in isn't complete yet, so the host must be "
+            "server.public_url: only server.auth_mode oauth serves a host other than "
             "localhost or 127.0.0.1"
         )
 
