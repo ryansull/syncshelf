@@ -1,5 +1,5 @@
 # The config CI's image job mounts at /config/profiles.yaml (.github/workflows/ci.yml). It's the
-# smallest config the service starts with: a loopback public_url, since OAuth isn't complete,
+# smallest config the service starts with: a loopback public_url, since there's no auth_mode,
 # proxy headers trusted only from loopback, since nothing proxies the test container, and one
 # profile, since the profiles section is required from phase 2, with the Hardcover keys phase 3
 # requires. It isn't named profiles.yaml
