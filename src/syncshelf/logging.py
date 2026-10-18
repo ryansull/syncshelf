@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 __all__ = [
+    "AccessQueryFilter",
     "CONTEXT_FIELDS",
     "PROPAGATING_LOGGERS",
     "QUIET_LOGGERS",
@@ -70,6 +71,8 @@ _RECORD_ATTRS = frozenset(
     logging.LogRecord("", 0, "", 0, "", None, None).__dict__.keys() | {"message", "asctime"}
 )
 _STABLE = ("ts", "level", "logger", "event", "msg")
+# uvicorn adds a copy of some messages with terminal colour codes; ``msg`` already has the text.
+_DROPPED_EXTRAS = frozenset({"color_message"})
 
 
 class Redactor:
@@ -220,6 +223,24 @@ class ScrubFilter(logging.Filter):
         return True
 
 
+class AccessQueryFilter(logging.Filter):
+    """Drops the query string from uvicorn's access lines (§2.7), since it can carry a token.
+
+    uvicorn logs ``'%s - "%s %s HTTP/%s" %d'`` with the path and query as the third argument,
+    so only that argument is cut at ``?``. Any other record passes unchanged. It sits on the
+    ``uvicorn.access`` logger, which is where uvicorn logs those lines.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            record.args = (args[0], args[1], args[2].split("?", 1)[0], args[3], args[4])
+        return True
+
+
+ACCESS_LOGGER = "uvicorn.access"
+
+
 def _event_name(logger_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", logger_name.lower()).strip("_") or "log"
 
@@ -241,7 +262,7 @@ class JsonFormatter(logging.Formatter):
             "msg": record.getMessage(),
         }
         for key in sorted(record.__dict__.keys() - _RECORD_ATTRS):
-            if key not in _STABLE:
+            if key not in _STABLE and key not in _DROPPED_EXTRAS:
                 line[key] = record.__dict__[key]
         if record.exc_text:
             line["exc"] = record.exc_text
@@ -257,7 +278,8 @@ def configure(
     secrets: Iterable[str] = (),
     host_aliases: Mapping[str, str] | None = None,
 ) -> None:
-    """Send all logging to stdout as scrubbed JSON lines at ``level`` (``server.log_level``).
+    """Send all logging to stdout as scrubbed JSON lines at ``level`` (``server.log_level``),
+    with query strings dropped from uvicorn's access lines.
 
     Replaces root's handlers (``MCPServer`` adds a stderr one via ``basicConfig``), so call it
     after building the MCP server and pass ``log_config=None`` to uvicorn so it leaves logging
@@ -283,3 +305,8 @@ def configure(
         logger.setLevel(logging.NOTSET)
     for logger_name in QUIET_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+    access = logging.getLogger(ACCESS_LOGGER)
+    for old in [f for f in access.filters if isinstance(f, AccessQueryFilter)]:
+        access.removeFilter(old)
+    access.addFilter(AccessQueryFilter())
