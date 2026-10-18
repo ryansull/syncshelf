@@ -75,7 +75,9 @@ profiles:
   # again. Renaming a profile is not supported this way: it reads as a removal plus an addition.
   alice:
     email: alice@example.com
-    # timezone: Etc/UTC
+    # IANA zone the profile's dates are read in ("last 30 days", "yesterday"); default: the
+    # container's.
+    timezone: Etc/UTC
     permissions: [chaptarr]                 # the only permission; [] grants none
     household_visible: false                # true opts in to appearing in bob's answers
     # Hardcover -> Settings -> API. Give the token without the "Bearer " Hardcover shows in

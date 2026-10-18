@@ -18,9 +18,11 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -194,6 +196,16 @@ class ProfileConfig:
     """Whether this profile appears in the other profile's answers. Opt in (§2.8)."""
     hardcover_token: str = field(default="", repr=False)
     """The profile's Hardcover PAT, without ``Bearer ``. Required from phase 3."""
+    timezone: str | None = None
+    """An IANA zone name (``Europe/London``), or ``None`` for the container's own zone. Dates
+    the user says ("last 30 days", "yesterday") are read in it."""
+
+    def tzinfo(self) -> tzinfo:
+        """The profile's time zone: :attr:`timezone`, else the container's."""
+        if self.timezone is not None:
+            return ZoneInfo(self.timezone)
+        local = datetime.now().astimezone().tzinfo
+        return local if local is not None else UTC
 
 
 @dataclass(frozen=True)
@@ -628,6 +640,7 @@ def _profiles(
         profiles[name] = ProfileConfig(
             name=name,
             hardcover_token=_hardcover_token(secrets.get(f"{prefix}.hardcover_token"), prefix),
+            timezone=_timezone(body.get("timezone"), f"{prefix}.timezone"),
             email=email,
             permissions=_permissions(body.get("permissions"), f"{prefix}.permissions"),
             household_visible=_household_visible(
@@ -645,6 +658,18 @@ def _hardcover_token(token: str | None, prefix: str) -> str:
     if token[:7].lower() == "bearer ":
         raise ConfigError(f"{key}: give the token without the leading 'Bearer '")
     return token
+
+
+def _timezone(value: Any, key: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        ZoneInfo(value)
+    except ValueError, ZoneInfoNotFoundError:
+        raise ConfigError(f"{key}: must be an IANA time zone name, such as Europe/London") from None
+    return value
 
 
 def _permissions(value: Any, key: str) -> frozenset[str]:

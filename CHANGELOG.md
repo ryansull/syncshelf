@@ -26,7 +26,14 @@ All notable changes to SyncShelf are recorded here. The format follows
   author, genre, series, format, minimum rating and finish dates, sorted by date added, last
   finished, rating, title or author, with totals and per-shelf counts. `profile` reads another
   profile's shelves, or `household` everyone's who opted in with `household_visible`, each copy
-  refreshed with that profile's own token; reviews are never shared. It reads the copy, refreshed when
+  refreshed with that profile's own token; reviews are never shared.
+- MCP tool `reading_stats(period, group_by?, profile?)`: books, pages and hours read in a year,
+  month, date range, the last 30 days or 12 months, or all time, optionally grouped by month,
+  format, genre, author or rating, with Hardcover goal progress. It says how many reads it
+  can't place in any period (undated, or shelved as read with no read logged).
+- New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
+  zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
+  names resolve on any system. It reads the copy, refreshed when
   older than `cadence.mirror_ttl`; when Hardcover can't be reached it answers from the older
   copy flagged `stale`, and refuses only when there is no copy yet. Each refresh logs
   `mirror_refreshed`, and a failed one `mirror_refresh_failed`.

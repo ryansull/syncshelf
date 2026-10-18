@@ -31,6 +31,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
 from mcp.types import Tool as MCPTool
 
+from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
 from syncshelf.sync.limiter import interactive
@@ -119,6 +120,8 @@ class Services:
     """Each profile's copy of its Hardcover library (§3.3.4)."""
     profiles: Mapping[str, ProfileConfig]
     """The configured profiles, for resolving a read tool's ``profile`` argument (§2.8)."""
+    hardcover: Mapping[str, HardcoverClient]
+    """Each profile's Hardcover client, for the live calls a tool makes (§3.3.7)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)

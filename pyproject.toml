@@ -14,6 +14,7 @@ dependencies = [
     "pyjwt[crypto]>=2.10",
     "pyyaml>=6",
     "starlette>=1.8,<2",
+    "tzdata>=2025.2",
     "uvicorn>=0.54",
 ]
 

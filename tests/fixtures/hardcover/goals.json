@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "me": [
+        {
+          "goals": [
+            {
+              "metric": "scrubbed",
+              "goal": 0,
+              "progress": 0.0,
+              "start_date": "2000-01-01",
+              "end_date": "2000-01-01",
+              "state": "scrubbed"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

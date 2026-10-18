@@ -451,6 +451,21 @@ def test_bad_cadence_duration_names_the_key(tmp_path: Path, value: str) -> None:
     assert "cadence.abs_interval" in message
 
 
+def test_timezone_is_an_iana_zone_and_absent_means_the_containers(tmp_path: Path) -> None:
+    alice = load(tmp_path, MINIMAL).profiles["alice"]
+    assert alice.timezone is None
+    assert alice.tzinfo() is not None
+    text = MINIMAL + "profiles:\n  alice:\n    timezone: Europe/London\n"
+    alice = load(tmp_path, text).profiles["alice"]
+    assert (alice.timezone, str(alice.tzinfo())) == ("Europe/London", "Europe/London")
+
+
+@pytest.mark.parametrize("value", ["Mars/Olympus", "1", "../etc/passwd", "[UTC]"])
+def test_timezone_must_be_an_iana_zone(tmp_path: Path, value: str) -> None:
+    message = load_error(tmp_path, MINIMAL + f"profiles:\n  alice:\n    timezone: {value}\n")
+    assert message.startswith("profiles.alice.timezone: must be an IANA time zone name")
+
+
 def test_hardcover_daily_reserve_defaults_to_1000_and_is_read(tmp_path: Path) -> None:
     assert load(tmp_path, MINIMAL).cadence.hardcover_daily_reserve == 1000
     text = MINIMAL + "cadence:\n  hardcover_daily_reserve: 250\n"
