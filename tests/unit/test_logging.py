@@ -213,7 +213,7 @@ def test_uvicorn_loggers_reach_the_json_handler(capsys: pytest.CaptureFixture[st
 
     access, error = lines(capsys)
     assert access["logger"] == "uvicorn.access"
-    assert access["msg"] == '192.0.2.1:5 - "GET /healthz HTTP/1.1" 200'
+    assert access["msg"] == '"GET /healthz HTTP/1.1" 200'
     assert error["msg"] == "boom ***"
 
 
@@ -235,7 +235,19 @@ def test_the_access_log_drops_query_strings(capsys: pytest.CaptureFixture[str]) 
     logging.getLogger("uvicorn.access").handle(access_record("/healthz?token=abc&x=1"))
 
     [line] = lines(capsys)
-    assert line["msg"] == '192.0.2.1:5 - "GET /healthz HTTP/1.1" 200'
+    assert line["msg"] == '"GET /healthz HTTP/1.1" 200'
+
+
+def test_the_access_log_drops_the_client_address(capsys: pytest.CaptureFixture[str]) -> None:
+    # Traefik and Cloudflare already log callers (issue #46), so the line carries no address.
+    slog.configure()
+    record = access_record("/mcp")
+    logging.getLogger("uvicorn.access").handle(record)
+
+    [line] = lines(capsys)
+    assert line["msg"] == '"GET /mcp HTTP/1.1" 200'
+    assert "192.0.2.1" not in json.dumps(line)
+    assert "192.0.2.1" not in repr(record.__dict__)
 
 
 def test_uvicorns_colour_copy_of_the_message_is_dropped(
@@ -257,6 +269,13 @@ def test_the_query_filter_is_installed_once(capsys: pytest.CaptureFixture[str]) 
 
     filters = logging.getLogger("uvicorn.access").filters
     assert sum(isinstance(f, slog.AccessQueryFilter) for f in filters) == 1
+
+
+def test_the_filter_rewrites_the_access_record_without_the_client() -> None:
+    record = access_record("/healthz?token=abc")
+    assert slog.AccessQueryFilter().filter(record)
+    assert record.args == ("GET", "/healthz", "1.1", 200)
+    assert record.getMessage() == '"GET /healthz HTTP/1.1" 200'
 
 
 def test_the_query_filter_leaves_other_records_alone() -> None:

@@ -8,6 +8,8 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ### Changed
 
+- uvicorn's access log line no longer includes the client address (IP and port), so it reads
+  `"GET /healthz HTTP/1.1" 200`. Traefik and Cloudflare already log callers (#46).
 - Log lines and stored error strings now show the `server.public_url` host as `public` and
   the `server.access.team_domain` host as `access`, like the service hosts already are (#49).
   A service alias wins where a service shares one of those hosts. In phase 1 the public host
