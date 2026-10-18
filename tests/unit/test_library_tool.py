@@ -1,6 +1,8 @@
 """``get_my_library`` through the real ASGI app (SPEC §3.3.7, §3.3.8), in dev mode, against
 ``FakeHardcover``."""
 
+import base64
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -367,7 +369,59 @@ async def test_a_cursor_from_another_sort_is_refused(connect: Any, shelf: FakeHa
     async with connect() as mcp:
         page = await library(mcp, sort="title", limit=2)
         message = await error(mcp, sort="rating", cursor=page["next_cursor"])
-    assert "sorted by title" in message
+    assert "different sort or filters" in message
+
+
+async def test_a_cursor_from_other_filters_is_refused(connect: Any, shelf: FakeHardcover) -> None:
+    async with connect() as mcp:
+        page = await library(mcp, status="read", limit=1)
+        message = await error(mcp, status="want-to-read", cursor=page["next_cursor"])
+    assert "different sort or filters" in message
+
+
+@pytest.mark.parametrize(("sort", "value"), [("rating", "x"), ("title", 3), ("rating", True)])
+async def test_a_crafted_cursor_of_the_wrong_type_is_refused(
+    connect: Any, shelf: FakeHardcover, sort: str, value: object
+) -> None:
+    async with connect() as mcp:
+        real = await library(mcp, sort=sort, limit=1)
+        digest = json.loads(base64.urlsafe_b64decode(real["next_cursor"] + "=="))[1]
+        forged = json.dumps([sort, digest, 0, value, 5]).encode()
+        message = await error(mcp, sort=sort, cursor=base64.urlsafe_b64encode(forged).decode())
+    assert "isn't one this tool gave out" in message
+
+
+async def test_a_series_of_superscript_digits_matches_nothing(
+    connect: Any, shelf: FakeHardcover
+) -> None:
+    async with connect() as mcp:
+        assert await ids(mcp, series="²") == []
+
+
+async def test_format_and_dates_must_match_the_same_read(connect: Any, fake: FakeHardcover) -> None:
+    fake.add_user_book(42, 7, user_book_reads=[
+        {"id": 1, "finished_at": "2023-05-01", "edition_id": 1, "reading_format_id": 2},
+        {"id": 2, "finished_at": "2025-03-01", "edition_id": 2, "reading_format_id": 1},
+    ])  # fmt: skip
+    async with connect() as mcp:
+        audio_2025 = await ids(mcp, format="audio", finished_from="2025-01-01")
+        print_2025 = await ids(mcp, format="print", finished_from="2025-01-01")
+    assert (audio_2025, print_2025) == ([], [7])
+
+
+async def test_a_title_beyond_the_basic_plane_still_sorts_before_untitled(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    fake.add_user_book(42, 1, book={"title": ""})
+    fake.add_user_book(42, 2, book={"title": "📚 Reading Notes"})
+    async with connect() as mcp:
+        assert await ids(mcp, sort="title") == [2, 1]
+
+
+async def test_a_reversed_date_range_is_refused(connect: Any) -> None:
+    async with connect() as mcp:
+        message = await error(mcp, finished_from="2025-12-31", finished_to="2025-01-01")
+    assert "earlier date first" in message
 
 
 @pytest.mark.parametrize(

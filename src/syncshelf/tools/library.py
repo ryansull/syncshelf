@@ -9,11 +9,12 @@ Reads without a format are reported in an explicit ``unknown`` bucket, never gue
 """
 
 import base64
+import hashlib
 import json
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
@@ -47,8 +48,6 @@ counts as print and audio until #108 decides. Anything else, and NULL, is ``unkn
 
 UNKNOWN = "unknown"
 TOP_GENRES = 3
-_LAST = "￿"
-"""Sorts after any title or name, so a book without one comes last in an A–Z sort."""
 
 Status = Literal["want-to-read", "currently-reading", "read", "paused", "did-not-finish", "ignored"]
 Format = Literal["audio", "ebook", "print", "unknown"]
@@ -108,15 +107,26 @@ class _Book:
     reads: tuple[_Read, ...] = field(default=())
 
 
-type _Key = tuple[str | float, int]
+type _Key = tuple[int, str | float, int]
+"""``(rank, value, user_book_id)``: ``rank`` puts a book missing the value after every book
+that has one, whichever way the sort runs; ties go by Hardcover's user_book id."""
+
+
+def _high_first(value: str | float | None, empty: str | float, book: _Book) -> _Key:
+    return (0, empty, book.user_book_id) if value is None else (1, value, book.user_book_id)
+
+
+def _low_first(value: str | float | None, empty: str | float, book: _Book) -> _Key:
+    return (1, empty, book.user_book_id) if value is None else (0, value, book.user_book_id)
+
 
 SORTS: dict[str, tuple[Callable[[_Book], _Key], bool]] = {
-    # name: (key, descending). Ties go by Hardcover's user_book id; a missing value sorts last.
-    "date_added": (lambda b: (b.date_added or "", b.user_book_id), True),
-    "last_finished": (lambda b: (b.row["last_finished"] or "", b.user_book_id), True),
-    "rating": (lambda b: (r if (r := b.row["rating"]) is not None else -1.0, b.user_book_id), True),
-    "title": (lambda b: (b.row["title"].casefold() or _LAST, b.user_book_id), False),
-    "author": (lambda b: ((b.row["author"] or _LAST).casefold(), b.user_book_id), False),
+    # name: (key, descending)
+    "date_added": (lambda b: _high_first(b.date_added, "", b), True),
+    "last_finished": (lambda b: _high_first(b.row["last_finished"], "", b), True),
+    "rating": (lambda b: _high_first(b.row["rating"], 0.0, b), True),
+    "title": (lambda b: _low_first(b.row["title"].casefold() or None, "", b), False),
+    "author": (lambda b: _low_first((b.row["author"] or "").casefold() or None, "", b), False),
 }
 """Each ``sort`` value: its key, and whether it runs high to low [assembly choice]."""
 
@@ -175,13 +185,8 @@ async def get_my_library(
     and an older copy was used. An edit just made in Hardcover itself may not show yet.
     """
     profile = current_profile()
-    after = _after(cursor, sort)
-    bound = services()
-    try:
-        freshness = await bound.mirror.fresh(profile)
-    except NoMirror as exc:
-        raise ToolError(str(exc)) from None
-    books = await bound.db.read(_library, profile)
+    if finished_from and finished_to and finished_from > finished_to:
+        raise ToolError("finished_from is after finished_to; give the earlier date first.")
     wanted = _Filters(
         status=status,
         query=_fold(query),
@@ -193,6 +198,13 @@ async def get_my_library(
         finished_from=finished_from.isoformat() if finished_from else None,
         finished_to=finished_to.isoformat() if finished_to else None,
     )
+    after = _after(cursor, sort, wanted.digest())
+    bound = services()
+    try:
+        freshness = await bound.mirror.fresh(profile)
+    except NoMirror as exc:
+        raise ToolError(str(exc)) from None
+    books = await bound.db.read(_library, profile)
     books = [b for b in books if wanted.match(b)]
     key, descending = SORTS[sort]
     books.sort(key=key, reverse=descending)
@@ -208,7 +220,7 @@ async def get_my_library(
     result = LibraryPage(
         books=[b.row for b in page],
         total=len(books),
-        next_cursor=_cursor(sort, key(page[-1])) if len(rest) > limit else None,
+        next_cursor=_cursor(sort, wanted.digest(), key(page[-1])) if len(rest) > limit else None,
         **_freshness(freshness),
     )
     if len(books) > len(page):
@@ -246,28 +258,39 @@ class _Filters:
             return False
         if self.series is not None and not self._series(b):
             return False
-        if self.format is not None and not any(self.format in r.formats for r in b.reads):
-            return False
         if self.min_rating is not None and (
             row["rating"] is None or row["rating"] < self.min_rating
         ):
             return False
-        if self.finished_from is not None or self.finished_to is not None:
-            return any(self._in_range(r.finished_on) for r in b.reads)
-        return True
+        by_read = self.format is not None or self.finished_from or self.finished_to
+        # One read must match both: "audiobooks finished last year" means a listen that year.
+        return not by_read or any(self._read(r) for r in b.reads)
+
+    def digest(self) -> str:
+        """A short fingerprint of these filters, which a cursor carries so it can't be reused
+        under different ones."""
+        text = json.dumps(asdict(self), sort_keys=True)
+        return hashlib.sha256(text.encode()).hexdigest()[:12]
 
     def _series(self, b: _Book) -> bool:
         assert self.series is not None
         name = b.row["series"]["name"].casefold() if b.row["series"] else ""
-        by_id = self.series.isdigit() and b.series_id == int(self.series)
+        # isascii too: isdigit() alone accepts superscripts that int() refuses.
+        wanted_id = self.series.isascii() and self.series.isdigit()
+        by_id = wanted_id and b.series_id == int(self.series)
         return by_id or (bool(name) and self.series in name)
 
-    def _in_range(self, finished_on: str | None) -> bool:
-        if finished_on is None:
+    def _read(self, read: _Read) -> bool:
+        if self.format is not None and self.format not in read.formats:
             return False
-        if self.finished_from is not None and finished_on < self.finished_from:
+        if self.finished_from is None and self.finished_to is None:
+            return True
+        if read.finished_on is None:
             return False
-        return self.finished_to is None or finished_on <= self.finished_to
+        finished = read.finished_on[:10]  # the date, whatever Hardcover sent after it
+        if self.finished_from is not None and finished < self.finished_from:
+            return False
+        return self.finished_to is None or finished <= self.finished_to
 
 
 def _fold(text: str | None) -> str | None:
@@ -306,13 +329,16 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
     contributors: list[dict[str, Any]] = json.loads(contributors_json) if contributors_json else []
     genres: list[str] = json.loads(tags).get("genres", []) if tags else []
     finished = [r.finished_on for r in reads if r.finished_on]
+    # cached_contributors gives authors no role, and narrators, editors or translators one.
+    authors = tuple(c["name"] for c in contributors if not c.get("role"))
     return _Book(
         user_book_id,
         date_added,
         LibraryRow(
             book_id=book_id,
             title=title or "",
-            author=_first_author(contributors),
+            # Only narrators and the like credited: naming one as the author would mislead.
+            author=authors[0] if authors else None,
             status=STATUSES.get(status_id, str(status_id)),
             rating=rating,
             formats=sorted({fmt for r in reads for fmt in r.formats}),
@@ -322,44 +348,42 @@ def _book(row: tuple[Any, ...], reads: list[_Read]) -> _Book:
             genres=genres[:TOP_GENRES],
         ),
         series_id=series_id,
-        authors=tuple(c["name"] for c in contributors if not c.get("role")),
+        authors=authors,
         contributors=tuple(c["name"] for c in contributors),
         all_genres=tuple(genres),
         reads=tuple(reads),
     )
 
 
-def _first_author(contributors: list[dict[str, Any]]) -> str | None:
-    """The first contributor credited as author: ``cached_contributors`` gives authors no
-    role, and narrators, editors or translators one."""
-    for c in contributors:
-        if not c.get("role"):
-            return c["name"]
-    # Only narrators, editors and the like: naming one as the author would mislead.
-    return None
-
-
 # --- paging and freshness -----------------------------------------------------------------
 
 
-def _cursor(sort: str, key: _Key) -> str:
-    return base64.urlsafe_b64encode(json.dumps([sort, *key]).encode()).decode().rstrip("=")
+def _cursor(sort: str, digest: str, key: _Key) -> str:
+    text = json.dumps([sort, digest, *key])
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
 
 
-def _after(cursor: str | None, sort: str) -> _Key | None:
+def _after(cursor: str | None, sort: str, digest: str) -> _Key | None:
     if cursor is None:
         return None
     try:
         decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-        given_sort, value, user_book_id = decoded
-        if given_sort != sort:
+        given_sort, given_digest, rank, value, user_book_id = decoded
+        if given_sort != sort or given_digest != digest:
             raise ToolError(
-                f"That cursor is from a page sorted by {given_sort}. Pass the same sort (and "
-                "filters) as the page it came from, or leave cursor out to start again."
+                "That cursor is from a page with a different sort or filters. Pass the same "
+                "ones as the page it came from, or leave cursor out to start again."
             )
-        if not isinstance(value, str | float | int) or type(user_book_id) is not int:
+        # The value must compare with this sort's keys: a number for rating, else text.
+        numeric = sort == "rating"
+        value_ok = (
+            isinstance(value, int | float) and not isinstance(value, bool)
+            if numeric
+            else isinstance(value, str)
+        )
+        if rank not in (0, 1) or not value_ok or type(user_book_id) is not int:
             raise ValueError
-        return (value, user_book_id)
+        return (rank, value, user_book_id)
     except ValueError, TypeError:  # binascii.Error and JSON/Unicode errors are ValueErrors
         raise ToolError(
             "That cursor isn't one this tool gave out. Pass next_cursor from the previous "
