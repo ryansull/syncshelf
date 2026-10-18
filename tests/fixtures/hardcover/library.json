@@ -1,0 +1,1610 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-18",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "user_books": [
+        {
+          "id": 0,
+          "book_id": 747398,
+          "edition_id": 31721712,
+          "status_id": 0,
+          "rating": null,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [],
+          "edition": {
+            "id": 31721712,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": "9781649375858",
+            "isbn_10": "1649375859",
+            "asin": "B0C4JMJBNX"
+          },
+          "book": {
+            "id": 747398,
+            "title": "Iron Flame",
+            "subtitle": "Empyrean, Book 2",
+            "release_year": 0,
+            "pages": 0,
+            "canonical_id": null,
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 252677,
+                  "slug": "scrubbed",
+                  "name": "Rebecca Yarros",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ],
+            "cached_featured_series": {
+              "id": 0,
+              "series": {
+                "id": 0,
+                "name": "The Empyrean",
+                "slug": "scrubbed",
+                "books_count": 0,
+                "primary_books_count": 0
+              },
+              "details": "scrubbed",
+              "featured": false,
+              "position": 0.0,
+              "collection": false,
+              "unreleased": false
+            },
+            "genres": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "moods": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "tags": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "default_audio_edition": {
+              "id": 0,
+              "audio_seconds": 0
+            },
+            "default_ebook_edition": {
+              "id": 0
+            },
+            "default_physical_edition": {
+              "id": 0,
+              "pages": 0
+            }
+          }
+        },
+        {
+          "id": 0,
+          "book_id": 292354,
+          "edition_id": 21716111,
+          "status_id": 0,
+          "rating": 0.0,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [],
+          "edition": {
+            "id": 21716111,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": "9780804139021",
+            "isbn_10": "0804139024",
+            "asin": null
+          },
+          "book": {
+            "id": 292354,
+            "title": "The Martian",
+            "subtitle": "Stranded on Mars, one astronaut fights to survive",
+            "release_year": 0,
+            "pages": 0,
+            "canonical_id": null,
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 123645,
+                  "slug": "scrubbed",
+                  "name": "Andy Weir",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ],
+            "cached_featured_series": {},
+            "genres": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "moods": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "tags": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "default_audio_edition": {
+              "id": 0,
+              "audio_seconds": 0
+            },
+            "default_ebook_edition": {
+              "id": 0
+            },
+            "default_physical_edition": {
+              "id": 0,
+              "pages": 0
+            }
+          }
+        },
+        {
+          "id": 0,
+          "book_id": 427578,
+          "edition_id": 30405492,
+          "status_id": 0,
+          "rating": null,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [],
+          "edition": {
+            "id": 30405492,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": "9780593135211",
+            "isbn_10": "0593135210",
+            "asin": "B08FHBV4ZX"
+          },
+          "book": {
+            "id": 427578,
+            "title": "Project Hail Mary",
+            "subtitle": "A Novel",
+            "release_year": 0,
+            "pages": 0,
+            "canonical_id": null,
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 123645,
+                  "slug": "scrubbed",
+                  "name": "Andy Weir",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ],
+            "cached_featured_series": {},
+            "genres": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "moods": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "tags": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "default_audio_edition": {
+              "id": 0,
+              "audio_seconds": 0
+            },
+            "default_ebook_edition": {
+              "id": 0
+            },
+            "default_physical_edition": {
+              "id": 0,
+              "pages": 0
+            }
+          }
+        },
+        {
+          "id": 0,
+          "book_id": 818989,
+          "edition_id": 32034758,
+          "status_id": 0,
+          "rating": null,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [],
+          "edition": {
+            "id": 32034758,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B0C1R52V2J"
+          },
+          "book": {
+            "id": 818989,
+            "title": "The Eye of the Bedlam Bride",
+            "subtitle": "Dungeon Crawler Carl, Book 6",
+            "release_year": 0,
+            "pages": 0,
+            "canonical_id": null,
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 241306,
+                  "slug": "scrubbed",
+                  "name": "Matt Dinniman",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ],
+            "cached_featured_series": {
+              "id": 0,
+              "series": {
+                "id": 0,
+                "name": "Dungeon Crawler Carl",
+                "slug": "scrubbed",
+                "books_count": 0,
+                "primary_books_count": 0
+              },
+              "details": "scrubbed",
+              "featured": false,
+              "position": 0.0,
+              "collection": false,
+              "unreleased": false
+            },
+            "genres": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "moods": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "tags": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "default_audio_edition": {
+              "id": 0,
+              "audio_seconds": 0
+            },
+            "default_ebook_edition": {
+              "id": 0
+            },
+            "default_physical_edition": {
+              "id": 0,
+              "pages": 0
+            }
+          }
+        },
+        {
+          "id": 0,
+          "book_id": 1464466,
+          "edition_id": 31606264,
+          "status_id": 0,
+          "rating": 0.0,
+          "has_review": false,
+          "review_raw": "",
+          "review_has_spoilers": false,
+          "date_added": "2000-01-01",
+          "first_started_reading_date": null,
+          "privacy_setting_id": 0,
+          "updated_at": "2000-01-01T00:00:00Z",
+          "user_book_reads": [
+            {
+              "id": 0,
+              "started_at": null,
+              "finished_at": null,
+              "paused_at": null,
+              "edition_id": 31606264,
+              "progress_pages": 0,
+              "progress_seconds": null,
+              "edition": {
+                "reading_format_id": 0
+              }
+            }
+          ],
+          "edition": {
+            "id": 31606264,
+            "reading_format_id": 0,
+            "pages": 0,
+            "audio_seconds": null,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B0DJWKWV8W"
+          },
+          "book": {
+            "id": 1464466,
+            "title": "This Inevitable Ruin",
+            "subtitle": "Dungeon Crawler Carl, Book 7",
+            "release_year": 0,
+            "pages": 0,
+            "canonical_id": null,
+            "cached_contributors": [
+              {
+                "author": {
+                  "id": 241306,
+                  "slug": "scrubbed",
+                  "name": "Matt Dinniman",
+                  "image": {
+                    "id": 0,
+                    "url": "https://example.com/",
+                    "color": "scrubbed",
+                    "width": 0,
+                    "height": 0,
+                    "color_name": "scrubbed"
+                  }
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              },
+              {
+                "author": {
+                  "id": 1164835,
+                  "slug": "scrubbed",
+                  "name": "Erik Wilson",
+                  "image": {}
+                },
+                "contribution": "scrubbed",
+                "contributor_role_id": 0,
+                "contributor_specialization_id": null,
+                "contributor_role_name": "scrubbed",
+                "contributor_specialization_name": null,
+                "contributor_role_blurb": "scrubbed",
+                "contributor_specialization_blurb": null,
+                "primary": false
+              }
+            ],
+            "cached_featured_series": {
+              "id": 0,
+              "series": {
+                "id": 0,
+                "name": "Dungeon Crawler Carl",
+                "slug": "scrubbed",
+                "books_count": 0,
+                "primary_books_count": 0
+              },
+              "details": "scrubbed",
+              "featured": false,
+              "position": 0.0,
+              "collection": false,
+              "unreleased": false
+            },
+            "genres": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "moods": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "tags": [
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              },
+              {
+                "tag": "scrubbed",
+                "count": 0,
+                "tagSlug": "scrubbed",
+                "category": "scrubbed",
+                "categorySlug": "scrubbed",
+                "spoilerRatio": 0.0
+              }
+            ],
+            "default_audio_edition": {
+              "id": 0,
+              "audio_seconds": 0
+            },
+            "default_ebook_edition": {
+              "id": 0
+            },
+            "default_physical_edition": {
+              "id": 0,
+              "pages": 0
+            }
+          }
+        }
+      ],
+      "lists": [
+        {
+          "id": 0,
+          "name": "scrubbed",
+          "list_books": []
+        }
+      ]
+    }
+  }
+}

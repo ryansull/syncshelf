@@ -22,11 +22,15 @@ pytestmark = pytest.mark.usefixtures("restore_logging")
 
 def write_config(tmp_path: Path, public_url: str = "http://localhost:8000") -> Path:
     path = tmp_path / "profiles.yaml"
+    token = (tmp_path / "hardcover_token").as_posix()
+    (tmp_path / "hardcover_token").write_text("fake-hardcover-token", encoding="utf-8")
     path.write_text(
         # profiles first, so that tests can append server keys to the file.
         dedent(f"""\
             profiles:
-              alice: {{}}
+              alice: {{hardcover_token_file: {token}}}
+            services:
+              hardcover_url: https://api.hardcover.app/v1/graphql
             server:
               public_url: {public_url}
               forwarded_allow_ips: 192.0.2.0/24,127.0.0.1
