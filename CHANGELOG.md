@@ -6,10 +6,6 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-18
-
-Phase 2: Front door and profiles.
-
 ### Added
 
 - New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
@@ -41,6 +37,13 @@ Phase 2: Front door and profiles.
 - New config key `profiles.<name>.timezone` (an IANA zone name, default the container's): the
   zone relative dates such as "last 30 days" are read in. New dependency `tzdata`, so zone
   names resolve on any system.
+
+## [0.2.0] - 2026-10-18
+
+Phase 2: Front door and profiles.
+
+### Added
+
 - New config key `server.listen` (`host:port`, an IPv6 address in brackets), default
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.
