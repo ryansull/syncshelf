@@ -1,5 +1,6 @@
 """Config loading, secret references and validation (SPEC §2.3, §3.1)."""
 
+import re
 from pathlib import Path
 from textwrap import dedent
 
@@ -12,6 +13,7 @@ from syncshelf.config import (
     DEFAULT_DATA_DIR,
     Config,
     ConfigError,
+    ProfileConfig,
     config_path,
     data_dir,
     load_config,
@@ -30,8 +32,15 @@ SECRET = "s3cr3t-value-never-shown"
 
 
 def write(tmp_path: Path, text: str) -> Path:
+    """Write ``text`` as the config, adding a one-profile ``profiles`` section (required) when
+    the text has a server section but no profiles, so tests of other sections stay short."""
+    text = dedent(text)
+    if re.search(r"^server:", text, re.MULTILINE) and not re.search(
+        r"^profiles:", text, re.MULTILINE
+    ):
+        text += "profiles:\n  alice: {}\n"
     path = tmp_path / "profiles.yaml"
-    path.write_text(dedent(text), encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -115,7 +124,7 @@ def test_minimal_file_loads_with_defaults(tmp_path: Path) -> None:
     assert config.server.log_level == "INFO"
     assert config.server.auth_mode is None
     assert (config.server.listen_host, config.server.listen_port) == ("0.0.0.0", 8000)
-    assert config.profiles == {}
+    assert config.profiles == {"alice": ProfileConfig(name="alice")}
     assert config.cadence.rss_interval == 60 * 60
     assert config.cadence.abs_interval == 15 * 60
     assert config.cadence.chaptarr_pending_interval == 2 * 60
@@ -147,6 +156,20 @@ profiles:
 def test_phase_1_server_keys_are_required(tmp_path: Path, key: str) -> None:
     text = MINIMAL.replace(f"  {key}:", "  unused:")
     assert f"server.{key}" in load_error(tmp_path, text)
+
+
+@pytest.mark.parametrize("text", ["", "profiles:\n"])
+def test_profiles_section_is_required(text: str, tmp_path: Path) -> None:
+    path = tmp_path / "profiles.yaml"
+    path.write_text(dedent(MINIMAL) + text, encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"^profiles: required$"):
+        load_config(path, environ={})
+
+
+def test_blank_permissions_and_household_visible_mean_absent(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    permissions:\n    household_visible:\n"
+    alice = load(tmp_path, text).profiles["alice"]
+    assert (alice.permissions, alice.household_visible) == (frozenset(), False)
 
 
 def test_server_section_is_required(tmp_path: Path) -> None:
@@ -327,6 +350,43 @@ def test_profile_email_must_be_a_string(tmp_path: Path) -> None:
 
 def test_profile_must_be_a_mapping(tmp_path: Path) -> None:
     assert "profiles.alice" in load_error(tmp_path, MINIMAL + "profiles:\n  alice: 3\n")
+
+
+def test_profile_permissions_and_household_visible_are_read(tmp_path: Path) -> None:
+    config = load(
+        tmp_path,
+        MINIMAL + "profiles:\n  alice:\n    permissions: [chaptarr]\n    household_visible: true\n",
+    )
+    assert config.profiles["alice"].permissions == frozenset({"chaptarr"})
+    assert config.profiles["alice"].household_visible is True
+
+
+def test_absent_permissions_grant_nothing_and_household_visible_is_opt_in(
+    tmp_path: Path,
+) -> None:
+    alice = load(tmp_path, MINIMAL + "profiles:\n  alice: {}\n").profiles["alice"]
+    assert alice.permissions == frozenset()
+    assert alice.household_visible is False
+
+
+def test_an_empty_permissions_list_grants_nothing(tmp_path: Path) -> None:
+    config = load(tmp_path, MINIMAL + "profiles:\n  alice:\n    permissions: []\n")
+    assert config.profiles["alice"].permissions == frozenset()
+
+
+@pytest.mark.parametrize("value", ["chaptarr", "[admin]", "[chaptarr, 3]", "{chaptarr: true}"])
+def test_permissions_outside_the_known_list_are_rejected(tmp_path: Path, value: str) -> None:
+    message = load_error(tmp_path, MINIMAL + f"profiles:\n  alice:\n    permissions: {value}\n")
+    assert "profiles.alice.permissions" in message
+    assert "chaptarr" in message
+
+
+@pytest.mark.parametrize("value", ["yes please", "1", '"true"', "[true]"])
+def test_household_visible_must_be_a_boolean(tmp_path: Path, value: str) -> None:
+    message = load_error(
+        tmp_path, MINIMAL + f"profiles:\n  alice:\n    household_visible: {value}\n"
+    )
+    assert "profiles.alice.household_visible" in message
 
 
 # --- secret references ------------------------------------------------------------------
@@ -540,6 +600,14 @@ def test_committed_example_sets_every_key_phase_1_validates() -> None:
     assert "\n  listen: " in raw, "server.listen is shown"
     for key in ("rss_interval", "abs_interval", "chaptarr_pending_interval", "mirror_ttl"):
         assert f"\n  {key}: " in raw, f"cadence.{key} is shown"
+
+
+def test_committed_example_sets_the_profile_keys_phase_2_validates() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ={})
+    for profile in config.profiles.values():
+        assert profile.permissions == frozenset({"chaptarr"})
+    raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert raw.count("\n    household_visible: ") == len(config.profiles)
 
 
 def test_real_profiles_yaml_is_git_ignored() -> None:

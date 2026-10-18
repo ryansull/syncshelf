@@ -4,7 +4,7 @@ allowlist, and ``/healthz``. Everything goes through the real ASGI app."""
 import logging
 import sqlite3
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from textwrap import dedent
 
@@ -18,6 +18,8 @@ from starlette.routing import Mount, Route
 from syncshelf import __version__
 from syncshelf.app import StartupError, allowed_hosts, create_app
 from syncshelf.config import Config, load_config
+
+from clock import FakeClock
 
 pytestmark = pytest.mark.anyio
 
@@ -36,7 +38,11 @@ INIT = {
 MCP_HEADERS = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 
 
-def make_config(tmp_path: Path, public_url: str = "http://localhost:8000") -> Config:
+def make_config(
+    tmp_path: Path,
+    public_url: str = "http://localhost:8000",
+    profiles: tuple[str, ...] = ("alice",),
+) -> Config:
     path = tmp_path / "profiles.yaml"
     path.write_text(
         dedent(f"""\
@@ -45,7 +51,9 @@ def make_config(tmp_path: Path, public_url: str = "http://localhost:8000") -> Co
               auth_mode: dev
               forwarded_allow_ips: 127.0.0.1
               consent_hmac_key: ${{CONSENT}}
-            """),
+            """)
+        + "profiles:\n"
+        + "".join(f"  {name}: {{}}\n" for name in profiles),
         encoding="utf-8",
     )
     return load_config(path, environ={"CONSENT": SECRET})
@@ -167,6 +175,37 @@ class TestLifespan:
         assert startup.__dict__["auth_mode"] == "dev"
         everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
         assert SECRET not in everything
+
+    async def test_startup_syncs_the_profiles_table_with_the_config(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+
+        def rows() -> dict[str, bool]:
+            with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+                query = "SELECT name, removed_at IS NOT NULL FROM profiles"
+                return {name: bool(removed) for name, removed in conn.execute(query)}
+
+        async def start(*profiles: str) -> None:
+            config = make_config(tmp_path, profiles=profiles)
+            async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+                pass
+
+        await start("alice", "bob")
+        assert rows() == {"alice": False, "bob": False}
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            created = {t for (t,) in conn.execute("SELECT created_at FROM profiles")}
+        assert created == {int(clock.time())}
+        clock.advance(60)
+
+        caplog.clear()
+        await start("bob")
+        assert rows() == {"alice": True, "bob": False}
+        [synced] = [r for r in caplog.records if getattr(r, "event", None) == "profiles_synced"]
+        assert synced.__dict__["removed"] == ["alice"]
+
+        await start("alice", "bob")
+        assert rows() == {"alice": False, "bob": False}
 
     async def test_shutdown_closes_the_database(self, tmp_path: Path, data_dir: Path) -> None:
         app = create_app(make_config(tmp_path), data_dir=data_dir)

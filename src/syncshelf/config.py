@@ -7,7 +7,7 @@ SyncShelf's own environment, or ``k_file: <path>``, read from that file.
 Every failure raises :class:`ConfigError` with a message that names the key at fault. No
 message ever contains a secret value, so startup errors are safe to paste anywhere.
 
-Validation covers what phase 1 reads (§2.3: "a key becomes required when the phase that
+Validation covers what phases 1 and 2 read (§2.3: "a key becomes required when the phase that
 reads it ships"). Keys and sections for later phases may be present or absent, and are
 ignored here apart from secret expansion, which covers every secret key the spec names so
 that the log scrubber (§2.7) knows every configured secret from the first phase.
@@ -49,6 +49,9 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 AUTH_MODES = ("oauth", "dev")
 """The values of ``server.auth_mode``."""
+
+PERMISSIONS = ("chaptarr",)
+"""The values ``profiles.<name>.permissions`` may list (§2.8): ``chaptarr`` is the only one."""
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
 """The only ``server.public_url`` hosts phase 1 accepts. It has no auth, so it must never be
@@ -147,6 +150,11 @@ class ProfileConfig:
     name: str
     email: str | None = None
     """Lowercased. Unique across profiles."""
+    permissions: frozenset[str] = frozenset()
+    """The :data:`PERMISSIONS` this profile holds. Absent in the file means none, the least
+    privilege, until #71 decides whether the key is required instead."""
+    household_visible: bool = False
+    """Whether this profile appears in the other profile's answers. Opt in (§2.8)."""
 
 
 @dataclass(frozen=True)
@@ -218,7 +226,9 @@ def load_config(
 
     server_raw = _section(raw, "server", required=True)
     services_raw = _section(raw, "services")
-    profiles_raw = _section(raw, "profiles")
+    # Required from phase 2: the profiles table follows this section, so a file that lost it
+    # by accident would otherwise revoke every connection at the next start.
+    profiles_raw = _section(raw, "profiles", required=True)
 
     secrets: dict[str, str] = {}
     _expand_secrets(server_raw, "server", _SERVER_SECRETS, env, secrets)
@@ -517,5 +527,30 @@ def _profiles(
                     f"{prefix}.email: the same email is already used by profiles.{owners[email]}"
                 )
             owners[email] = name
-        profiles[name] = ProfileConfig(name=name, email=email)
+        profiles[name] = ProfileConfig(
+            name=name,
+            email=email,
+            permissions=_permissions(body.get("permissions"), f"{prefix}.permissions"),
+            household_visible=_household_visible(
+                body.get("household_visible"), f"{prefix}.household_visible"
+            ),
+        )
     return profiles
+
+
+def _permissions(value: Any, key: str) -> frozenset[str]:
+    # A blank value counts as absent, as it does for email.
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or not all(p in PERMISSIONS for p in value):
+        raise ConfigError(f"{key}: must be a list of permissions from: {', '.join(PERMISSIONS)}")
+    return frozenset(value)
+
+
+def _household_visible(value: Any, key: str) -> bool:
+    if value is None:
+        return False
+    # YAML reads true/false as a bool; a quoted "true" or a 1 is a typo worth stopping on.
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key}: must be true or false")
+    return value

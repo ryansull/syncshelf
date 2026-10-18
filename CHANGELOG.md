@@ -12,9 +12,22 @@ All notable changes to SyncShelf are recorded here. The format follows
   `0.0.0.0:8000`: where the service listens. A value that isn't a host and a port from 1 to
   65535 stops startup with a message naming the key.
 - `SYNCSHELF_DATA_DIR` overrides the data directory, default `/data`.
+- Migration `0002_auth`: the `profiles`, `oauth_grant`, `oauth_code`, `oauth_refresh_token`,
+  `oauth_access_token` and `oauth_client_cache` tables. An upgrade snapshots the database to
+  `pre-migration-0001.db` first.
+- The `profiles` table follows the config file at every start. A profile removed from the file
+  is marked removed and its open grants (Claude connections) are revoked; its data is kept.
+  Adding the name back restores the profile, but its old connections stay revoked. A start
+  that changes anything logs one `profiles_synced` line.
+- New config key `profiles.<name>.permissions`: a list of permissions, of which `chaptarr` is
+  the only one. An absent key grants none for now (#71).
+- New config key `profiles.<name>.household_visible`: `true` or `false`, default `false`.
 
 ### Changed
 
+- The `profiles` section of the config is now required, since the `profiles` table follows
+  it: a file without it stops startup (`profiles: required`) rather than revoking every
+  connection. `profiles: {}` is still accepted.
 - The service listens on `0.0.0.0:8000` by default instead of uvicorn's `127.0.0.1:8000`, so
   a published port (`docker run -p`) or Traefik reaches it. The image's health check still
   probes `127.0.0.1:8000`.
