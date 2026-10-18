@@ -221,6 +221,9 @@ def _read_yaml(file: Path) -> dict[str, Any]:
         text = file.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"cannot read the config file {file} ({type(exc).__name__})") from None
+    except UnicodeDecodeError:
+        # The decoder's message quotes the offending bytes, which may be part of a secret.
+        raise ConfigError(f"the config file {file} is not UTF-8 text") from None
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -308,6 +311,9 @@ def _from_file(value: Any, key: str) -> str:
         text = Path(value).read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"{key}: cannot read {value} ({type(exc).__name__})") from None
+    except UnicodeDecodeError:
+        # The decoder's message quotes the offending bytes, which are part of the secret.
+        raise ConfigError(f"{key}: the file {value} is not UTF-8 text") from None
     # Secret files conventionally end in a newline that isn't part of the secret.
     secret = text.rstrip("\r\n")
     if not secret:

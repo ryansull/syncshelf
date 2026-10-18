@@ -71,6 +71,19 @@ def test_invalid_yaml_reports_the_line_but_not_the_content(tmp_path: Path) -> No
     assert SECRET not in message
 
 
+def test_a_config_file_that_is_not_utf8_names_the_path_but_not_the_content(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "profiles.yaml"
+    path.write_bytes(b"server:\n  public_url: \xff\xfe" + SECRET.encode() + b"\n")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path, environ={})
+    message = str(excinfo.value)
+    assert "profiles.yaml" in message
+    assert "UTF-8" in message
+    assert SECRET not in message
+
+
 def test_top_level_must_be_a_mapping(tmp_path: Path) -> None:
     assert "mapping" in load_error(tmp_path, "- just\n- a list\n")
 
@@ -340,6 +353,17 @@ def test_missing_file_names_the_key(tmp_path: Path) -> None:
         tmp_path, MINIMAL + f"profiles:\n  alice:\n    abs:\n      token_file: {missing}\n"
     )
     assert "profiles.alice.abs.token_file" in message
+
+
+def test_a_secret_file_that_is_not_utf8_names_the_key_but_not_the_content(
+    tmp_path: Path,
+) -> None:
+    secret_file = tmp_path / "key"
+    secret_file.write_bytes(b"\xff\xfe" + SECRET.encode())
+    message = load_error(tmp_path, MINIMAL + f"  consent_hmac_key_file: {secret_file.as_posix()}\n")
+    assert "server.consent_hmac_key_file" in message
+    assert "UTF-8" in message
+    assert SECRET not in message
 
 
 def test_empty_file_counts_as_missing(tmp_path: Path) -> None:
