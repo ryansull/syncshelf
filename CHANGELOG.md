@@ -6,6 +6,10 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-18
+
+Phase 2: Front door and profiles.
+
 ### Added
 
 - New required config keys `services.hardcover_url` and `profiles.<name>.hardcover_token` (a
@@ -82,8 +86,8 @@ All notable changes to SyncShelf are recorded here. The format follows
 - With `server.auth_mode: oauth`, `GET /authorize` checks the client and its redirect. Only
   the two Claude client IDs (the Claude apps and Claude Code) pass, and nothing is fetched
   for any other. Their client documents are fetched from claude.ai (200 and
-  `application/json` only, uncompressed, no redirects followed, at most 5 KB), and only valid ones are
-  cached in `oauth_client_cache`, fresh for their `max-age` clamped to 5 minutes–24 hours.
+  `application/json` only, uncompressed, no redirects followed, at most 5 KB), and only valid
+  ones are cached in `oauth_client_cache`, fresh for their `max-age` clamped to 5 minutes–24 hours.
   When a fetch fails, the last good copy is used for up to 7 days past its freshness, and a
   `fetch_failed` warning is logged. The `redirect_uri` must be one the document registers
   (a loopback one on any port) and one SyncShelf allows. A request that fails any check gets
