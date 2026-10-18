@@ -57,3 +57,13 @@ A PR isn't done until the files its change touches are updated in the **same PR*
 **`docs/SPEC.md` changes only by decision.** A PR that edits it links the issue that decided the change. Never edit the spec to match code you just wrote. If the code and spec disagree, open an issue.
 
 **Keep this file honest.** If you find an instruction here that's wrong or stale, fix it in the PR that found it and say so in the Summary. If it conflicts with SPEC §2.10, §2.10 wins.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues, worked with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md` and `docs/adr/`, created when first needed. See `docs/agents/domain.md`.
