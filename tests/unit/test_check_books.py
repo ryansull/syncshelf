@@ -98,11 +98,20 @@ async def test_a_near_title_is_likely(connect: Any) -> None:
     assert (row["match"], row["book"]["book_id"]) == ("likely", 2)
 
 
-async def test_without_an_author_a_title_is_not_found(connect: Any) -> None:
-    # The spec's author score for a missing author is 0, below every threshold.
+async def test_without_an_author_a_match_is_likely_at_best(connect: Any) -> None:
+    # Decided in #142: the author score is set aside, and nothing is exact without one.
     async with connect() as mcp:
         [row] = await check(mcp, {"title": "The Way of Kings"})
-    assert row["match"] == "not_found"
+    assert (row["match"], row["book"]["book_id"]) == ("likely", 1)
+
+
+async def test_a_book_beats_its_graphic_novel(connect: Any, fake: FakeHardcover) -> None:
+    # Decided in #138: both score 100 before the ':', but only the book's full title does.
+    fake.add_search_doc(60, "A Wizard of Earthsea: A Graphic Novel",
+                        author_names=["Ursula K. Le Guin", "Fred Fordham"])  # fmt: skip
+    async with connect() as mcp:
+        [row] = await check(mcp, {"title": "A Wizard of Earthsea", "author": "Ursula K. Le Guin"})
+    assert (row["match"], row["book"]["book_id"]) == ("exact", 3)
 
 
 async def test_only_the_first_of_several_authors_is_used(connect: Any) -> None:

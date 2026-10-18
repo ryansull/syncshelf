@@ -45,8 +45,8 @@ async def test_get_my_library_answers_from_the_real_library(
             book = await mcp.call_tool("get_book", {"book": first}) if first else None
             series = await mcp.call_tool("series_progress", {})
             found = await mcp.call_tool("search_books", {"genre": "Fantasy", "sort": "popular"})
-            # Not A Wizard of Earthsea: its graphic novel ties it under the spec's scoring (#138).
-            candidates = [{"title": "Dune", "author": "Frank Herbert"}]
+            # A classic with a graphic-novel adaptation, the tie #138 settled.
+            candidates = [{"title": "A Wizard of Earthsea", "author": "Ursula K. Le Guin"}]
             checked = await mcp.call_tool("check_books", {"candidates": candidates})
         assert not result.is_error, (var, result.content)
         page = result.structured_content

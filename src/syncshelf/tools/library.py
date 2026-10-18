@@ -46,6 +46,7 @@ from syncshelf.sync.matcher import (
     Scored,
     author_score,
     auto_accepts,
+    full_title_score,
     is_likely,
     normalise,
     title_score,
@@ -1635,8 +1636,9 @@ async def check_books(
 
     Arguments:
     - candidates: 1 to 20 items, each {"title": ..., "author": ...} or {"book_id": ...}.
-      Give the author with a title: a title alone can't be matched. For several authors give
-      the first (the others are ignored). A book_id with a title is checked against it.
+      Give the author whenever you know it: a title alone can be likely at best. For several
+      authors give the first (the others are ignored). A book_id with a title is checked
+      against it.
     - profile: "me" (the default), another profile's name, or "household" to see everyone's
       shelf status for each book.
 
@@ -1723,7 +1725,8 @@ def _id_pick(candidate: Candidate, books: dict[int, dict[str, Any]]) -> _Pick:
 async def _resolve(client: HardcoverClient, title: str, author: str) -> _Pick:
     """Search as the matcher's fuzzy step does (§3.4a.5): by normalised title, filtered to the
     primary author, once more without the filter if that finds nothing; then score the hits.
-    With no author the author score is 0, so nothing matches."""
+    With no author, the author score is set aside: a clear title can be likely, never exact
+    (#142). An exact full title wins ties with its adaptations (#138)."""
     variables: dict[str, Any] = {
         "q": normalise(title) or title,
         "filter": _search_filter(author or None, None),
@@ -1740,18 +1743,19 @@ async def _resolve(client: HardcoverClient, title: str, author: str) -> _Pick:
             (
                 Scored(
                     title_score(title, d.get("title") or ""),
-                    author_score(author, d.get("author_names") or []),
+                    author_score(author, d.get("author_names") or []) if author else 100.0,
+                    full_title_score(title, d.get("title") or ""),
                 ),
                 book_id,
             )
             for d in docs
             if (book_id := _doc_id(d)) is not None
         ),
-        key=lambda pair: (pair[0].title, pair[0].author),
+        key=lambda pair: (pair[0].title, pair[0].full_title, pair[0].author),
         reverse=True,
     )
     ranked = [s for s, _ in scored]
-    if auto_accepts(ranked):
+    if author and auto_accepts(ranked):
         return _Pick("exact", scored[0][1])
     if is_likely(ranked):
         return _Pick("likely", scored[0][1])
