@@ -19,12 +19,14 @@ from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
     GOALS,
+    INSERT_USER_BOOK,
     LIBRARY,
     ME,
     SEARCH,
     SERIES,
     SHELF,
     SIMILAR,
+    USER_BOOK,
     HardcoverClient,
 )
 
@@ -170,3 +172,19 @@ async def test_books_by_id_matches_the_recording(fake: FakeHardcover) -> None:
     client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
     result = await client.execute(BOOKS_BY_ID, {"ids": [7]})
     assert_same_shape(shape({"data": result.data}), recorded("books_by_id"))
+
+
+async def test_a_read_status_insert_with_its_finish_date_matches_the_recording() -> None:
+    # §3.3.6 rule 3, verified live by #94: the insert creates one read, finished, with no start.
+    fake = FakeHardcover()
+    fake.add_user("t", user_id=42)
+    fake.add_book(9, title="T", default_physical_edition={"id": 70, "pages": 300})
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    insert = {"book_id": 9, "status_id": 3, "user_date": "2026-03-09", "privacy_setting_id": 3}
+    await client.execute(INSERT_USER_BOOK, {"object": insert})
+    result = await client.execute(USER_BOOK, {"book_id": 9, "user_id": 42})
+    assert_same_shape(shape({"data": result.data}), recorded("insert_read"))
+    live = json.loads((FIXTURES / "insert_read.json").read_text(encoding="utf-8"))["body"]
+    for found in (result.data, live["data"]):
+        (read,) = found["user_books"][0]["user_book_reads"]
+        assert read["started_at"] is None and read["finished_at"]
