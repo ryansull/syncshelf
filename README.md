@@ -53,6 +53,12 @@ Configuration goes in `profiles.yaml` (git-ignored), modelled on
 bad config with a message naming the key. Deployment is covered in `docs/runbook.md`, which
 arrives in phase 7.
 
+Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and `:latest`)
+for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). It runs as `10001:10001`, so
+the host's `/data` must be owned by that user, and it reads the config mounted read-only at
+`/config/profiles.yaml`. For now the service listens on `127.0.0.1:8000` inside the container,
+so only its own health check can reach it.
+
 ## Licence
 
 [Apache-2.0](LICENSE).

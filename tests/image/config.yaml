@@ -1,0 +1,8 @@
+# The config CI's image job mounts at /config/profiles.yaml (.github/workflows/ci.yml). It's the
+# smallest config phase 1 starts with: a loopback public_url, since phase 1 has no auth, and
+# proxy headers trusted only from loopback, since nothing proxies the test container. It isn't
+# named profiles.yaml because .gitignore ignores that name everywhere, to keep real configs out.
+server:
+  public_url: http://localhost
+  forwarded_allow_ips: 127.0.0.1
+  log_level: INFO

@@ -36,3 +36,9 @@ All notable changes to SyncShelf are recorded here. The format follows
 - An MCP endpoint at `/mcp` with no tools yet: stateless Streamable HTTP that answers 421 to
   any Host other than the public host or loopback. `/register` is 404.
 - `GET /healthz`: 200 `{"status":"ok","version":…}` while the database answers, 503 otherwise.
+- A container image (`Dockerfile`): `python:3.14-slim`, running as `10001:10001`, with a
+  `/data` volume, config read from `/config/profiles.yaml`, and a `HEALTHCHECK` on
+  `/healthz`. CI builds it on every PR, starts it against an empty `/data`, and waits for it
+  to report healthy with JSON logs that give the version and SQLite version.
+- `release.yml`: a `v*.*.*` tag publishes `ghcr.io/<owner>/syncshelf:<version>` and `:latest`
+  for amd64 and arm64. It refuses a tag that doesn't match the package version.
