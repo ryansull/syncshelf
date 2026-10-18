@@ -401,10 +401,3 @@ async def test_a_trusted_refusal_logs_its_reason_but_not_the_email(
     assert getattr(record, "reason", None) == "no_profile"
     assert getattr(record, "client_label", None) == "claude.ai"
     assert "carol" not in record.getMessage()
-
-
-async def test_allowing_is_not_built_yet_and_issues_nothing(app: Starlette) -> None:
-    # The consent POST is #67; until then the Allow button gets an explanatory page.
-    async with running(app, token=None) as client:
-        response = await client.post("/authorize", data={"consent": "x"})
-    assert_error_page(response, 501)
