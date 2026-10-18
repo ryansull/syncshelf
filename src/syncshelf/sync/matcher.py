@@ -24,6 +24,7 @@ __all__ = [
     "Scored",
     "author_score",
     "auto_accepts",
+    "full_title_score",
     "is_likely",
     "normalise",
     "title_score",
@@ -58,39 +59,49 @@ class Scored:
 
     title: float
     author: float
+    full: float | None = None
+    """:func:`full_title_score`, when it differs from ``title``; ``None`` means the same."""
+
+    @property
+    def full_title(self) -> float:
+        return self.title if self.full is None else self.full
 
 
-def normalise(text: str) -> str:
-    """The one normalisation applied to both sides before scoring, in the order §3.4a.5
-    states.
+def normalise(text: str, *, author: bool = False) -> str:
+    """The one normalisation applied to both sides before scoring (§3.4a.5, #105).
 
-    Step 4 drops the punctuation that steps 6 (the trailing ``(… #N)``) and 7 (``Last,
-    First``) look for, so as stated they can't fire. #105 asks which order is meant; they're
-    built as written until it's decided.
+    The trailing Goodreads series parenthetical and, for ``author`` names only, the
+    ``Last, First`` swap are applied before punctuation is dropped, since they need the
+    brackets and the comma. On a title the swap would turn any single-comma title around.
     """
-    # 1. NFKD, then strip diacritics (combining marks).
+    # NFKD, then strip diacritics (combining marks); casefold; & → and.
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
-    # 2. casefold; 3. & → and.
     text = text.casefold().replace("&", " and ")
-    # 4. every punctuation mark becomes a space, then whitespace collapses.
+    # A trailing "(Series Name, #N)".
+    text = _SERIES.sub("", text)
+    # Author names only: "Last, First" → "First Last", for exactly one comma.
+    if author:
+        parts = text.split(",")
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            text = f"{parts[1].strip()} {parts[0].strip()}"
+    # Every punctuation mark becomes a space, then whitespace collapses.
     text = "".join(c if c.isalnum() or c.isspace() else " " for c in text)
     text = " ".join(text.split())
-    # 5. a leading article.
-    text = _LEADING_ARTICLE.sub("", text)
-    # 6. a trailing "(Series Name, #N)".
-    text = _SERIES.sub("", text)
-    # 7. "Last, First" → "First Last", only for exactly one comma.
-    parts = text.split(",")
-    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-        text = f"{parts[1].strip()} {parts[0].strip()}"
-    return text
+    # A leading article.
+    return _LEADING_ARTICLE.sub("", text)
+
+
+def full_title_score(source: str, candidate: str) -> float:
+    """``token_sort_ratio`` of the whole normalised titles, subtitles included: what tells a
+    book from its adaptation when both share the part before ':' (#138)."""
+    return _ratio(normalise(source), normalise(candidate))
 
 
 def title_score(source: str, candidate: str) -> float:
     """``max(token_sort_ratio(full), token_sort_ratio(title before ':'))`` on normalised text,
     so a subtitle on either side doesn't sink a match. A side with nothing to compare scores
     0, never the 100 two empty strings would."""
-    full = _ratio(normalise(source), normalise(candidate))
+    full = full_title_score(source, candidate)
     if ":" not in source and ":" not in candidate:
         return full
     main = _ratio(normalise(source.split(":", 1)[0]), normalise(candidate.split(":", 1)[0]))
@@ -100,13 +111,14 @@ def title_score(source: str, candidate: str) -> float:
 def author_score(source: str, candidates: Iterable[str]) -> float:
     """The best ``token_sort_ratio`` of the source's primary author against each of the
     candidate's authors; 0 when either side has none."""
-    want = normalise(source)
-    return max((_ratio(want, normalise(name)) for name in candidates), default=0.0)
+    want = normalise(source, author=True)
+    return max((_ratio(want, normalise(name, author=True)) for name in candidates), default=0.0)
 
 
 def auto_accepts(ranked: Sequence[Scored]) -> bool:
     """Whether the top of ``ranked`` passes the fuzzy auto-accept rule: title ≥ 95, author
-    ≥ 90, and every other candidate's title at least 10 points lower."""
+    ≥ 90, and every other candidate's title at least 10 points lower (full titles, when the
+    top one's is exact)."""
     return _passes(ranked, AUTO_ACCEPT_TITLE, AUTO_ACCEPT_AUTHOR)
 
 
@@ -124,6 +136,10 @@ def _passes(ranked: Sequence[Scored], title: float, author: float) -> bool:
     top = ranked[0]
     if top.title < title or top.author < author:
         return False
+    if top.full_title == 100:
+        # An exact full title: others that only reach it through the part before ':' (an
+        # adaptation, "…: A Graphic Novel") don't make it ambiguous (#138).
+        return all(other.full_title <= top.full_title - MARGIN for other in ranked[1:])
     return all(other.title <= top.title - MARGIN for other in ranked[1:])
 
 
