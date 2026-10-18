@@ -132,9 +132,8 @@ class FakeHardcover:
         return book
 
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
-        self.lists[user_id].append(
-            {"id": next(self._ids), "name": name, "list_books": [{"book_id": b} for b in book_ids]}
-        )
+        list_books = [{"id": next(self._ids), "book_id": b} for b in book_ids]
+        self.lists[user_id].append({"id": next(self._ids), "name": name, "list_books": list_books})
 
     def fail_next(
         self,
@@ -210,6 +209,8 @@ class FakeHardcover:
             "Goals": lambda uid, _v: {"me": [{"goals": self.goals.get(uid, [])}]},
             "Library": self._library,
             "LibraryMore": self._library_more,
+            "ListsMore": lambda uid, v: {"lists": self._lists_page(uid, v)},
+            "ListBooksMore": self._list_books_more,
             "Book": self._book,
             "Shelf": lambda uid, v: {"user_books": self._shelf(uid, v)},
             "Similar": self._similar,
@@ -235,17 +236,34 @@ class FakeHardcover:
             },
         )
 
+    @staticmethod
+    def _page(rows: list[dict[str, Any]], after: int, limit: int) -> list[dict[str, Any]]:
+        """Rows with ``id`` after ``after``, by id, at most ``limit`` and never past the
+        silent cap: a keyset page."""
+        later = sorted((r for r in rows if r["id"] > after), key=lambda r: r["id"])
+        return later[: min(limit, ROW_CAP)]
+
     def _user_books_page(self, user_id: int, variables: dict[str, Any]) -> list[dict[str, Any]]:
         assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
-        rows = sorted(self.user_books[user_id], key=lambda r: r["id"])
-        offset = variables.get("offset", 0)
-        limit = min(variables.get("limit", ROW_CAP), ROW_CAP)  # the silent cap
-        return rows[offset : offset + limit]
+        return self._page(self.user_books[user_id], variables["after"], variables["limit"])
+
+    def _lists_page(self, user_id: int, variables: dict[str, Any]) -> list[dict[str, Any]]:
+        assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
+        lists = self._page(self.lists[user_id], variables["lists_after"], variables["limit"])
+        # Each list's books are a list field too, capped the same way.
+        return [
+            {**lst, "list_books": self._page(lst["list_books"], 0, variables["limit"])}
+            for lst in lists
+        ]
+
+    def _list_books_more(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        lst = next(x for x in self.lists[user_id] if x["id"] == variables["list_id"])
+        return {"list_books": self._page(lst["list_books"], variables["after"], variables["limit"])}
 
     def _library(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         return {
             "user_books": self._user_books_page(user_id, variables),
-            "lists": self.lists[user_id][:ROW_CAP],
+            "lists": self._lists_page(user_id, variables),
         }
 
     def _library_more(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:

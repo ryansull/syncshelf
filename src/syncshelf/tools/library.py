@@ -208,7 +208,8 @@ async def get_my_library(
       read?" or "what did my partner think of X?". On household answers each row has a
       profile field saying whose shelf it's from, and a book both have is two rows. A profile
       that hasn't opted in to sharing is refused. Status, rating, dates and formats are
-      shared; reviews never are.
+      shared; reviews never are. If someone's books can't be read yet, the answer comes
+      from the rest, with stale true and stale_reason naming them.
 
     Each row has book_id, title, author (the first author), status, rating (0.5–5 in half
     stars, or null), formats (of its reads: audio, ebook, print, or unknown when Hardcover
@@ -446,25 +447,30 @@ def _after(cursor: str | None, sort: str, digest: str) -> _Key | None:
         ) from None
 
 
-async def _refresh(mirror: Mirror, names: tuple[str, ...], caller: str) -> dict[str, Freshness]:
+type _Copy = Freshness | NoMirror
+"""A profile's copy as an answer can use it: how fresh it is, or that it has none yet."""
+
+
+async def _refresh(mirror: Mirror, names: tuple[str, ...], caller: str) -> dict[str, _Copy]:
     """Make each profile's copy fresh, at the same time: each has its own token, limiter and
-    lock. A profile with no copy refuses the whole answer, naming it (#116)."""
-    freshness: dict[str, Freshness] = {}
+    lock. A profile with no copy yet is noted, so the answer comes from the others, flagged
+    stale (#116). Only when no profile asked about has a copy is the answer refused."""
+    copies: dict[str, _Copy] = {}
 
     async def one(name: str) -> None:
         try:
-            freshness[name] = await mirror.fresh(name)
+            copies[name] = await mirror.fresh(name)
         except NoMirror as exc:
-            whose = "" if name == caller else f"For {name}: "
-            raise ToolError(whose + str(exc)) from None
+            copies[name] = exc
 
-    try:
-        async with asyncio.TaskGroup() as tg:
-            for name in names:
-                tg.create_task(one(name))
-    except* ToolError as group:
-        raise group.exceptions[0] from None
-    return {name: freshness[name] for name in names}
+    async with asyncio.TaskGroup() as tg:
+        for name in names:
+            tg.create_task(one(name))
+    if all(isinstance(c, NoMirror) for c in copies.values()):
+        first = names[0]
+        whose = "" if first == caller or len(names) == 1 else f"For {first}: "
+        raise ToolError(whose + str(copies[first]))
+    return {name: copies[name] for name in names}
 
 
 def _tagged(row: LibraryRow, profile: str) -> LibraryRow:
@@ -473,15 +479,20 @@ def _tagged(row: LibraryRow, profile: str) -> LibraryRow:
     return tagged
 
 
-def _freshness(by_profile: dict[str, Freshness]) -> dict[str, Any]:
+def _freshness(by_profile: dict[str, _Copy]) -> dict[str, Any]:
     """``as_of`` and ``stale`` for an answer drawn from one or more copies: the oldest copy's
-    ``as_of``, and stale when any copy is, with each stale profile's reason."""
-    oldest = min(f.as_of for f in by_profile.values())
+    ``as_of``, and stale when any copy is stale or missing, with each one's reason."""
+    copies = {name: c for name, c in by_profile.items() if isinstance(c, Freshness)}
+    oldest = min(f.as_of for f in copies.values())
+    reasons = {
+        name: str(c) if isinstance(c, NoMirror) else c.stale_reason
+        for name, c in by_profile.items()
+        if isinstance(c, NoMirror) or c.stale_reason
+    }
     out: dict[str, Any] = {
         "as_of": datetime.fromtimestamp(oldest, UTC).isoformat(),
-        "stale": any(f.stale for f in by_profile.values()),
+        "stale": bool(reasons) or any(f.stale for f in copies.values()),
     }
-    reasons = {name: f.stale_reason for name, f in by_profile.items() if f.stale_reason}
     if len(by_profile) == 1 and reasons:
         out["stale_reason"] = next(iter(reasons.values()))
     elif reasons:
