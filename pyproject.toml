@@ -1,6 +1,6 @@
 [project]
 name = "syncshelf"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted MCP server and one-way syncs that keep Hardcover as a household's reading log."
 readme = "README.md"
 license = "Apache-2.0"
