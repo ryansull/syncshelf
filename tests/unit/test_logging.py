@@ -162,6 +162,17 @@ def test_host_aliasing_does_not_touch_longer_hostnames() -> None:
     )
 
 
+def test_aliasing_a_loopback_public_host_touches_only_whole_hostnames() -> None:
+    # Phase 1's public host is localhost or 127.0.0.1. Aliasing it hides nothing private, but
+    # it must not mangle other text that merely contains the name.
+    redactor = slog.Redactor(host_aliases={"localhost": "public", "127.0.0.1": "public"})
+    assert redactor.scrub("GET http://LOCALHOST:8000/mcp from 127.0.0.1") == (
+        "GET http://public:8000/mcp from public"
+    )
+    untouched = "localhostname my-localhost localhost.example.com 127.0.0.10 10.127.0.0.1"
+    assert redactor.scrub(untouched) == untouched
+
+
 def test_a_secret_containing_a_host_is_still_redacted() -> None:
     redactor = slog.Redactor(secrets=["key@abs.home.arpa"], host_aliases={"abs.home.arpa": "abs"})
     assert redactor.scrub("key@abs.home.arpa") == "***"

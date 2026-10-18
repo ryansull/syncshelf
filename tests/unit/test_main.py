@@ -2,6 +2,7 @@
 and uvicorn's lines as JSON with no query string in the access log."""
 
 import json
+import logging
 import socket
 from pathlib import Path
 from textwrap import dedent
@@ -86,6 +87,22 @@ def test_main_refuses_a_public_url_that_is_not_localhost(
     [line] = json_lines(capsys.readouterr().out)
     assert line["level"] == "ERROR"
     assert "server.public_url" in line["msg"]
+
+
+def test_configure_logging_aliases_the_public_and_access_hosts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = write_config(tmp_path)
+    with path.open("a", encoding="utf-8") as f:
+        f.write("  access:\n    team_domain: https://example.cloudflareaccess.com\n")
+    entry.configure_logging(load_config(path, environ={}))
+
+    logging.getLogger("syncshelf.x").warning(
+        "via http://localhost:8000 and example.cloudflareaccess.com", extra={"event": "e"}
+    )
+
+    [line] = json_lines(capsys.readouterr().out)
+    assert line["msg"] == "via http://public:8000 and access"
 
 
 async def serve_once(app_config: uvicorn.Config, path: str) -> int:

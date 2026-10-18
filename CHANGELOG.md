@@ -6,6 +6,14 @@ All notable changes to SyncShelf are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Log lines and stored error strings now show the `server.public_url` host as `public` and
+  the `server.access.team_domain` host as `access`, like the service hosts already are (#49).
+  A service alias wins where a service shares one of those hosts. In phase 1 the public host
+  is `localhost` or `127.0.0.1`, so those names are logged as `public` when they appear as a
+  whole hostname; longer names that contain them are left alone.
+
 ## [0.1.0] - 2026-10-17
 
 Phase 1: Skeleton.
