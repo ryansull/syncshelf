@@ -15,7 +15,8 @@
 
   A build session re-checks a `source only` or `docs only` contract before relying on it, and records what it saw in the fixtures (§2.9).
 - **Assembly choices.** Where the tickets were silent on a small point, this spec picks the boring option and marks it **[assembly choice]**. All of them are listed in [Appendix D](#appendix-d-assembly-choices), and the owner accepted all of them as written.
-- **Don't decide in code.** A build session that finds something undecided, or a contract that no longer holds, opens a ticket on the map and leaves that point unbuilt rather than settling it in code.
+- **Don't decide in code.** A build session that finds something undecided, or a contract that no longer holds, opens an issue and leaves that point unbuilt rather than settling it in code.
+- **How work lands** (branches, PR shape, versions, docs) is in §2.10, and is restated for agents in `AGENTS.md`.
 - **Placeholders.** Hostnames, IPs and emails in this document follow the hygiene rules (§2.6): `shelf.example.com`, `*.home.arpa`, `192.0.2.x`, `alice@example.com` / `bob@example.com`. Real values never enter the repo.
 
 ---
@@ -109,7 +110,7 @@ Decided in [Hosting the MCP server, ingest endpoint and scheduler in one process
 | YAML | `pyyaml` | — |
 | Browser client | `playwright` (phase 4b, imported lazily), pinned in lockstep with the sidecar image tag | — |
 | Scheduler | **plain asyncio loops**, not APScheduler | — |
-| Tests | `pytest>=9.1` with the **anyio** plugin (not pytest-asyncio), `pytest-socket`, `ruff` | dev dependencies |
+| Tests | `pytest>=9.1` with the **anyio** plugin (not pytest-asyncio), `pytest-socket`, `pytest-cov`, `ruff`, `pyright` | dev dependencies |
 
 **Not used:** FastAPI, APScheduler, aiosqlite, SQLAlchemy, Alembic, Authlib, `fastmcp` (its `cimd.py`, `ssrf.py` and `redirect_validation.py` are Apache-2.0 *reference code* only; keep their notices if any code is borrowed).
 
@@ -303,7 +304,10 @@ From [SQLite schema and repo structure](https://github.com/ryansull/syncshelf/is
 ```
 LICENSE  pyproject.toml  uv.lock  Dockerfile  .gitattributes  .pre-commit-config.yaml
 .gitignore  profiles.example.yaml  .env.example  docs/SPEC.md
+README.md  CHANGELOG.md  AGENTS.md  CLAUDE.md                                   [1]
 .github/workflows/ci.yml  .github/workflows/release.yml                          [1]
+.github/pull_request_template.md  .github/dependabot.yml                        [1]
+docs/runbook.md  deploy/compose.example.yaml                                    [7]
 src/syncshelf/
   __main__.py            uvicorn entry: one worker, proxy headers               [1]
   app.py                 Starlette app, route order, lifespan                   [1]
@@ -447,7 +451,41 @@ From [Testing strategy: fixtures, golden sets and live tests](https://github.com
   - **Hardcover writes** run only with `SYNCSHELF_LIVE_WRITE=1`, using `HARDCOVER_TOKEN_TEST` for a **throwaway account**. The harness checks `me` first and refuses if the username matches a real profile. Write tests restore what they change.
   - **Chaptarr live tests can only GET.** The harness client raises before sending any POST, PUT or DELETE.
   - **ABS** is GET-only with each profile's own key. **Goodreads RSS** is read-only. **Goodreads sign-in** is never automated in tests.
-- **CI** (GitHub Actions, on every push and PR) runs ruff, the unit/fake/golden suites with outbound sockets **blocked** (`pytest-socket`), and gitleaks. Actions holds **no secrets**, and live tests never run there.
+- **CI** (GitHub Actions, on every push and PR) runs `ruff check`, `ruff format --check`, `pyright`, the unit/fake/golden suites with outbound sockets **blocked** (`pytest-socket`) and a coverage report (`pytest-cov`, reported, never a gate), and gitleaks. Actions holds **no secrets**, and live tests never run there.
+
+### 2.10 Contributing, PRs and docs
+
+[Assembly choices D22–D29, proposed after the map closed. No ticket covered them.] The same rules are restated for agents in `AGENTS.md`, which also says which files to update for each kind of change. `CLAUDE.md` only imports `AGENTS.md`. If this section and `AGENTS.md` disagree, this section wins, and the PR that notices fixes both.
+
+**Branches and PRs**
+- `main` is always green and deployable. Work happens on short-lived branches off `main`, named `phase-<n>/<topic>` (e.g. `phase-2/token-store`), or `fix/<topic>` and `docs/<topic>` outside a phase.
+- **A PR does one thing.** Aim for under ~400 changed lines, not counting `uv.lock`, fixtures and golden files. A phase is several PRs, never one. A PR that has to be large says why in its description.
+- **Every PR follows `.github/pull_request_template.md`:**
+  - **Summary:** what changed and why, in a few lines.
+  - **Spec:** the § sections it implements, or "none".
+  - **Tests:** what was added, what ran locally, and which live tests ran (if any), with their gates.
+  - **Discrepancies:** any place the spec turned out wrong or silent, each linking the issue opened for it. "None" is a valid answer and must be written.
+  - **Checklist:** CI green; no secrets or homelab values; fixtures scrubbed; docs updated per `AGENTS.md`; `CHANGELOG.md` entry, or "no user-visible change".
+- **Review and merge.** The owner reviews and merges. Agents open PRs and never merge their own. Merges are **squash merges**, with the PR title as the commit subject.
+- **Branch protection on `main`** (the owner turns it on in phase 1): PRs required, the CI check required, no force pushes, no deletion.
+- **Commit messages:** an imperative subject under ~72 characters, no type prefixes, with a body when the why isn't obvious. Commits use the noreply author (§2.6).
+
+**Versions and releases**
+- Tags are `v0.<n>.<patch>`, where `<n>` counts phase releases in order: phase 1 → `v0.1.0`, 2 → `v0.2.0`, 3 → `v0.3.0`, 4a → `v0.4.0`, 4b → `v0.5.0`, 5 → `v0.6.0`, 6 → `v0.7.0`. Phase 7's live acceptance tags **`v1.0.0`**. Patches between phases bump `<patch>`.
+- A phase is tagged only when its "Done when" holds. The tag triggers `release.yml`.
+- **`CHANGELOG.md`** follows *Keep a Changelog*. Each PR with a user- or operator-visible change adds a line under `## [Unreleased]`, and tagging moves those lines under the new version. Migrations and new config keys are always listed.
+
+**Docs**
+- **`README.md`** (from phase 1): what SyncShelf is, the current phase, dev setup (`uv sync`, `pre-commit install`, the test and lint commands), a pointer to `profiles.example.yaml` for configuration and to `docs/runbook.md` for deployment, and the licence. It follows the §2.6 placeholder rules.
+- **Docstrings** on every public module, class and function in `src/syncshelf/`. Comments explain *why*, not what.
+- **MCP tool docstrings are the tool descriptions Claude reads**, so they're written for Claude: what the tool does, when to use it and when not to, its arguments and units, and any rule the spec puts on the caller (e.g. "pass today's date explicitly", §3.3.9). A tool's docstring changes in the same PR as its behaviour.
+- **`docs/SPEC.md` is changed only by a decision:** a PR touching it links the issue that decided the change. A build PR never edits the spec to match its own code.
+
+**Typing and coverage**
+- `pyright` in **basic** mode over `src/`, in CI from phase 1. Public signatures are fully annotated.
+- Coverage is reported in CI and never enforced. The golden files and contract tests are the real coverage.
+
+**Dependencies.** `.github/dependabot.yml` opens weekly update PRs for `uv` and GitHub Actions. `mcp`, `starlette` and `playwright` updates also re-run the relevant contract tests, and a `playwright` bump moves the sidecar image tag with it (§2.1).
 
 ---
 
@@ -477,7 +515,11 @@ Each phase section lists what it builds, the tables it introduces, the contracts
   - non-root `USER 10001:10001`;
   - `HEALTHCHECK` on `http://127.0.0.1:<port>/healthz`, using Python's `urllib` because slim has no curl;
   - `VOLUME /data`; the config at `/config/profiles.yaml` (read-only).
-- `.github/workflows/ci.yml` (ruff, pytest with `pytest-socket`, gitleaks) and `release.yml`, which on version tags builds **multi-arch** (amd64/arm64) images and pushes `ghcr.io/<owner>/syncshelf:<version>` and `:latest`.
+- `.github/workflows/ci.yml` (ruff check and format, pyright, pytest with `pytest-socket` and a coverage report, gitleaks) and `release.yml`, which on version tags builds **multi-arch** (amd64/arm64) images and pushes `ghcr.io/<owner>/syncshelf:<version>` and `:latest`.
+- The process files from §2.10:
+  - `README.md` and `CHANGELOG.md` (with `## [Unreleased]`);
+  - `.github/pull_request_template.md` and `.github/dependabot.yml`;
+  - the **Commands** section of `AGENTS.md`, filled in with the real commands.
 - Repo files:
   - `LICENSE` (Apache-2.0) and `.gitattributes` (`* text=auto eol=lf`);
   - `.pre-commit-config.yaml` (gitleaks + the `local/denylist.txt` hook);
@@ -499,7 +541,7 @@ Each phase section lists what it builds, the tables it introduces, the contracts
 - `/healthz` 200/503, and the localhost-only guard.
 - The SQL-invariant tests from the testing ticket (sticky-human trigger, state CHECKs, one-pending index) are **harnessed** here and **written with the migration that creates each table** (4a, 6). Phase 1 has no such tables.
 
-**Done when:** `docker run` starts the image against an empty `/data`, `/healthz` is 200, `docker logs` shows JSON lines with version and SQLite version, CI is green, and a version tag publishes both architectures.
+**Done when:** `docker run` starts the image against an empty `/data`, `/healthz` is 200, `docker logs` shows JSON lines with version and SQLite version, CI is green, branch protection is on for `main`, and the `v0.1.0` tag publishes both architectures.
 
 ---
 
@@ -2640,6 +2682,19 @@ These are the small calls this spec made where no ticket spoke. Each is the bori
 | D19 | §3.6.4 | A no-op request is recorded as `noop` | The `noop` state exists in the schema, and this gives `requested_by` history. |
 | D20 | §3.7 | `docs/runbook.md` and `deploy/compose.example.yaml` | Paths only. |
 | D21 | §3.3.9 | Edit tool details: status slugs with no "none"; `rating=0` and `review=""` clear; a lone date implies its status; `started_on` is refused over an open read; Paused/DNF leave reads alone; `get_book` returns read ids; `update_book` isn't `destructiveHint`; the confirm-token helper lands in phase 3 | #31 decided the tools and their rules, not these enumerations. |
+
+**Proposed after the map closed** (§2.10). No ticket covered process. These are open to veto until the PR that adds them merges, and bind after that.
+
+| # | Where | Choice | Why |
+|---|---|---|---|
+| D22 | §2.10 | Short-lived `phase-<n>/<topic>` branches; one-thing PRs under ~400 lines; several PRs per phase | Reviewable diffs, and `main` stays deployable between PRs. |
+| D23 | §2.10 | A PR template with Summary, Spec, Tests, Discrepancies and a checklist | Makes the "don't decide in code" rule visible at review time. |
+| D24 | §2.10 | The owner reviews and merges, agents never merge their own PR, squash merges, branch protection on `main` | One reviewer, linear history, CI as the gate. |
+| D25 | §2.10 | `v0.<n>.<patch>` per phase release, with `v1.0.0` at phase 7 acceptance, plus a *Keep a Changelog* `CHANGELOG.md` | Phases map to versions, and image tags say which phase is deployed. |
+| D26 | §2.10 | `README.md` from phase 1 | The spec had no entry point for someone landing on the public repo. |
+| D27 | §2.10 | Docstrings on public code; MCP tool docstrings written for Claude and changed with behaviour | The tool description is the only interface documentation Claude sees. |
+| D28 | §2.1, §2.10 | `pyright` basic in CI; coverage reported, never gated | Cheap type safety; a coverage gate would reward the wrong tests. |
+| D29 | §2.10 | Dependabot weekly for `uv` and Actions | Boring upkeep, with contract tests as the guard. |
 
 ---
 
