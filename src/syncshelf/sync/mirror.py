@@ -29,6 +29,7 @@ from syncshelf.logging import scrub
 
 __all__ = [
     "TAG_CATEGORIES",
+    "FetchFailed",
     "Freshness",
     "Mirror",
     "NoMirror",
@@ -49,6 +50,10 @@ TAG_CATEGORIES = ("genres", "moods", "tags")
 _REFRESH_ERRORS = (HardcoverError, sqlite3.Error, KeyError, TypeError)
 """What a failed refresh raises: Hardcover unreachable or refusing, or a shape the copy can't
 hold."""
+
+
+class FetchFailed(Exception):
+    """A sync's library fetch failed. The message is safe to show and store (§2.7)."""
 
 
 class NoMirror(Exception):
@@ -130,7 +135,10 @@ class Mirror:
         decisions use only this same-run fetch. A failure is recorded as the copy's last
         error, as a read-triggered one is, and raised."""
         async with self._locks[profile]:
-            return await self._refresh(profile)
+            try:
+                return await self._refresh(profile)
+            except _REFRESH_ERRORS as exc:
+                raise FetchFailed(_reason(exc)) from exc
 
     async def _refresh(self, profile: str) -> Library:
         # The caller holds the profile's lock.
@@ -161,10 +169,8 @@ class Mirror:
         return last
 
     async def _failed(self, profile: str, exc: Exception) -> Freshness | NoMirror:
-        if isinstance(exc, HardcoverError):
-            reason = scrub(str(exc))
-        else:
-            reason = f"Hardcover sent data SyncShelf couldn't store ({type(exc).__name__})"
+        reason = _reason(exc)
+        if not isinstance(exc, HardcoverError):
             log.error(
                 "the Hardcover mirror couldn't store a refresh",
                 exc_info=True,
@@ -183,6 +189,13 @@ class Mirror:
                 f"failed: {reason}"
             )
         return Freshness(as_of, stale=True, stale_reason=reason)
+
+
+def _reason(exc: Exception) -> str:
+    """Why a refresh failed, safe to show and store."""
+    if isinstance(exc, HardcoverError):
+        return scrub(str(exc))
+    return f"Hardcover sent data SyncShelf couldn't store ({type(exc).__name__})"
 
 
 # --- the database side --------------------------------------------------------------------

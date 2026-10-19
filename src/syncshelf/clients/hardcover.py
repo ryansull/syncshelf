@@ -199,7 +199,9 @@ SEARCH_PAGE = 25
 
 BY_GOODREADS = """
 query ByGoodreads($ids: [String!]!) {
-  book_mappings(where: {platform_id: {_eq: 1}, external_id: {_in: $ids}}) {
+  book_mappings(
+    where: {platform_id: {_eq: 1}, external_id: {_in: $ids}}, order_by: {id: asc}
+  ) {
     external_id book_id edition_id
     book { id title canonical_id }
     edition { id isbn_13 isbn_10 asin reading_format_id }
@@ -207,7 +209,8 @@ query ByGoodreads($ids: [String!]!) {
 }
 """
 """Goodreads edition ids (``Book Id``) to Hardcover books, batched (cost 1): the matcher's
-first step (§3.4a.5). Platform 1 is Goodreads."""
+first step (§3.4a.5). Platform 1 is Goodreads. Oldest mapping first, so when one id has
+several the same one wins every time."""
 
 BOOKS_BY_ID = """
 query BooksById($ids: [Int!]!) {
