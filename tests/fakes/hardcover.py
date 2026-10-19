@@ -620,6 +620,8 @@ def _apply_fields(row: dict[str, Any], obj: dict[str, Any]) -> None:
         if key == "review_markdown":
             row["review_raw"] = value
             row["has_review"] = bool(value)
+        elif key == "first_started_reading_date" and value is None:
+            pass  # Hardcover ignores it: the date can be replaced, never cleared (trap 1)
         else:
             row[key] = value
 
