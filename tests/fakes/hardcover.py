@@ -63,6 +63,9 @@ class FakeHardcover:
         self.catalog: dict[int, dict[str, Any]] = {}
         """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
         library query's. Shelving a book adds it."""
+        self.mappings: dict[str, dict[str, Any]] = {}
+        """Goodreads edition ids (``external_id``) to ``{book_id, edition}``, for
+        ``ByGoodreads``; see :meth:`add_mapping`."""
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
         self.today = "2100-01-01"
@@ -190,6 +193,18 @@ class FakeHardcover:
         self.catalog[book_id] = book
         return book
 
+    def add_mapping(
+        self, goodreads_id: int | str, book_id: int, edition_id: int | None = None, **edition: Any
+    ) -> None:
+        """Map a Goodreads edition id to ``book_id`` (platform 1), with that edition's
+        ``isbn_13`` / ``isbn_10`` / ``asin`` / ``reading_format_id`` from ``edition``. The book
+        joins the catalog if it isn't there, so its title and ``canonical_id`` come back."""
+        if book_id not in self.catalog:
+            self.add_book(book_id)
+        fields = {"isbn_13": None, "isbn_10": None, "asin": None, "reading_format_id": None}
+        edition_row = None if edition_id is None else {"id": edition_id, **fields, **edition}
+        self.mappings[str(goodreads_id)] = {"book_id": book_id, "edition": edition_row}
+
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
         list_id = next(self._ids)
         list_books = [{"id": next(self._ids), "book_id": b} for b in book_ids]
@@ -296,6 +311,7 @@ class FakeHardcover:
             "Similar": self._similar,
             "Search": self._search,
             "BooksById": self._books_by_id,
+            "ByGoodreads": self._by_goodreads,
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -552,6 +568,29 @@ class FakeHardcover:
         )  # fmt: skip
         found = sorted(i for i in variables["ids"] if i in self.catalog)
         return {"books": [{f: self.catalog[i].get(f) for f in fields} for i in found]}
+
+    def _by_goodreads(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        rows = []
+        for external_id in variables["ids"]:
+            mapping = self.mappings.get(external_id)
+            if mapping is None:
+                continue
+            book = self.catalog[mapping["book_id"]]
+            edition = mapping["edition"]
+            rows.append(
+                {
+                    "external_id": external_id,
+                    "book_id": mapping["book_id"],
+                    "edition_id": edition["id"] if edition else None,
+                    "book": {
+                        "id": mapping["book_id"],
+                        "title": book.get("title"),
+                        "canonical_id": book.get("canonical_id"),
+                    },
+                    "edition": edition,
+                }
+            )
+        return {"book_mappings": rows[:ROW_CAP]}
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.

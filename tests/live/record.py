@@ -31,6 +31,7 @@ from syncshelf.clients.goodreads_rss import (  # noqa: E402
 from syncshelf.clients.hardcover import (  # noqa: E402
     BOOK,
     BOOKS_BY_ID,
+    BY_GOODREADS,
     GOALS,
     LIBRARY,
     ME,
@@ -47,6 +48,7 @@ from scrub import write_fixture, write_native_fixture  # noqa: E402
 FIXTURES = ROOT / "tests" / "fixtures"
 HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 HARDCOVER_VERSION = "api.hardcover.app/v1 (sends no version header)"
+GOODREADS_IDS = ["247031753", "34873380", "57189884", "999999999999"]
 GOODREADS_VERSION = "www.goodreads.com shelf RSS (sends no version header)"
 
 
@@ -95,6 +97,8 @@ async def record_hardcover(token: str, limit: int) -> None:
         search = await client.execute(
             SEARCH, {"q": "dune", "filter": None, "sort": None, "per": 3, "page": 1}
         )
+        # Public Goodreads edition ids (from the RSS fixture), and one Goodreads doesn't have.
+        by_goodreads = await client.execute(BY_GOODREADS, {"ids": GOODREADS_IDS})
     finally:
         await client.aclose()
     out = FIXTURES / "hardcover"
@@ -108,6 +112,7 @@ async def record_hardcover(token: str, limit: int) -> None:
         "series": series.data,
         "search": search.data,
         "books_by_id": by_id.data,
+        "by_goodreads": by_goodreads.data,
     }
     for name, data in recorded.items():
         write_fixture(

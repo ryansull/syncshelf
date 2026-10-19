@@ -173,6 +173,27 @@ class TestLifespan:
         counts = {k: purged.__dict__[k] for k in ("codes", "access_tokens", "refresh_tokens")}
         assert counts == {"codes": 1, "access_tokens": 1, "refresh_tokens": 0}
 
+    async def test_startup_marks_runs_left_running_as_aborted(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path)
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO runs (profile, source, trigger, started_at, state) "
+                "VALUES ('alice', 'gr_rss', 'schedule', 1, 'running')"
+            )
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            assert conn.execute("SELECT state, ended_at FROM runs").fetchall() == [
+                ("aborted", int(clock.time()))
+            ]
+        [aborted] = [r for r in caplog.records if getattr(r, "event", None) == "runs_aborted"]
+        assert aborted.__dict__["count"] == 1
+
     async def test_the_purge_repeats_while_running_and_stops_at_shutdown(
         self, tmp_path: Path, data_dir: Path, clock: FakeClock
     ) -> None:

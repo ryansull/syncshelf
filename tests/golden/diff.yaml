@@ -1,0 +1,110 @@
+# The Goodreads diff's decision table (SPEC §3.4a.6, §3.4a.12; §2.9 golden sets).
+#
+# Each case gives the profile's Hardcover shelves and Goodreads mappings, then one or more RSS
+# runs, an hour apart. The first complete run is always the backfill. Each run lists the feed
+# as Goodreads serves it (newest first) and what must follow:
+#
+#   state       the run's end state
+#   writes      the Hardcover mutations sent, as [operation, fields set]
+#   shelf       the profile's Hardcover shelf afterwards, by book id
+#   baselines   {source_id: {field: value}} for the fields given
+#   pending     {source_id: {field: value}} for pending changes; null value = pending clear
+#   change_log  [source_id, field, old, new] rows written by this run
+#   backfill    [rows_linked, rows_queued]
+#
+# Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review.
+# When a case and a ticket disagree, fix the case.
+
+cases:
+  - name: the backfill pushes nothing, even where Hardcover differs
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"100": {rating: "4", status: read}}
+          backfill: [1, 0]
+
+  - name: a rating changed after the backfill is pushed
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          state: ok
+          writes: [[update_user_book, {rating: 5.0}]]
+          shelf: {7: {rating: 5.0}}
+          baselines: {"100": {rating: "5"}}
+          change_log: [["100", rating, "4", "5"]]
+
+  - name: a rating cleared on Goodreads clears it on Hardcover
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "0"}]
+        expect:
+          writes: [[update_user_book, {rating: null}]]
+          shelf: {7: {rating: null}}
+          baselines: {"100": {rating: null}}
+          change_log: [["100", rating, "4", null]]
+
+  - name: a change Hardcover already has advances the baseline without a write
+    hardcover:
+      shelf: {7: {status: 3, rating: 5.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          state: ok
+          writes: []
+          baselines: {"100": {rating: "5"}}
+          change_log: [["100", rating, "4", "5"]]
+
+  - name: an unchanged row pushes nothing, so a Claude edit stands
+    hardcover:
+      shelf: {7: {status: 3, rating: 2.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          shelf: {7: {rating: 2.0}}
+
+  - name: a queued row keeps its baseline and its change waits
+    hardcover:
+      shelf: {}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+          baselines: {"100": {rating: "4"}}
+      - feed: [{id: 100, title: Dune, rating: "2"}]
+        expect:
+          writes: []
+          pending: {"100": {rating: "2"}}
+
+  - name: a value changed back before it was applied clears the pending change
+    hardcover:
+      shelf: {}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "2"}]
+        expect:
+          pending: {"100": {rating: "2"}}
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          pending: {}
+          baselines: {"100": {rating: "4"}}

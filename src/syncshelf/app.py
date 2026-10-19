@@ -8,7 +8,8 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
    (``__main__`` loads it and fails fast; #51 asks the spec to confirm this order);
 2. the data directory and its ``goodreads/`` directory must be writable;
 3. the database is opened and migrated, and the ``profiles`` table is synced with the
-   config (:mod:`syncshelf.profiles`), and expired OAuth rows are purged
+   config (:mod:`syncshelf.profiles`), every run still ``running`` is marked ``aborted``
+   (:func:`syncshelf.sync.runs.abort_running`), and expired OAuth rows are purged
    (:func:`syncshelf.auth.tokens.purge_expired`, #77);
 4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret,
    and dev mode logs a warning at every start (§3.2.5);
@@ -74,6 +75,7 @@ from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.limiter import Clock, HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
+from syncshelf.sync.runs import abort_running
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 from syncshelf.tools.confirm import ConfirmTokens
 
@@ -195,6 +197,12 @@ def create_app(
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
+            # A run still `running` belonged to a process that died (§3.4a.7).
+            if aborted := await db.write(abort_running, int(clock())):
+                log.info(
+                    "marked runs left running by the last process as aborted",
+                    extra={"event": "runs_aborted", "count": aborted},
+                )
             await _purge(db, clock)
             # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
             _log_startup(config, db)

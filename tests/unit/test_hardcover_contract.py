@@ -18,6 +18,7 @@ import pytest
 from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
+    BY_GOODREADS,
     GOALS,
     INSERT_USER_BOOK,
     LIBRARY,
@@ -188,3 +189,12 @@ async def test_a_read_status_insert_with_its_finish_date_matches_the_recording()
     for found in (result.data, live["data"]):
         (read,) = found["user_books"][0]["user_book_reads"]
         assert read["started_at"] is None and read["finished_at"]
+
+
+async def test_by_goodreads_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.add_mapping("34873380", 7, 70, isbn_13="9780345539793", reading_format_id=4)
+    fake.add_mapping("1", 8)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(BY_GOODREADS, {"ids": ["34873380", "1", "404"]})
+    assert_same_shape(shape({"data": result.data}), recorded("by_goodreads"))
+    assert [m["external_id"] for m in result.data["book_mappings"]] == ["34873380", "1"]
