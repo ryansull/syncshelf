@@ -73,7 +73,7 @@ async def test_a_row_is_compact_and_complete(
         7,
         status_id=3,
         rating=4.5,
-        review_raw="never shown",
+        review_markdown="never shown",
         user_book_reads=[
             {"id": 1, "finished_at": "2025-03-01", "edition_id": 70, "reading_format_id": 2},
             {"id": 2, "finished_at": "2026-01-10", "edition_id": 71, "reading_format_id": 4},

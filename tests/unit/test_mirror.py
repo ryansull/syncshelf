@@ -150,7 +150,7 @@ async def test_a_user_book_is_stored_without_its_review(
         status_id=3,
         rating=4.5,
         date_added="2026-02-03",
-        review_raw="private thoughts",
+        review_markdown="private thoughts",
         has_review=True,
         user_book_reads=[
             {
