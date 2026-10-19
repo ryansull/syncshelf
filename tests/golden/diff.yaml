@@ -340,3 +340,29 @@ cases:
           state: ok
           reads: {7: [[null, "2026-10-02", 70]]}
           pending: {}
+
+  - name: a re-read with Goodreads' old Date Read left alone finishes on its own date
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-01-01", "2026-01-20", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Sat, 17 Oct 2026 08:00:00 -0700"}]
+        expect:
+          state: ok
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", "2026-10-17", 70]]}
+          log: [[push, status, reread_cycle, user_date_added], [read_adopt, null, reread_cycle, user_date_added]]
+
+  - name: a Date Read change alongside a move off Read is planned on its own and not pushed
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-02", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          state: ok
+          reads: {7: [[null, "2026-10-02", 70], ["2026-10-15", null, 70]]}
+          baselines: {"100": {date_read: "2026-10-05", status: currently-reading}}
+          pending: {}

@@ -100,7 +100,9 @@ async def record_hardcover(token: str, limit: int) -> None:
         )
         # Public Goodreads edition ids (from the RSS fixture), and one Goodreads doesn't have.
         by_goodreads = await client.execute(BY_GOODREADS, {"ids": GOODREADS_IDS})
-        edition_ids = [m["edition_id"] for m in by_goodreads.data["book_mappings"]]
+        edition_ids = sorted(
+            {m["edition_id"] for m in by_goodreads.data["book_mappings"] if m["edition_id"]}
+        )
         edition_formats = await client.execute(EDITION_FORMATS, {"ids": edition_ids})
     finally:
         await client.aclose()

@@ -37,7 +37,7 @@ after the backfill, are left for #162.
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Protocol
@@ -239,7 +239,7 @@ class GoodreadsSync:
         async with self._applier.lock(profile):
             try:
                 library = await self._mirror.fetch(profile)
-                writes = await self._ready(profile, writes, library.user_books)
+                writes = await self._ready(profile, writes, library.user_books, counts)
             except FetchFailed as exc:
                 counts.error(str(exc))
                 return "deferred"
@@ -253,36 +253,65 @@ class GoodreadsSync:
         return "ok"
 
     async def _ready(
-        self, profile: str, plans: list[_Plan], user_books: list[dict[str, Any]]
+        self,
+        profile: str,
+        plans: list[_Plan],
+        user_books: list[dict[str, Any]],
+        counts: RunCounts,
     ) -> list[_Plan]:
-        """Finish the plans against this run's Hardcover fetch: no read is opened over one
-        already open, and each new read gets its edition (§3.3.5)."""
+        """Finish the plans against this run's Hardcover fetch (§3.3.5, §3.4a.6 rule 6): no
+        read is opened over one already open, a re-read with no open read to complete is
+        always a new read, and each new read gets its edition. A plan whose edition can't be
+        looked up waits for the next run; the others go ahead."""
         reads = _reads_by_book(user_books)
         for i, plan in enumerate(plans):
             assert plan.target is not None
-            if isinstance(plan.target.read, Start) and _has_open_read(
-                reads.get(plan.hc_book_id, [])
-            ):
+            read, open_now = plan.target.read, _has_open_read(reads.get(plan.hc_book_id, []))
+            if isinstance(read, Start) and open_now:
                 plans[i] = replace(plan, target=replace(plan.target, read=None))
-        editions = await self._editions(profile, [p.source_id for p in plans if p.reads])
+            elif isinstance(read, Finish) and plan.trigger == "reread_cycle" and not open_now:
+                read = replace(read, reread=True)
+                plans[i] = replace(plan, target=replace(plan.target, read=read))
+        reading = {p.source_id: p.hc_book_id for p in plans if p.reads}
+        try:
+            editions = await self._editions(profile, reading)
+        except HardcoverError as exc:
+            reason = scrub(str(exc))
+            counts.failed += len(reading)
+            counts.error(reason)
+            log.warning(
+                "couldn't look up the editions of new reads; they wait for the next run: %s",
+                reason,
+                extra={"event": "editions_failed", "profile": profile, "count": len(reading)},
+            )
+            return [p for p in plans if not p.reads]
         for i, plan in enumerate(plans):
             if plan.target is not None and plan.target.read is not None:
                 read = replace(plan.target.read, edition=editions.get(plan.source_id))
                 plans[i] = replace(plan, target=replace(plan.target, read=read))
         return plans
 
-    async def _editions(self, profile: str, source_ids: Iterable[str]) -> dict[str, int]:
-        """The edition each row's new read is written with: its link's, when Hardcover gives
-        that edition a format; otherwise the row is left out and its read has no edition, so
-        it counts as ``unknown`` rather than a guessed format (§3.3.5)."""
-        linked = await self._db.read(identity.link_editions, SOURCE, source_ids)
+    async def _editions(self, profile: str, books: Mapping[str, int]) -> dict[str, int]:
+        """The edition each row's new read is written with (``books``: source id → the book
+        the read goes on): its link's, when Hardcover says that edition is of this book and
+        has a format. Otherwise the row is left out and its read has no edition, so it counts
+        as ``unknown`` rather than a guessed format (§3.3.5)."""
+        linked = await self._db.read(identity.link_editions, SOURCE, books)
         if not linked:
             return {}
         result = await self._hardcover[profile].execute(
             EDITION_FORMATS, {"ids": sorted(set(linked.values()))}
         )
-        known = {e["id"] for e in result.data.get("editions") or [] if e.get("reading_format_id")}
-        return {source_id: ed for source_id, ed in linked.items() if ed in known}
+        known = {
+            e["id"]: e.get("book_id")
+            for e in result.data.get("editions") or []
+            if e.get("reading_format_id")
+        }
+        return {
+            source_id: edition
+            for source_id, edition in linked.items()
+            if edition in known and known[edition] == books[source_id]
+        }
 
     async def _backfill(
         self, profile: str, batch: Batch, run_id: int, counts: RunCounts
@@ -341,20 +370,21 @@ class GoodreadsSync:
             reason = _failure(exc, plan.hc_book_id)
             counts.failed += 1
             counts.error(reason)
-            log.warning(
-                "a Goodreads change didn't reach Hardcover: %s",
-                reason,
-                extra={
-                    "event": "change_failed",
-                    "profile": profile,
-                    "change_id": plan.settles[0].baseline_id,
-                    "hc_book_id": plan.hc_book_id,
-                    "field": plan.settles[0].field,
-                },
-            )
+            for change in plan.settles:
+                log.warning(
+                    "a Goodreads change didn't reach Hardcover: %s",
+                    reason,
+                    extra={
+                        "event": "change_failed",
+                        "profile": profile,
+                        "change_id": change.baseline_id,
+                        "hc_book_id": plan.hc_book_id,
+                        "field": change.field,
+                    },
+                )
             return
-        counts.applied += 1
         await self._settle(profile, plan, observed_at, applied, run_id)
+        counts.applied += 1
 
     async def _settle(
         self,
@@ -367,10 +397,12 @@ class GoodreadsSync:
         """Advance the plan's baselines, with its change log rows when Hardcover took a
         write (§3.4a.6, rule 9)."""
         logs = list(plan.logs) if applied is not None else []
-        # A correction moves a read already logged; its push row says so.
-        moves = plan.target is not None and isinstance(plan.target.read, Correct)
+        read = plan.target.read if plan.target is not None else None
         for change in applied.changes if applied is not None else []:
-            if change.field == "read" and not (moves and change.before is not None):
+            # A correction that moved the read finished on the old date says so in its push
+            # row; one that found nothing there finished (and maybe adopted) a read instead.
+            moved = isinstance(read, Correct) and _finished_on(change.before) == read.old
+            if change.field == "read" and not moved:
                 kind = "read_insert" if change.before is None else "read_adopt"
                 logs.append(LogRow(kind, None, None, None, plan.trigger, plan.date_source))
         await self._db.write(
@@ -484,9 +516,9 @@ def _plans(
         row, obs = rows[source_id], observations[source_id]
         status, date_read = fields.get("status"), fields.get("date_read")
         if status is not None:
-            plans.append(_status_plan(status, date_read, obs, row, shelf_map, zone))
+            plans.extend(_status_plan(status, date_read, obs, row, shelf_map, zone))
         elif date_read is not None:
-            plans.append(_date_plan(date_read, row, shelf_map))
+            plans.append(_date_plan(date_read, _value(row, "status"), shelf_map))
         if (rating := fields.get("rating")) is not None:
             # Goodreads rates in whole stars; unrated clears the Hardcover rating.
             target = Target(rating=None if rating.new is None else float(rating.new))
@@ -502,25 +534,32 @@ def _status_plan(
     row: SourceRow,
     shelf_map: Mapping[str, int],
     zone: tzinfo,
-) -> _Plan:
+) -> list[_Plan]:
     """A status change and the read edits it carries, as one change (§3.4a.6, rule 6). A
-    Date Read change on the same row rides along: it is the finish date."""
-    settles = [status, *([date_read] if date_read is not None else [])]
+    Date Read change on the same row is the finish date when the change finishes a read;
+    otherwise it's planned on its own, against the new status."""
     new = shelf_map.get(status.new) if status.new is not None else None
+    old = shelf_map.get(status.old) if status.old is not None else None
+    finishes = new == READ and old != READ
+    rest = [] if date_read is None or finishes else [_date_plan(date_read, status.new, shelf_map)]
+    settles = [status, *([date_read] if date_read is not None and finishes else [])]
     if new is None:
         log.info(
             "a Goodreads exclusive shelf isn't in shelf_map, so its status isn't pushed",
             extra={"event": "unmapped_shelf", "shelf": status.new, "change_id": status.baseline_id},
         )
-        return _Plan(status.source_id, status.hc_book_id, settles)
-    old = shelf_map.get(status.old) if status.old is not None else None
+        return [_Plan(status.source_id, status.hc_book_id, settles), *rest]
     trigger = "status"
     op: Start | Finish | None = None
     date_source: str | None = None
-    if new == READ and old != READ:
-        if status.old == "currently-reading" and status.prev_value == "read":
-            trigger = "reread_cycle"
-        finished = date_read.new if date_read is not None else _value(row, "date_read")
+    if finishes:
+        reread = status.old == "currently-reading" and status.prev_value == "read"
+        trigger = "reread_cycle" if reread else "status"
+        # The Date Read already on the baseline is the last read's: a re-read finishes on a
+        # date of its own unless Goodreads' date moved with it.
+        finished = date_read.new if date_read is not None else None
+        if finished is None and not reread:
+            finished = _value(row, "date_read")
         on, date_source = _when(finished, obs, status, zone)
         op = Finish(on)
     elif new == CURRENTLY_READING and old != CURRENTLY_READING:
@@ -528,12 +567,13 @@ def _status_plan(
         op = Start(on)
     push = LogRow("push", "status", status.old, status.new, trigger, date_source)
     target = Target(status_id=new, read=op)
-    return _Plan(status.source_id, status.hc_book_id, settles, target, [push], trigger, date_source)
+    plan = _Plan(status.source_id, status.hc_book_id, settles, target, [push], trigger, date_source)
+    return [plan, *rest]
 
 
-def _date_plan(change: Pending, row: SourceRow, shelf_map: Mapping[str, int]) -> _Plan:
-    """A Date Read change with no status change: a correction (§3.4a.6, rule 6)."""
-    status = _value(row, "status")
+def _date_plan(change: Pending, status: str | None, shelf_map: Mapping[str, int]) -> _Plan:
+    """A Date Read change that finishes nothing: a correction (§3.4a.6, rule 6). ``status``
+    is the row's exclusive shelf, as of this run."""
     if change.new is None or status is None or shelf_map.get(status) != READ:
         # A vanished Date Read is never pushed (rule 5), and a date on a book that isn't Read
         # isn't a finish; either way the baseline moves on.
@@ -579,6 +619,11 @@ def _reads_by_book(user_books: list[dict[str, Any]]) -> dict[int, list[dict[str,
         if canonical := (ub.get("book") or {}).get("canonical_id"):
             reads.setdefault(canonical, found)
     return reads
+
+
+def _finished_on(read: Any) -> str | None:
+    """A read change's finish date, as the write procedure reports reads."""
+    return read.get("finished_on") if isinstance(read, dict) else None
 
 
 def _has_open_read(reads: list[dict[str, Any]]) -> bool:
