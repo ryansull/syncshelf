@@ -9,7 +9,8 @@ and the channel is titled ``…'s bookshelf: all``, the ``#ALL#`` form seen on t
 fetch (2026-10-18). Anything else is a failed fetch, never "no books": a 404 user, an AWS WAF
 challenge (202, ``x-amzn-waf-action``) or CAPTCHA (405), an HTML page, a network error. Paging
 stops at the first unusable page and never retries past it, and the pass is **complete** only
-if every page was usable and paging ended on an empty page (§3.4a.3).
+if every page was usable and paging ended on an empty page (§3.4a.3). A feed with no books at
+all is usable but never complete, since an empty feed concludes nothing (§3.4a.6, rule 4).
 
 **Politeness.** ``robots.txt`` disallows the feed for crawlers; it's a subscription link, so
 SyncShelf keeps to a reader's pace: one pass per run, at least :data:`MIN_INTERVAL` seconds
@@ -41,6 +42,8 @@ __all__ = [
     "Pacer",
     "RssItem",
     "RssPass",
+    "Unusable",
+    "page_items",
     "rss_url",
 ]
 
@@ -141,7 +144,7 @@ class RssPass:
     pages: int = 0
     """Usable pages fetched, the closing empty page included."""
     complete: bool = False
-    """Every page was usable and paging ended on an empty page."""
+    """Every page was usable, paging ended on an empty page, and the feed listed books."""
     problem: str | None = None
     """Why paging stopped before the empty page, naming the page; ``None`` when complete."""
     challenged: bool = False
@@ -153,7 +156,9 @@ class RssPass:
         return self.pages > 0
 
 
-class _Unusable(Exception):
+class Unusable(Exception):
+    """A page that doesn't count, with the reason (safe to show) and whether it was a WAF stop."""
+
     def __init__(self, reason: str, *, challenged: bool = False) -> None:
         super().__init__(reason)
         self.challenged = challenged
@@ -201,16 +206,22 @@ class GoodreadsRss:
         for page in range(1, MAX_PAGES + 1):
             try:
                 found = await self._page(page)
-            except _Unusable as exc:
+            except Unusable as exc:
                 return RssPass(
                     items, page - 1, problem=f"page {page}: {exc}", challenged=exc.challenged
                 )
             if not found:
+                if not items:
+                    # An empty feed concludes nothing about absence (§3.4a.6, rule 4): a
+                    # private profile read without its key may look just like it.
+                    return RssPass(items, page, problem=f"page {page}: the feed lists no books")
                 return RssPass(items, page, complete=True)
-            # Pages are disjoint; one that repeats earlier items means paging went wrong.
-            if any(item.book_id in seen for item in found):
+            # Pages are disjoint and list each book once; anything else means paging went
+            # wrong, and the pass can't vouch for what it's missing.
+            ids = [item.book_id for item in found]
+            if len(set(ids)) < len(ids) or not seen.isdisjoint(ids):
                 return RssPass(items, page - 1, problem=f"page {page}: repeats earlier items")
-            seen.update(item.book_id for item in found)
+            seen.update(ids)
             items.extend(found)
         return RssPass(items, MAX_PAGES, problem=f"more than {MAX_PAGES} pages")
 
@@ -223,7 +234,7 @@ class GoodreadsRss:
             try:
                 response = await self._http.get(self._url, params=params)
             except httpx2.RequestError as exc:
-                raise _Unusable(f"Goodreads is unreachable ({type(exc).__name__})") from None
+                raise Unusable(f"Goodreads is unreachable ({type(exc).__name__})") from None
         log.debug(
             "GET %s %d",
             "/review/list_rss",
@@ -236,29 +247,29 @@ class GoodreadsRss:
                 "ms": round((time.monotonic() - started) * 1000),
             },
         )
-        return _items(response)
+        return page_items(response)
 
 
-def _items(response: httpx2.Response) -> list[RssItem]:
-    """A usable page's items, or :class:`_Unusable` saying why the page doesn't count."""
+def page_items(response: httpx2.Response) -> list[RssItem]:
+    """A usable page's items; raises :class:`Unusable` saying why the page doesn't count."""
     status = response.status_code
     waf = response.headers.get("x-amzn-waf-action")
     if waf or status in (202, 405):
         kind = "CAPTCHA" if status == 405 or waf == "captcha" else "challenge"
-        raise _Unusable(f"Goodreads answered with a WAF {kind} (HTTP {status})", challenged=True)
+        raise Unusable(f"Goodreads answered with a WAF {kind} (HTTP {status})", challenged=True)
     if status == 404:
-        raise _Unusable("Goodreads has no such user (HTTP 404)")
+        raise Unusable("Goodreads has no such user (HTTP 404)")
     if status != 200:
-        raise _Unusable(f"Goodreads returned HTTP {status}")
+        raise Unusable(f"Goodreads returned HTTP {status}")
     try:
         root = ET.fromstring(response.content)
     except ET.ParseError:
-        raise _Unusable("the feed is not XML") from None
+        raise Unusable("the feed is not XML") from None
     channel = root.find("channel") if root.tag == "rss" else None
     if channel is None:
-        raise _Unusable("the feed is not RSS with a channel")
+        raise Unusable("the feed is not RSS with a channel")
     if not (channel.findtext("title") or "").endswith(_ALL_TITLE_SUFFIX):
-        raise _Unusable("the feed doesn't name the #ALL# shelf")
+        raise Unusable("the feed doesn't name the #ALL# shelf")
     return [_item(element) for element in channel.findall("item")]
 
 

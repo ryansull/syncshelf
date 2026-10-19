@@ -1,7 +1,8 @@
 """The observation contract for RSS rows (SPEC §3.4a.3): normalised fields keyed by the
 Goodreads edition id, and a field the feed doesn't carry left out, never cleared."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -10,6 +11,7 @@ from syncshelf.sync.observations import Batch, observe_rss, review_text
 
 SHELF_MAP = {"read": 3, "currently-reading": 2, "to-read": 1, "did-not-finish": 5}
 OBSERVED_AT = 4_102_444_800
+LONDON = ZoneInfo("Europe/London")
 
 
 def item(**fields: str) -> RssItem:
@@ -30,7 +32,7 @@ def item(**fields: str) -> RssItem:
 
 def observe(*items: RssItem, complete: bool = True) -> Batch:
     rss = RssPass(list(items), pages=1, complete=complete)
-    return observe_rss(rss, SHELF_MAP, OBSERVED_AT)
+    return observe_rss(rss, SHELF_MAP, OBSERVED_AT, LONDON)
 
 
 def test_the_batch_carries_its_source_time_and_completeness() -> None:
@@ -68,7 +70,7 @@ def test_the_status_is_the_exclusive_shelf_and_none_means_read(
 
 def test_a_built_in_shelf_is_exclusive_even_when_unmapped() -> None:
     rss = RssPass([item(user_shelves="to-read")], pages=1, complete=True)
-    (row,) = observe_rss(rss, {"read": 3}, OBSERVED_AT).rows
+    (row,) = observe_rss(rss, {"read": 3}, OBSERVED_AT, LONDON).rows
     assert row.fields["status"] == "to-read"
 
 
@@ -85,11 +87,22 @@ def test_the_read_date_is_the_date_part_never_shifted() -> None:
     assert row.fields["date_read"] is None
 
 
-def test_added_and_last_touched_keep_goodreads_offsets() -> None:
+def test_the_added_date_is_in_the_profiles_zone() -> None:
+    # 19:20 Pacific on the 21st is already the 22nd in London (§2.4: calendar dates are in
+    # the profile's time zone).
+    (row,) = observe(item()).rows
+    assert row.date_added == date(2026, 9, 22)
+
+
+def test_last_touched_keeps_goodreads_offset() -> None:
     (row,) = observe(item()).rows
     pacific = timezone(timedelta(hours=-7))
-    assert row.date_added == date(2026, 9, 21)
     assert row.last_touched == datetime(2026, 10, 15, 8, 9, 10, tzinfo=pacific)
+
+
+def test_a_date_with_no_known_offset_is_read_as_utc() -> None:
+    (row,) = observe(item(user_date_added="Thu, 15 Oct 2026 08:09:10 -0000")).rows
+    assert row.last_touched == datetime(2026, 10, 15, 8, 9, 10, tzinfo=UTC)
 
 
 def test_match_input_fields() -> None:

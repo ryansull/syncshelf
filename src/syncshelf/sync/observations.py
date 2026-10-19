@@ -14,7 +14,7 @@ import html
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from email.utils import parsedate_to_datetime
 from typing import Literal
 
@@ -61,7 +61,7 @@ class Observation:
     shelves: tuple[str, ...] = ()
     """The row's non-exclusive shelves. Carried for matching and display, never pushed."""
     date_added: date | None = None
-    """When the book was shelved, as Goodreads dates it."""
+    """When the book was shelved, as a date in the profile's time zone (§2.4)."""
     last_touched: datetime | None = None
     """RSS ``user_date_added``, with Goodreads' offset: the date source for an undated
     finish (§3.4a.6, rule 6)."""
@@ -81,16 +81,21 @@ class Batch:
     stale: bool = False
 
 
-def observe_rss(rss: RssPass, shelf_map: Mapping[str, int], observed_at: int) -> Batch:
-    """The batch for one RSS pass, observed at the fetch's start (``observed_at``)."""
+def observe_rss(
+    rss: RssPass, shelf_map: Mapping[str, int], observed_at: int, zone: tzinfo
+) -> Batch:
+    """The batch for one RSS pass, observed at the fetch's start (``observed_at``). ``zone``
+    is the profile's time zone, which calendar dates are given in (§2.4)."""
     exclusive = frozenset(BUILT_IN_SHELVES) | frozenset(shelf_map)
-    rows = tuple(_rss_row(item, exclusive) for item in rss.items)
+    rows = tuple(_rss_row(item, exclusive, zone) for item in rss.items)
     return Batch("gr_rss", observed_at, rss.complete, rows)
 
 
-def _rss_row(item: RssItem, exclusive: frozenset[str]) -> Observation:
+def _rss_row(item: RssItem, exclusive: frozenset[str], zone: tzinfo) -> Observation:
     listed = [s.strip() for s in item.user_shelves.split(",") if s.strip()]
-    # RSS leaves out `read`: no exclusive shelf listed means the book is on it (§3.4a.1).
+    # RSS leaves out `read`: no exclusive shelf listed means the book is on it (§3.4a.1). The
+    # feed doesn't mark which shelf is exclusive, so a custom exclusive shelf missing from
+    # shelf_map reads as an ordinary one, and the book as Read (#182).
     status = next((s for s in listed if s in exclusive), "read")
     fields = {
         "status": status,
@@ -107,7 +112,7 @@ def _rss_row(item: RssItem, exclusive: frozenset[str]) -> Observation:
         author=item.author_name or None,
         isbn10=item.isbn or None,
         shelves=tuple(s for s in listed if s != status),
-        date_added=added.date() if added else None,
+        date_added=added.astimezone(zone).date() if added else None,
         last_touched=_rfc822(item.user_date_added),
     )
 
@@ -121,9 +126,11 @@ def _rfc822(text: str) -> datetime | None:
     if not text:
         return None
     try:
-        return parsedate_to_datetime(text)
+        parsed = parsedate_to_datetime(text)
     except TypeError, ValueError:
         return None
+    # "-0000" (and a date with no zone) parses naive; RFC 5322 reads it as UTC.
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 _BREAK = re.compile(r"<br\s*/?>", re.IGNORECASE)
