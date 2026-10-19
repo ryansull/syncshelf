@@ -37,7 +37,7 @@ def fake() -> FakeHardcover:
         7,
         status_id=3,
         rating=4.5,
-        review_raw="Loved it.",
+        review_markdown="Loved it.",
         has_review=True,
         first_started_reading_date="2099-01-01",
         user_book_reads=[read(1, "2099-01-01", "2099-01-09"), read(2, "2099-05-01", "2099-05-09")],

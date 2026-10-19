@@ -549,7 +549,7 @@ def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
         "status_id": 1,
         "rating": None,
         "has_review": False,
-        "review_raw": None,
+        "review_markdown": None,
         "review_has_spoilers": False,
         "date_added": "2026-01-01",
         "first_started_reading_date": None,
@@ -618,7 +618,7 @@ def _apply_fields(row: dict[str, Any], obj: dict[str, Any]) -> None:
     """Apply a user_book write the way Hardcover stores it."""
     for key, value in obj.items():
         if key == "review_markdown":
-            row["review_raw"] = value
+            row["review_markdown"] = value
             row["has_review"] = bool(value)
         else:
             row[key] = value

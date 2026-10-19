@@ -152,7 +152,7 @@ class Applied:
 _FIELDS = {
     "status_id": ("status_id", "status_id"),
     "rating": ("rating", "rating"),
-    "review": ("review_raw", "review_markdown"),
+    "review": ("review_markdown", "review_markdown"),
     "review_has_spoilers": ("review_has_spoilers", "review_has_spoilers"),
 }
 

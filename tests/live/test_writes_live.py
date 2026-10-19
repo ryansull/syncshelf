@@ -184,7 +184,6 @@ async def test_edits_leave_only_the_dates_given(
     assert journal.data["reading_journals"] == []
 
 
-@pytest.mark.xfail(strict=True, reason="#149: review_raw is the review with its Markdown stripped")
 async def test_the_same_review_again_writes_nothing(
     test_account: HardcoverClient, live_env: dict[str, str], tmp_path: Path
 ) -> None:

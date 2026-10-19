@@ -28,10 +28,15 @@ def fake() -> FakeHardcover:
     fake.add_user(hardcover_token("bob"), user_id=BOB)
     fake.add_user(hardcover_token("carol"), user_id=CAROL)
     fake.add_user_book(
-        ALICE, 7, status_id=3, rating=4.0, date_added="2026-01-02", review_raw="alice's review"
+        ALICE, 7, status_id=3, rating=4.0, date_added="2026-01-02", review_markdown="alice's review"
     )
     fake.add_user_book(
-        BOB, 7, status_id=3, rating=2.5, date_added="2026-01-01", review_raw="bob's private review"
+        BOB,
+        7,
+        status_id=3,
+        rating=2.5,
+        date_added="2026-01-01",
+        review_markdown="bob's private review",
     )
     fake.add_user_book(BOB, 8, status_id=1, date_added="2026-01-03")
     fake.add_user_book(CAROL, 9, status_id=1)
