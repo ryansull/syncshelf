@@ -474,3 +474,18 @@ cases:
       - feed: [{id: 100, title: Dune, rating: "5"}]
         expect:
           shelf: {7: {rating: 5.0}}
+
+  - name: a new book whose shelf couldn't be read is pushed once its status is seen
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 200, title: Messiah, rating: "5", shelves: [kindle]}, {id: 100, title: Dune}]
+        expect:
+          writes: []
+      - feed: [{id: 200, title: Messiah, rating: "5", shelf: to-read}, {id: 100, title: Dune}]
+        expect:
+          state: ok
+          shelf: {8: {status: 1, rating: 5.0}}
+          pending: {}

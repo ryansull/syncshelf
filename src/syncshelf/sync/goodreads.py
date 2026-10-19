@@ -48,17 +48,13 @@ from typing import Any, Protocol
 import httpx2
 
 from syncshelf.clients.goodreads_rss import GoodreadsRss, Pacer
-from syncshelf.clients.hardcover import (
-    EDITION_FORMATS,
-    HardcoverClient,
-    HardcoverError,
-    Library,
-)
+from syncshelf.clients.hardcover import EDITION_FORMATS, HardcoverClient, HardcoverError
 from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
 from syncshelf.logging import scrub
 from syncshelf.sync import identity, runs
 from syncshelf.sync.apply import (
+    UNSET,
     Applied,
     Applier,
     Correct,
@@ -237,31 +233,36 @@ class GoodreadsSync:
 
         # Stages 3 and 4, under the profile's apply lock.
         async with self._applier.lock(profile):
-            library: Library | None = None
-            try:
-                if observed.new:
-                    # Books first seen now are matched and added, so the fetch is needed.
-                    library = await self._mirror.fetch(profile)
+            if observed.new:
+                try:
                     added = await self._add(profile, batch, observed.new)
+                except HardcoverError as exc:
+                    # The books stay new, so the next run matches them; the rest goes on.
+                    counts.error(scrub(str(exc)))
+                    log.warning(
+                        "couldn't match books first seen on Goodreads; next run tries again",
+                        extra={"event": "match_failed", "profile": profile},
+                    )
+                else:
                     rows = await self._db.read(identity.load_rows, profile, SOURCE)
                     work = _ready_to_push([*observed.pending, *added], rows)
-                plans = _plans(work, observations, rows, goodreads.shelf_map, zone)
-                # What needs no Hardcover write settles first, never costing the fetch.
-                for plan in plans:
-                    if plan.target is None:
-                        await self._settle(profile, plan, batch.observed_at, None, run_id)
-                writes = [plan for plan in plans if plan.target is not None]
-                if writes:
-                    if library is None:
-                        library = await self._mirror.fetch(profile)
+            plans = _plans(work, observations, rows, goodreads.shelf_map, zone)
+            # What needs no Hardcover write settles first, never costing the fetch.
+            for plan in plans:
+                if plan.target is None:
+                    await self._settle(profile, plan, batch.observed_at, None, run_id)
+            writes = [plan for plan in plans if plan.target is not None]
+            if writes:
+                try:
+                    library = await self._mirror.fetch(profile)
                     writes = await self._ready(profile, writes, library.user_books, counts)
-            except FetchFailed as exc:
-                counts.error(str(exc))
-                return "deferred"
-            except HardcoverError as exc:
-                counts.error(scrub(str(exc)))
-                return "deferred"
-            for plan in writes:
+                except FetchFailed as exc:
+                    counts.error(str(exc))
+                    return "deferred"
+                except HardcoverError as exc:
+                    counts.error(scrub(str(exc)))
+                    return "deferred"
+            for plan in _shelf_first(writes, rows):
                 await self._apply(profile, plan, batch.observed_at, run_id, counts)
         if counts.failed or not batch.complete:
             return "partial"
@@ -566,11 +567,21 @@ def _plans(
             # Goodreads rates in whole stars; unrated clears the Hardcover rating.
             target = Target(rating=None if rating.new is None else float(rating.new))
             plans.append(_push(rating, target))
-        if (review := fields.get("review")) is not None:
-            # Written as review_markdown; an emptied review clears it (rule 5).
-            plans.append(_push(review, Target(review=review.new)))
-        if (spoiler := fields.get("spoiler")) is not None:
-            plans.append(_push(spoiler, Target(review_has_spoilers=spoiler.new == "1")))
+        review, spoiler = fields.get("review"), fields.get("spoiler")
+        text = review.new if review is not None else _value(row, "review")
+        if review is not None:
+            # Written as review_markdown; an emptied review clears it and its spoiler flag
+            # (rule 5), so a spoiler change alongside settles with it.
+            plan = _push(review, Target(review=review.new))
+            if spoiler is not None and text is None:
+                plan.settles.append(spoiler)
+                spoiler = None
+            plans.append(plan)
+        if spoiler is not None:
+            if text is None:
+                plans.append(_Plan(source_id, spoiler.hc_book_id, [spoiler]))  # no review
+            else:
+                plans.append(_push(spoiler, Target(review_has_spoilers=spoiler.new == "1")))
     return plans
 
 
@@ -578,6 +589,41 @@ def _push(change: Pending, target: Target) -> _Plan:
     """A plain field push: one change, one write, one ``push`` row."""
     push = LogRow("push", change.field, change.old, change.new)
     return _Plan(change.source_id, change.hc_book_id, [change], target, [push])
+
+
+def _shelf_first(plans: list[_Plan], rows: Mapping[str, SourceRow]) -> list[_Plan]:
+    """The writes for a row with no shelf entry known go in one insert (§3.3.6 rule 3): its
+    status plan takes every other field's target, so the book is added with them. Without a
+    status plan that writes, nothing can add the book, so its other changes wait (#182)."""
+    by_row: dict[str, list[_Plan]] = {}
+    for plan in plans:
+        by_row.setdefault(plan.source_id, []).append(plan)
+    ready: list[_Plan] = []
+    for source_id, group in by_row.items():
+        if rows[source_id].hc_user_book_id is not None:
+            ready.extend(group)
+            continue
+        status = next((p for p in group if any(c.field == "status" for c in p.settles)), None)
+        if status is None or status.target is None:
+            continue  # they wait for the row's status
+        target, settles, logs = status.target, list(status.settles), list(status.logs)
+        for other in group:
+            if other is status or other.target is None:
+                continue
+            target = _merged(target, other.target)
+            settles.extend(other.settles)
+            logs.extend(other.logs)
+        ready.append(replace(status, target=target, settles=settles, logs=logs))
+    return ready
+
+
+def _merged(target: Target, other: Target) -> Target:
+    """``target`` with every field ``other`` sets."""
+    fields = ("status_id", "rating", "review", "review_has_spoilers")
+    changes = {f: getattr(other, f) for f in fields if getattr(other, f) is not UNSET}
+    if other.read is not None:
+        changes["read"] = other.read
+    return replace(target, **changes)
 
 
 def _ready_to_push(changes: list[Pending], rows: Mapping[str, SourceRow]) -> list[Pending]:

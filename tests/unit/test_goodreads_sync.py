@@ -376,3 +376,43 @@ async def test_a_link_edition_of_another_book_is_not_written(tmp_path: Path) -> 
         await w.sync.run_rss("alice")
         (read,) = w.hardcover.user_books[HC_USER][0]["user_book_reads"]
         assert (read["finished_at"][:10], read["edition_id"]) == ("2026-10-02", None)
+
+
+async def test_a_new_book_on_an_unmapped_shelf_holds_its_other_changes(tmp_path: Path) -> None:
+    # to-read is a built-in exclusive shelf, but this profile's map leaves it out.
+    async with world(tmp_path, shelf_map="{read: 3, currently-reading: 2}") as w:
+        w.hardcover.add_user_book(HC_USER, 7)
+        w.hardcover.add_mapping(DUNE, 7)
+        w.hardcover.add_mapping(MESSIAH, 8)
+        w.goodreads.add_item(GR_USER, DUNE, "Dune")
+        await w.sync.run_rss("alice")
+        w.clock.advance(3600)
+        w.goodreads.add_item(GR_USER, MESSIAH, "Dune Messiah", shelf="to-read", user_rating="4")
+        run_id = await w.sync.run_rss("alice")
+        assert await state(w, run_id) == ("ok", 0, 0, None)
+        assert w.hardcover.writes == []
+        assert await w.rows(
+            "SELECT field, value, pending_value FROM baseline_fields WHERE source_id = ? "
+            "ORDER BY field",
+            str(MESSIAH),
+        ) == [
+            ("date_read", None, None),
+            ("rating", None, "4"),
+            ("review", None, None),
+            ("status", "to-read", None),  # settled: an unmapped shelf is never pushed
+        ]
+
+
+async def test_matching_new_books_can_fail_without_holding_the_rest(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    dune = next(i for i in w.goodreads.users[GR_USER].items if i["book_id"] == str(DUNE))
+    dune["user_rating"] = "5"  # already linked
+    w.goodreads.add_item(GR_USER, 500, "God Emperor of Dune")
+    w.hardcover.fail_next("ByGoodreads", "unavailable")
+    run_id = await w.sync.run_rss("alice")
+    (run_state, applied, _, error) = await state(w, run_id)
+    assert (run_state, applied) == ("ok", 1)
+    assert error is not None
+    assert w.hardcover.user_books[HC_USER][0]["rating"] == 5.0
+    assert await w.rows("SELECT count(*) FROM source_rows WHERE source_id = '500'") == [(0,)]
