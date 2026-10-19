@@ -81,6 +81,8 @@ class Placement:
     """The id hit the row was placed by, if any (a queued ``not_in_library`` row has one)."""
     linked: bool
     hc_user_book_id: int | None = None
+    reason: str | None = None
+    """Why a queued row is queued, when its hit doesn't say (a ``stale`` link)."""
 
 
 @dataclass(frozen=True)
@@ -115,22 +117,27 @@ def backfilled(conn: sqlite3.Connection, profile: str, source: IdentitySource) -
 
 def shared_links(
     conn: sqlite3.Connection, source: IdentitySource, ids: Iterable[str]
-) -> dict[str, IdHit]:
-    """The active shared links for ``ids``, in the matcher's hit shape, so the backfill can
-    reuse a link the other profile's rows already made (§3.4a.4, rule 6)."""
+) -> tuple[dict[str, IdHit], set[str]]:
+    """The shared links for ``ids``: the active ones in the matcher's hit shape, so the
+    backfill reuses a link the other profile's rows already made (§3.4a.4, rule 6), and the
+    ids whose link is ``stale``, whose rows are queued until a person resolves them."""
     wanted = list(ids)
-    links: dict[str, IdHit] = {}
+    active: dict[str, IdHit] = {}
+    stale: set[str] = set()
     for start in range(0, len(wanted), 500):
         chunk = wanted[start : start + 500]
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
-            "SELECT source_id, hc_book_id, hc_edition_id, method FROM links "  # noqa: S608
-            f"WHERE source = ? AND state = 'active' AND source_id IN ({marks})",
+            "SELECT source_id, hc_book_id, hc_edition_id, method, state FROM links "  # noqa: S608
+            f"WHERE source = ? AND source_id IN ({marks})",
             (source, *chunk),
         )
-        for source_id, book_id, edition_id, method in rows:
-            links[source_id] = IdHit(book_id, edition_id, "", method)
-    return links
+        for source_id, book_id, edition_id, method, state in rows:
+            if state == "stale":
+                stale.add(source_id)
+            else:
+                active[source_id] = IdHit(book_id, edition_id, "", method)
+    return active, stale
 
 
 def load_rows(
@@ -207,7 +214,7 @@ def record_backfill(
             )  # fmt: skip
         else:
             queued += 1
-            reason = "not_in_library" if hit is not None else "no_hit"
+            reason = place.reason or ("not_in_library" if hit is not None else "no_hit")
             conn.execute(
                 "INSERT INTO source_rows (profile, source, source_id, state, queue_reason, "
                 "queued_at, match_input, first_seen_at, last_seen_at, backfill_queued) "
@@ -290,7 +297,11 @@ def observe(
             if row.source_id not in listed and row.gone_at is None:
                 gone += 1
                 _mark_gone(conn, profile, source, row, now)
-    return Observed(_pending(conn, profile, source), gone)
+    # A row this batch didn't list keeps its pending change for a batch that does, so the
+    # baseline is never stamped with a time it wasn't observed at.
+    listed_now = {source_id for _, _, _, source_id in seen}
+    pending = [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
+    return Observed(pending, gone)
 
 
 def _mark_gone(

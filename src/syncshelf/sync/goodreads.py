@@ -21,10 +21,10 @@ changes are recorded as pending and wait for the tickets that push them, and row
 after the backfill are left for #162.
 """
 
+import asyncio
 import logging
-import time
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx2
 
@@ -34,10 +34,20 @@ from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
 from syncshelf.logging import scrub
 from syncshelf.sync import identity, runs
-from syncshelf.sync.apply import Applier, Incomplete, Target
+from syncshelf.sync.apply import (
+    Applier,
+    DateNeeded,
+    DatesOutOfOrder,
+    FormatNeeded,
+    Incomplete,
+    NotShelved,
+    OpenReadExists,
+    ReadStillOpen,
+    Target,
+)
 from syncshelf.sync.identity import Pending, Placement
 from syncshelf.sync.matcher import goodreads_mappings
-from syncshelf.sync.mirror import Mirror
+from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, observe_rss
 from syncshelf.sync.runs import RunCounts, RunState, Trigger
 
@@ -88,6 +98,7 @@ class GoodreadsSync:
         self._applier = applier
         self._clock = clock
         self._rss: dict[str, GoodreadsRss] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         for name, profile in profiles.items():
             if profile.goodreads is None:
                 continue
@@ -97,6 +108,7 @@ class GoodreadsSync:
                 pacer=Pacer(clock),
                 transport=transport,
             )
+            self._locks[name] = asyncio.Lock()
 
     async def aclose(self) -> None:
         """Close every profile's Goodreads connection."""
@@ -107,12 +119,23 @@ class GoodreadsSync:
         """Whether the profile has a Goodreads source."""
         return profile in self._rss
 
+    def lock(self, profile: str) -> asyncio.Lock:
+        """The profile's Goodreads sync lock (§2.2): one run of its source at a time. A run
+        takes it; the scheduler skips a tick, and ``sync_now`` reports the run in progress,
+        when it's held."""
+        return self._locks[profile]
+
     async def run_rss(self, profile: str, trigger: Trigger = "schedule") -> int:
-        """Run the profile's RSS source once and return the run's id. Every outcome is on the
-        run's row; this raises only for a profile with no Goodreads source."""
+        """Run the profile's RSS source once and return the run's id, waiting for a run in
+        progress to finish first. Every outcome is on the run's row; this raises only for a
+        profile with no Goodreads source."""
         rss = self._rss[profile]
+        async with self._locks[profile]:
+            return await self._locked_run(profile, rss, trigger)
+
+    async def _locked_run(self, profile: str, rss: GoodreadsRss, trigger: Trigger) -> int:
         started = int(self._clock.time())
-        began = time.monotonic()
+        began = self._clock.monotonic()
         run_id = await self._db.write(runs.start, profile, "gr_rss", trigger, started)
         counts = RunCounts()
         state: RunState = "aborted"
@@ -139,7 +162,7 @@ class GoodreadsSync:
                     "applied": counts.applied,
                     "failed": counts.failed,
                     "quarantined": counts.quarantined,
-                    "duration_s": round(time.monotonic() - began, 3),
+                    "duration_s": round(self._clock.monotonic() - began, 3),
                 },
             )
         return run_id
@@ -181,8 +204,8 @@ class GoodreadsSync:
         async with self._applier.lock(profile):
             try:
                 await self._mirror.fetch(profile)
-            except HardcoverError as exc:
-                counts.error(scrub(str(exc)))
+            except FetchFailed as exc:
+                counts.error(str(exc))
                 return "deferred"
             for change in work:
                 await self._apply(profile, change, batch, run_id, counts)
@@ -195,18 +218,25 @@ class GoodreadsSync:
     ) -> RunState:
         """The map-only backfill (§3.4a.12): reads Hardcover, never writes it."""
         ids = [row.source_id for row in batch.rows]
+        shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
         async with self._applier.lock(profile):
             try:
                 library = await self._mirror.fetch(profile)
-                shared = await self._db.read(identity.shared_links, SOURCE, ids)
-                unlinked = [i for i in ids if i not in shared]
+                unlinked = [i for i in ids if i not in shared and i not in stale]
                 hits = {**await goodreads_mappings(self._hardcover[profile], unlinked), **shared}
+            except FetchFailed as exc:
+                counts.error(str(exc))
+                return "deferred"
             except HardcoverError as exc:
                 counts.error(scrub(str(exc)))
                 return "deferred"
-        shelved = {ub["book_id"]: ub["id"] for ub in library.user_books}
+        shelved = _shelved(library.user_books)
         placements = []
         for row in batch.rows:
+            if row.source_id in stale:
+                # A link Hardcover no longer backs: a person resolves it (§3.4a.4, rule 7).
+                placements.append(Placement(row, None, False, reason="stale"))
+                continue
             hit = hits.get(row.source_id)
             user_book = shelved.get(hit.book_id) if hit is not None else None
             placements.append(Placement(row, hit, user_book is not None, user_book))
@@ -236,13 +266,14 @@ class GoodreadsSync:
             applied = await self._applier.apply(
                 profile, change.hc_book_id, target, trigger=TRIGGER, locked=True
             )
-        except (HardcoverError, Incomplete) as exc:
+        except (HardcoverError, *REFUSALS) as exc:
             # The baseline stays put, so the next run tries again (§3.4a.6, rule 9).
+            reason = _failure(exc, change.hc_book_id)
             counts.failed += 1
-            counts.error(scrub(str(exc)))
+            counts.error(reason)
             log.warning(
                 "a Goodreads change didn't reach Hardcover: %s",
-                scrub(str(exc)),
+                reason,
                 extra={
                     "event": "change_failed",
                     "profile": profile,
@@ -288,6 +319,39 @@ class GoodreadsSync:
                 "run_id": run_id,
             },
         )
+
+
+def _shelved(user_books: list[dict[str, Any]]) -> dict[int, int]:
+    """Each shelved book's user_book id, by book id and by the book it was merged into, so
+    a hit (which follows ``canonical_id``) finds a shelf entry still on the merged book."""
+    shelved: dict[int, int] = {}
+    for ub in user_books:
+        shelved.setdefault(ub["book_id"], ub["id"])
+        if canonical := (ub.get("book") or {}).get("canonical_id"):
+            shelved.setdefault(canonical, ub["id"])
+    return shelved
+
+
+REFUSALS = (
+    Incomplete,
+    NotShelved,
+    DateNeeded,
+    OpenReadExists,
+    FormatNeeded,
+    ReadStillOpen,
+    DatesOutOfOrder,
+)
+"""What the write procedure raises for a change it can't make as asked: each fails that one
+change and leaves its baseline, never the run."""
+
+
+def _failure(exc: Exception, book_id: int) -> str:
+    """A failed change's reason, safe to show and store (§2.7)."""
+    if isinstance(exc, NotShelved):
+        return f"book {book_id} is not on the profile's Hardcover shelves"
+    if isinstance(exc, HardcoverError | Incomplete):
+        return scrub(str(exc))
+    return f"the write procedure refused the change ({type(exc).__name__})"
 
 
 def _target(change: Pending) -> Target | None:

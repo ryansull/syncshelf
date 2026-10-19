@@ -5,6 +5,7 @@ change reaches Hardcover; an idle run makes no Hardcover calls."""
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import anyio
 import pytest
 
 from syncshelf.sync import runs
@@ -231,3 +232,95 @@ async def test_a_404_user_fails_the_fetch_and_concludes_nothing(w: World) -> Non
         "page 1: Goodreads has no such user (HTTP 404)",
     )
     assert await w.rows("SELECT count(*) FROM source_rows WHERE gone_at IS NOT NULL") == [(0,)]
+
+
+async def test_a_change_hardcover_cant_take_fails_alone_and_the_run_goes_on(w: World) -> None:
+    w.hardcover.add_user_book(HC_USER, 9, status_id=3, rating=2.0)
+    w.hardcover.add_mapping(400, 9)
+    w.goodreads.add_item(GR_USER, 400, "Children of Dune", user_rating="2")
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    # Dune leaves the Hardcover shelves; a rating alone can't put it back.
+    w.hardcover.user_books[HC_USER] = [
+        ub for ub in w.hardcover.user_books[HC_USER] if ub["book_id"] != 7
+    ]
+    items = {i["book_id"]: i for i in w.goodreads.users[GR_USER].items}
+    items[str(DUNE)]["user_rating"] = "5"
+    items["400"]["user_rating"] = "3"
+    run_id = await w.sync.run_rss("alice")
+    (run_state, applied, failed, error) = await state(w, run_id)
+    assert (run_state, applied, failed) == ("partial", 1, 1)
+    assert error is not None and "not on the profile's Hardcover shelves" in error
+    assert [ub["rating"] for ub in w.hardcover.user_books[HC_USER]] == [3.0]
+
+
+async def test_overlapping_runs_take_turns_and_apply_once(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(w.sync.run_rss, "alice")
+        tg.start_soon(w.sync.run_rss, "alice", "sync_now")
+    assert await w.rows("SELECT count(*) FROM change_log WHERE kind = 'push'") == [(1,)]
+    assert [n for n, _, _ in w.hardcover.writes] == ["update_user_book"]
+
+
+async def test_a_pending_change_waits_for_a_batch_that_lists_its_row(w: World) -> None:
+    for n in range(250):
+        w.goodreads.add_item(GR_USER, 1000 + n, f"Book {n}")  # Dune drops to page 2
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    dune = next(i for i in w.goodreads.users[GR_USER].items if i["book_id"] == str(DUNE))
+    dune["user_rating"] = "5"
+    w.hardcover.fail_next("UpdateUserBook", "unavailable")
+    await w.sync.run_rss("alice")  # sees the change; the write fails
+    w.clock.advance(3600)
+    w.goodreads.fail_next("server_error", page=2)  # Dune's page is missing this time
+    run_id = await w.sync.run_rss("alice")
+    assert (await state(w, run_id))[:3] == ("partial", 0, 0)
+    assert await w.rows(
+        "SELECT pending_value FROM baseline_fields WHERE source_id = ? AND field = 'rating'",
+        str(DUNE),
+    ) == [("5",)]
+
+
+async def test_a_stale_shared_link_queues_the_row(tmp_path: Path) -> None:
+    async with world(tmp_path) as w:
+        w.hardcover.add_user_book(HC_USER, 7)
+        w.hardcover.add_mapping(DUNE, 7)
+        w.goodreads.add_item(GR_USER, DUNE, "Dune")
+        await w.db.write(
+            lambda conn: conn.execute(
+                "INSERT INTO links (source, source_id, hc_book_id, method, state, linked_at, "
+                "last_seen_at) VALUES ('goodreads', ?, 5, 'gr_mapping', 'stale', 0, 0)",
+                (str(DUNE),),
+            )
+        )
+        await w.sync.run_rss("alice")
+        assert await w.rows("SELECT state, queue_reason FROM source_rows") == [("queued", "stale")]
+        assert await w.rows("SELECT hc_book_id, state FROM links") == [(5, "stale")]
+
+
+async def test_the_backfill_finds_a_shelved_book_hardcover_has_merged(tmp_path: Path) -> None:
+    async with world(tmp_path) as w:
+        # Shelved as book 100, which Hardcover merged into 200; the mapping names 100 too.
+        w.hardcover.add_user_book(HC_USER, 100, book={"canonical_id": 200})
+        w.hardcover.add_mapping(DUNE, 100)
+        w.goodreads.add_item(GR_USER, DUNE, "Dune")
+        await w.sync.run_rss("alice")
+        assert await w.rows("SELECT state, hc_book_id FROM source_rows") == [("linked", 200)]
+
+
+async def test_a_library_syncshelf_cant_store_defers_the_run(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
+    w.hardcover.add_user_book(HC_USER, 9, status_id=9)  # a status the mirror refuses
+    run_id = await w.sync.run_rss("alice")
+    assert await state(w, run_id) == (
+        "deferred",
+        0,
+        0,
+        "Hardcover sent data SyncShelf couldn't store (IntegrityError)",
+    )
+    assert w.hardcover.writes == []
