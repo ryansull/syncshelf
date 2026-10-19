@@ -64,7 +64,11 @@ profile's `hardcover_token` (the Hardcover API token, without its `Bearer ` pref
 required. `cadence.hardcover_daily_reserve` (default 1000) is how many of each profile's 5000
 daily Hardcover requests the syncs leave for Claude, and each profile's `hardcover_privacy`
 (public, followers or private, the default) is who sees books SyncShelf adds to its shelves.
-The file is the only source of profiles: at each start, a profile removed from it is marked
+From phase 4a, a profile with a `goodreads` section is read from its Goodreads shelf RSS feed:
+`goodreads.user_id` (the number in `goodreads.com/user/show/<id>`, quoted) and
+`goodreads.shelf_map` (each exclusive shelf's Hardcover status, 1 to 5) are both required in
+it, and `rss_key` is needed only if the profile isn't public. A profile without the section has
+no Goodreads sync. The file is the only source of profiles: at each start, a profile removed from it is marked
 removed and its Claude connections are revoked, and a name added back is restored.
 
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says

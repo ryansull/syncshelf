@@ -1,6 +1,7 @@
 """Record scrubbed fixtures from a live service (SPEC §2.9).
 
     uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE
+    uv run python tests/live/record.py goodreads_rss --user-var GOODREADS_USER_ID_ALICE
 
 Credentials come from the repo-root ``.env`` (``--env`` to read another). Recording only
 **reads**: it sends the same queries the client does, with a small page, and writes each
@@ -14,9 +15,17 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx2
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 
+from syncshelf.clients.goodreads_rss import (  # noqa: E402
+    ALL_SHELF,
+    MIN_INTERVAL,
+    USER_AGENT,
+    rss_url,
+)
 from syncshelf.clients.hardcover import (  # noqa: E402
     BOOK,
     BOOKS_BY_ID,
@@ -31,11 +40,12 @@ from syncshelf.clients.hardcover import (  # noqa: E402
 )
 from syncshelf.sync.limiter import HardcoverLimiter  # noqa: E402
 
-from scrub import write_fixture  # noqa: E402
+from scrub import write_fixture, write_native_fixture  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 HARDCOVER_VERSION = "api.hardcover.app/v1 (sends no version header)"
+GOODREADS_VERSION = "www.goodreads.com shelf RSS (sends no version header)"
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -107,17 +117,49 @@ async def record_hardcover(token: str, limit: int) -> None:
         print(f"wrote {out / f'{name}.json'}")
 
 
+async def record_goodreads_rss(user_id: str, limit: int) -> None:
+    """Two anonymous reads of a public profile's feed, paced like production: a first page of
+    ``limit`` items, and a page past the end (HTTP 200 with no items)."""
+    recorded_at = datetime.now(UTC).date().isoformat()
+    out = FIXTURES / "goodreads"
+    pages = {"rss_page": 1, "rss_end": 100_000}
+    async with httpx2.AsyncClient(headers={"user-agent": USER_AGENT}, timeout=30) as http:
+        for i, (name, page) in enumerate(pages.items()):
+            if i:
+                await asyncio.sleep(MIN_INTERVAL)
+            params = {"shelf": ALL_SHELF, "per_page": str(limit), "page": str(page)}
+            response = await http.get(rss_url(user_id), params=params)
+            if response.status_code != 200:
+                sys.exit(f"Goodreads returned HTTP {response.status_code}; nothing written")
+            write_native_fixture(
+                out / f"{name}.xml",
+                response.text,
+                recorded_at=recorded_at,
+                server_version=GOODREADS_VERSION,
+            )
+            print(f"wrote {out / f'{name}.xml'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("source", choices=["hardcover"])
-    parser.add_argument("--token-var", required=True, help="the .env variable holding the PAT")
+    parser.add_argument("source", choices=["hardcover", "goodreads_rss"])
+    parser.add_argument("--token-var", help="hardcover: the .env variable holding the PAT")
+    parser.add_argument("--user-var", help="goodreads_rss: the .env variable holding the user id")
     parser.add_argument("--env", type=Path, default=ROOT / ".env")
-    parser.add_argument("--limit", type=int, default=5, help="user_books to record")
+    parser.add_argument("--limit", type=int, default=5, help="user_books or feed items to record")
     args = parser.parse_args()
-    token = read_env(args.env).get(args.token_var)
-    if not token:
-        sys.exit(f"{args.token_var} is not set in {args.env}")
-    asyncio.run(record_hardcover(token, args.limit))
+    var = args.token_var if args.source == "hardcover" else args.user_var
+    if not var:
+        sys.exit(
+            "--token-var is required" if args.source == "hardcover" else "--user-var is required"
+        )
+    value = read_env(args.env).get(var)
+    if not value:
+        sys.exit(f"{var} is not set in {args.env}")
+    if args.source == "hardcover":
+        asyncio.run(record_hardcover(value, args.limit))
+    else:
+        asyncio.run(record_goodreads_rss(value, args.limit))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -82,6 +83,9 @@ SERVICE_ALIASES: Mapping[str, str] = {
     "browser_ws": "browser",
 }
 """Each ``services`` URL key and the alias its host is logged as (§2.7)."""
+
+GOODREADS_HOSTS = ("www.goodreads.com", "goodreads.com")
+"""Goodreads has no configured URL, so its hosts are fixed here for host aliasing (§2.3)."""
 
 # Every secret the spec names (§2.3), as key paths inside their section. A profile's paths
 # are relative to ``profiles.<name>``.
@@ -197,6 +201,19 @@ class CadenceConfig:
 
 
 @dataclass(frozen=True)
+class GoodreadsConfig:
+    """A profile's ``goodreads`` section, as phase 4a reads it (§2.3, §3.4a.1)."""
+
+    user_id: str
+    """The numeric Goodreads user id, kept as a string so leading zeros survive."""
+    shelf_map: Mapping[str, int]
+    """Each exclusive shelf's Hardcover ``status_id`` (1–5). An exclusive shelf missing from
+    it is logged and its status isn't pushed (§3.4a.6)."""
+    rss_key: str | None = field(default=None, repr=False)
+    """The private-feed key, only if the profile isn't public. Never logged."""
+
+
+@dataclass(frozen=True)
 class ProfileConfig:
     """One profile's identity keys that are validated so far."""
 
@@ -216,6 +233,8 @@ class ProfileConfig:
     timezone: str | None = None
     """An IANA zone name (``Europe/London``), or ``None`` for the container's own zone. Dates
     the user says ("last 30 days", "yesterday") are read in it."""
+    goodreads: GoodreadsConfig | None = None
+    """``None`` when the profile has no ``goodreads`` section: no Goodreads sync for it."""
 
     def tzinfo(self) -> tzinfo:
         """The profile's time zone: :attr:`timezone`, else the container's. That is its ``TZ``
@@ -254,7 +273,8 @@ class Config:
         ``server.access.team_domain`` host is ``access`` (#49, point 5). Then each configured
         service host is its ``SERVICE_ALIASES`` alias. A service alias wins over ``public``
         or ``access`` on a shared host, because it says more about the failing call. If two
-        services share a host, the later one in ``SERVICE_ALIASES`` order wins.
+        services share a host, the later one in ``SERVICE_ALIASES`` order wins. Goodreads has
+        no configured URL, so its :data:`GOODREADS_HOSTS` are always ``goodreads``.
         """
         aliases: dict[str, str] = {}
         if self.server.public_host:
@@ -266,6 +286,8 @@ class Config:
             url = getattr(self.services, key)
             if url and (host := urlsplit(url).hostname):
                 aliases[host] = alias
+        for host in GOODREADS_HOSTS:
+            aliases[host] = "goodreads"
         return aliases
 
 
@@ -713,6 +735,7 @@ def _profiles(
             household_visible=_household_visible(
                 body.get("household_visible"), f"{prefix}.household_visible"
             ),
+            goodreads=_goodreads(body.get("goodreads"), f"{prefix}.goodreads", secrets),
         )
     return profiles
 
@@ -725,6 +748,35 @@ def _hardcover_token(token: str | None, prefix: str) -> str:
     if token[:7].lower() == "bearer ":
         raise ConfigError(f"{key}: give the token without the leading 'Bearer '")
     return token
+
+
+_GOODREADS_USER_ID = re.compile(r"[0-9]+")
+
+
+def _goodreads(raw: Any, key: str, secrets: Mapping[str, str]) -> GoodreadsConfig | None:
+    # The section's secrets were expanded (and a non-mapping refused) with the others.
+    if raw is None:
+        return None
+    user_id = raw.get("user_id")
+    if user_id is None:
+        raise ConfigError(f"{key}.user_id: required")
+    if not isinstance(user_id, str) or not _GOODREADS_USER_ID.fullmatch(user_id):
+        # Unquoted, YAML reads it as a number and drops any leading zeros.
+        raise ConfigError(f"{key}.user_id: must be the numeric id, quoted as a string")
+    shelf_map = raw.get("shelf_map")
+    if shelf_map is None:
+        raise ConfigError(f"{key}.shelf_map: required")
+    if not isinstance(shelf_map, dict) or not all(isinstance(k, str) for k in shelf_map):
+        raise ConfigError(f"{key}.shelf_map: must map each exclusive shelf name to a status")
+    for shelf, status in shelf_map.items():
+        # bool is an int subclass; status 6 (Ignored) is never written by sync (§2.3).
+        if not isinstance(status, int) or isinstance(status, bool) or not 1 <= status <= 5:
+            raise ConfigError(f"{key}.shelf_map.{shelf}: must be a Hardcover status from 1 to 5")
+    return GoodreadsConfig(
+        user_id=user_id,
+        shelf_map=MappingProxyType(dict(shelf_map)),
+        rss_key=secrets.get(f"{key}.rss_key"),
+    )
 
 
 PRIVACY = {"public": 1, "followers": 2, "private": 3}

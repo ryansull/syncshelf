@@ -92,15 +92,23 @@ profiles:
     # Only new shelf entries; SyncShelf never changes an existing one's privacy.
     hardcover_privacy: private
     # ingest_secret: ${INGEST_SECRET_ALICE}
-    # goodreads:
-    #   user_id: "00000000"
-    #   rss_key_file: /run/secrets/gr_rss_key_alice
-    #   email: ${GOODREADS_EMAIL_ALICE}
-    #   password_file: /run/secrets/gr_password_alice
-    #   shelf_map:
-    #     read: 3
-    #     currently-reading: 2
-    #     to-read: 1
+    # Goodreads -> Hardcover (phase 4a). Leave the section out for no Goodreads sync.
+    goodreads:
+      # The number in goodreads.com/user/show/<id>-name, quoted so leading zeros survive.
+      user_id: "00000000"
+      # Only if the Goodreads profile is private: the key from its shelf's RSS link.
+      # rss_key_file: /run/secrets/gr_rss_key_alice
+      # email: ${GOODREADS_EMAIL_ALICE}            # phase 4b
+      # password_file: /run/secrets/gr_password_alice
+      # Each exclusive shelf and the Hardcover status it means: 1 Want to Read,
+      # 2 Currently Reading, 3 Read, 4 Paused, 5 Did Not Finish. Required. List every
+      # exclusive shelf you use: the RSS feed can't tell an unlisted one from an ordinary
+      # shelf, so its books would count as Read.
+      shelf_map:
+        read: 3
+        currently-reading: 2
+        to-read: 1
+        # did-not-finish: 5                       # a custom exclusive shelf, if you have one
     # abs:
     #   token: ${ABS_TOKEN_ALICE}
   bob:
