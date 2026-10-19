@@ -293,7 +293,8 @@ def observe(
     for obs in batch.rows:
         row = rows.get(obs.source_id)
         if row is None:
-            new.append(obs)
+            if all(n.source_id != obs.source_id for n in new):
+                new.append(obs)
             continue
         seen.append((now, profile, source, obs.source_id))
         for name, value in obs.fields.items():
@@ -358,13 +359,22 @@ def add_rows(
                 "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
                 (profile, source, obs.source_id, reason, now, match_input(obs), now, now),
             )
+        # A status this observation couldn't read (#182) starts empty too, so the first
+        # status seen later is a change, not a baseline.
+        fields = {"status": None, **obs.fields}
         conn.executemany(
             "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at,"
             " pending_value, pending_since) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
             [
                 (profile, source, obs.source_id, name)
-                + ((batch.observed_at, None, None) if value is None else (None, value, now))
-                for name, value in obs.fields.items()
+                + (
+                    (None, None, None)
+                    if name not in obs.fields
+                    else (batch.observed_at, None, None)
+                    if value is None
+                    else (None, value, now)
+                )
+                for name, value in fields.items()
             ],
         )
     listed = set(added)
