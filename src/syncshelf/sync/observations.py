@@ -25,6 +25,7 @@ __all__ = [
     "Batch",
     "Format",
     "Observation",
+    "ShelfVocabulary",
     "Source",
     "observe_rss",
     "review_text",
@@ -48,8 +49,8 @@ class Observation:
     ``fields`` maps each baseline field the feed carries to its normalised ``TEXT`` value, or
     ``None`` when observed empty: ``status`` is the exclusive shelf name (``shelf_map`` turns
     it into a Hardcover status when pushing), ``rating`` 1–5 (unrated is ``None``),
-    ``date_read`` an ISO date, ``review`` plain text.
-    """
+    ``date_read`` an ISO date, ``review`` plain text, ``spoiler`` ``"1"`` or ``"0"``. An RSS
+    row on a shelf not yet classified has no ``status`` at all (#182)."""
 
     source_id: str
     fields: Mapping[str, str | None]
@@ -68,6 +69,21 @@ class Observation:
 
 
 @dataclass(frozen=True)
+class ShelfVocabulary:
+    """What the profile's stored library CSVs say about its shelves (#182): which shelves are
+    exclusive and which are tags. RSS lists both together and can only tell them by name."""
+
+    exclusive: frozenset[str] = frozenset()
+    """Shelves a CSV has shown in ``Exclusive Shelf``."""
+    tags: frozenset[str] = frozenset()
+    """Shelves a CSV has shown only in ``Bookshelves``."""
+
+
+NO_VOCABULARY = ShelfVocabulary()
+"""Before any CSV: only the built-in shelves and the ``shelf_map`` keys are known."""
+
+
+@dataclass(frozen=True)
 class Batch:
     """One run's observations for one profile."""
 
@@ -82,23 +98,32 @@ class Batch:
 
 
 def observe_rss(
-    rss: RssPass, shelf_map: Mapping[str, int], observed_at: int, zone: tzinfo
+    rss: RssPass,
+    shelf_map: Mapping[str, int],
+    observed_at: int,
+    zone: tzinfo,
+    vocabulary: ShelfVocabulary = NO_VOCABULARY,
 ) -> Batch:
     """The batch for one RSS pass, observed at the fetch's start (``observed_at``). ``zone``
-    is the profile's time zone, which calendar dates are given in (§2.4)."""
-    exclusive = frozenset(BUILT_IN_SHELVES) | frozenset(shelf_map)
-    rows = tuple(_rss_row(item, exclusive, zone) for item in rss.items)
+    is the profile's time zone, which calendar dates are given in (§2.4), and ``vocabulary``
+    what stored CSVs say about its shelves."""
+    exclusive = frozenset(BUILT_IN_SHELVES) | frozenset(shelf_map) | vocabulary.exclusive
+    rows = tuple(_rss_row(item, exclusive, vocabulary.tags, zone) for item in rss.items)
     return Batch("gr_rss", observed_at, rss.complete, rows)
 
 
-def _rss_row(item: RssItem, exclusive: frozenset[str], zone: tzinfo) -> Observation:
+def _rss_row(
+    item: RssItem, exclusive: frozenset[str], tags: frozenset[str], zone: tzinfo
+) -> Observation:
     listed = [s.strip() for s in item.user_shelves.split(",") if s.strip()]
-    # RSS leaves out `read`: no exclusive shelf listed means the book is on it (§3.4a.1). The
-    # feed doesn't mark which shelf is exclusive, so a custom exclusive shelf missing from
-    # shelf_map reads as an ordinary one, and the book as Read (#182).
-    status = next((s for s in listed if s in exclusive), "read")
+    # RSS leaves out `read`: no exclusive shelf listed means the book is on it (§3.4a.1),
+    # if every shelf it does list is a known tag. A shelf not yet classified may be an
+    # exclusive one missing from shelf_map, so the status isn't observed at all (#182).
+    status = next((s for s in listed if s in exclusive), None)
+    if status is None and all(s in tags for s in listed):
+        status = "read"
     fields = {
-        "status": status,
+        **({"status": status} if status is not None else {}),
         "rating": _rating(item.user_rating),
         # Midnight +0000: the date part as written, never shifted to another zone.
         "date_read": d.date().isoformat() if (d := _rfc822(item.user_read_at)) else None,
