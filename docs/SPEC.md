@@ -252,7 +252,7 @@ profiles:
 - A key becomes required when the phase that reads it ships. Sections for features not yet built may be absent. A key isn't validated until the phase that reads it ships.
 - Profile names must match `^[a-z][a-z0-9_]{0,31}$`.
 - Emails are lowercased and must be unique.
-- `shelf_map` values must be in 1–5. Status 6 (Ignored) is never written by sync.
+- `shelf_map` values must be in 1–5. Status 6 (Ignored) is never written by sync. When a profile has a `goodreads` section, its `user_id` (a quoted number) and `shelf_map` are both **required**, with no default map ([Config: is goodreads.shelf_map required, or does absent mean the three built-in shelves?](https://github.com/ryansull/syncshelf/issues/181)). A profile with no `goodreads` section has no Goodreads sync.
 - Durations are written as `<n>m` / `<n>h`.
 - `server.forwarded_allow_ips` is required, with no default, and `*` is refused.
 - `server.listen` is `host:port`, default `0.0.0.0:8000`.
@@ -1396,7 +1396,7 @@ Verified live, anonymous, 2026-10-17.
   | `user_read_at` | RFC 822 at `00:00:00 +0000`, or empty | date_read: **date part only, never timezone-shifted** |
   | `user_date_created` | RFC 822, Pacific offset | date_added (= CSV `Date Added`) |
   | `user_date_added` / `pubDate` | RFC 822, Pacific offset | the "last touched" stamp; the date source for an undated finish |
-  | `user_shelves` | comma-separated; **`read` is omitted** | status via the shelf map; **no exclusive shelf present ⇒ `read`** |
+  | `user_shelves` | comma-separated; **`read` is omitted** | status via the shelf map; **no exclusive shelf present ⇒ `read`**, unless a shelf can't be classified yet (§3.4a.3) |
   | `user_review` | HTML or empty | review |
   | `guid` | `/review/show/<review_id>` | not used as a key |
   | `book/num_pages`, `book_published`, cover URLs, `average_rating`, `description`, `user_name` | — | ignored (`user_name` is never logged) |
@@ -1449,6 +1449,13 @@ From [Goodreads acquisition design](https://github.com/ryansull/syncshelf/issues
 | shelves (non-exclusive) | ✓ | ✓ |
 | title, author, isbn10 | ✓ | ✓ |
 | isbn13, binding → format, read_count | ✓ | — |
+
+**RSS status and the shelf vocabulary** ([RSS can't tell an unmapped custom exclusive shelf from an ordinary shelf](https://github.com/ryansull/syncshelf/issues/182)). RSS lists a book's exclusive shelf among its other shelves, so it can only tell them apart by name:
+- **exclusive** shelves are Goodreads' built-ins (`read`, `currently-reading`, `to-read`), the `shelf_map` keys, and any shelf a stored library CSV has shown in `Exclusive Shelf`. One missing from `shelf_map` is logged and its status isn't pushed (§3.4a.6);
+- **non-exclusive** shelves (tags) are those a stored CSV has shown only in `Bookshelves`;
+- an item listing no exclusive shelf is `read` when it lists no shelves or only known tags. If it lists **any shelf not yet classified**, its status is **not observed**, so nothing is pushed for it until a CSV classifies the shelf. Before the first CSV, any tag leaves the status unobserved.
+
+The vocabulary is read from the stored CSV batches (`ingest_batches`), so it needs no table of its own.
 
 **A field a feed doesn't carry is *not observed*, never *cleared*.** The diff never treats RSS's missing `read_count`, `spoiler` or format as a change.
 
