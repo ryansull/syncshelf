@@ -30,6 +30,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | Live write tests (test account only, never in CI) | `SYNCSHELF_LIVE=1 SYNCSHELF_LIVE_WRITE=1 uv run pytest --live tests/live/test_writes_live.py` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
+| Record Goodreads RSS fixtures (live reads) | `uv run python tests/live/record.py goodreads_rss --user-var GOODREADS_USER_ID_ALICE` |
 | All pre-commit hooks (gitleaks, private denylist) | `uv run pre-commit run --all-files` |
 | Check changelog fragments | `uv run python scripts/changelog.py check` |
 | Assemble the changelog (release-prep PR only) | `uv run python scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD --title "Phase N: …"` |
