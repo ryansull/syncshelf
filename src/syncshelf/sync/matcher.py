@@ -1,8 +1,8 @@
 """The matcher's normalisation and scoring helpers (SPEC §3.4a.5).
 
-Phase 3 brings only these: ``check_books`` scores search hits with them. Phase 4a adds the
-chain's id steps, starting with the Goodreads mapping (:func:`goodreads_mappings`); the ISBN
-steps, fuzzy matching and the unmatched queue build on them.
+Phase 3 brings these and the fuzzy step's search (:func:`search_candidates`), which
+``check_books`` uses. Phase 4a adds the chain's id steps, starting with the Goodreads mapping
+(:func:`goodreads_mappings`); the ISBN steps and the unmatched queue build on them.
 
 The thresholds are starting values, not measured ones (§3.4a.5). They're pinned by
 ``tests/golden/matcher.yaml`` and calibrated in 4a, so they live here as named constants.
@@ -12,20 +12,29 @@ import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from rapidfuzz.fuzz import token_sort_ratio
 
-from syncshelf.clients.hardcover import BY_GOODREADS, HardcoverClient
+from syncshelf.clients.hardcover import (
+    BY_GOODREADS,
+    SEARCH,
+    HardcoverClient,
+    document_id,
+    search_documents,
+    search_filter,
+)
 
 __all__ = [
     "AUTO_ACCEPT_AUTHOR",
     "AUTO_ACCEPT_TITLE",
+    "CANDIDATE_HITS",
     "ID_BATCH",
     "LIKELY_AUTHOR",
     "LIKELY_TITLE",
     "MARGIN",
     "TITLE_FLOOR",
+    "Hit",
     "IdHit",
     "Method",
     "Scored",
@@ -35,6 +44,7 @@ __all__ = [
     "goodreads_mappings",
     "is_likely",
     "normalise",
+    "search_candidates",
     "title_score",
 ]
 
@@ -63,6 +73,8 @@ when an id maps to several rows."""
 
 Method = Literal["human", "gr_mapping", "isbn13", "isbn10", "asin", "fuzzy"]
 """A link's ``method``: the chain step (or person) that made it."""
+CANDIDATE_HITS = 5
+"""Search hits scored per source title in the fuzzy step."""
 
 _SERIES = re.compile(r"\s*\([^()]*#\s*\d+(?:\.\d+)?\s*\)\s*$")
 _LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+")
@@ -80,6 +92,53 @@ class Scored:
     @property
     def full_title(self) -> float:
         return self.title if self.full is None else self.full
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One search hit for a source title, with its scores and its Typesense document."""
+
+    book_id: int
+    scored: Scored
+    document: dict[str, Any]
+
+
+async def search_candidates(client: HardcoverClient, title: str, author: str | None) -> list[Hit]:
+    """The fuzzy step's search (§3.4a.5): search by the normalised title, filtered to the
+    primary author, and once more without the filter if that finds nothing; then score each
+    hit, best first. Up to :data:`CANDIDATE_HITS` hits, costing at most 2 searches.
+
+    With no ``author`` the author score is set aside (scored 100), so only a caller that
+    requires one can treat a hit as certain (#142). Hits aren't hydrated here: callers batch
+    one ``books`` lookup over every hit they keep.
+    """
+    variables: dict[str, Any] = {
+        "q": normalise(title) or title,
+        "filter": search_filter(author or None, None),
+        "sort": None,
+        "per": CANDIDATE_HITS,
+        "page": 1,
+    }
+    _, docs = search_documents(await client.execute(SEARCH, variables))
+    if not docs and variables["filter"]:
+        variables["filter"] = None
+        _, docs = search_documents(await client.execute(SEARCH, variables))
+    hits = [
+        Hit(
+            book_id,
+            Scored(
+                title_score(title, d.get("title") or ""),
+                author_score(author, d.get("author_names") or []) if author else 100.0,
+                full_title_score(title, d.get("title") or ""),
+            ),
+            d,
+        )
+        for d in docs
+        if (book_id := document_id(d)) is not None
+    ]
+    # Ties on the title break on the full title (#138), then the author.
+    hits.sort(key=lambda h: (h.scored.title, h.scored.full_title, h.scored.author), reverse=True)
+    return hits
 
 
 def normalise(text: str, *, author: bool = False) -> str:

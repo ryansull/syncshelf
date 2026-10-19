@@ -59,7 +59,10 @@ __all__ = [
     "SHELF",
     "SIMILAR",
     "check_mutation",
+    "document_id",
     "query_cost",
+    "search_documents",
+    "search_filter",
 ]
 
 log = logging.getLogger(__name__)
@@ -191,9 +194,9 @@ query Search($q: String!, $filter: String, $sort: String, $per: Int!, $page: Int
          sort: $sort) { ids results }
 }
 """
-"""Hardcover's Typesense book search (cost 1; ``per_page`` capped at 25): ``search_books``
-and ``check_books`` (§3.3.1). ``results.hits[].document`` holds each book; its ``id`` is a
-string."""
+"""Hardcover's Typesense book search (cost 1; ``per_page`` capped at 25): ``search_books``,
+``check_books`` and the matcher's fuzzy step (§3.3.1, §3.4a.5). ``results.hits[].document``
+holds each book; its ``id`` is a string."""
 
 SEARCH_PAGE = 25
 """Typesense's largest page."""
@@ -594,6 +597,35 @@ def check_mutation(data: Mapping[str, Any], mutation: str) -> dict[str, Any]:
     if error:
         raise HardcoverMutationError(mutation, str(error))
     return result
+
+
+# --- search -----------------------------------------------------------------------------
+
+
+def search_filter(author: str | None, genre: str | None) -> str | None:
+    """Typesense ``filter_by`` for exact author and genre (backticks quote, so none inside)."""
+    parts = []
+    if author:
+        parts.append(f"author_names:=[`{author.replace('`', '')}`]")
+    if genre:
+        parts.append(f"genres:=[`{genre.replace('`', '')}`]")
+    return " && ".join(parts) or None
+
+
+def search_documents(result: Result) -> tuple[int, list[dict[str, Any]]]:
+    """A :data:`SEARCH` answer's total and its documents."""
+    results = (result.data.get("search") or {}).get("results") or {}
+    return int(results.get("found") or 0), [
+        h.get("document") or {} for h in results.get("hits") or []
+    ]
+
+
+def document_id(doc: Mapping[str, Any]) -> int | None:
+    """A Typesense document's book id (sent as a string), or ``None`` when unusable."""
+    try:
+        return int(doc["id"])
+    except KeyError, TypeError, ValueError:
+        return None
 
 
 # --- cost -------------------------------------------------------------------------------
