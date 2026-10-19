@@ -595,8 +595,15 @@ def _recorded_search() -> dict[str, Any]:
 
 
 def _search_template() -> dict[str, Any]:
-    """A recorded hit: every key Hardcover sends with one, scrubbed."""
-    return _recorded_search()["data"]["search"]["results"]["hits"][0]
+    """A recorded hit: every key Hardcover sends with one, scrubbed. Contributions vary in
+    their keys from author to author (only some carry ``contributor_specialization_*``), so
+    it's the hit whose contributions show the most, not whichever search ranked first."""
+    hits = _recorded_search()["data"]["search"]["results"]["hits"]
+
+    def keys(hit: dict[str, Any]) -> int:
+        return len({k for c in hit["document"].get("contributions") or [] for k in c})
+
+    return max(hits, key=keys)
 
 
 def _search_results() -> dict[str, Any]:

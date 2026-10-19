@@ -1,6 +1,6 @@
 {
   "meta": {
-    "recorded_at": "2026-10-18",
+    "recorded_at": "2026-10-19",
     "server_version": "api.hardcover.app/v1 (sends no version header)",
     "provenance": "live"
   },
@@ -115,9 +115,6 @@
                     "contributor_role_blurb": "scrubbed",
                     "contributor_role_id": 0,
                     "contributor_role_name": "scrubbed",
-                    "contributor_specialization_blurb": null,
-                    "contributor_specialization_id": null,
-                    "contributor_specialization_name": null,
                     "primary": false
                   }
                 ],
@@ -162,6 +159,8 @@
                   "9780425103814",
                   "1440631298",
                   "9781440631290",
+                  "3453323130",
+                  "9783453323131",
                   "2221252055",
                   "9782221252055",
                   "0575104414",
@@ -196,12 +195,8 @@
                   "9781435140745",
                   "1101658053",
                   "9781101658055",
-                  "8834733797",
-                  "9788834733790",
                   "6046933307",
                   "9786046933304",
-                  "8381887534",
-                  "9788381887533",
                   "1399611178",
                   "9781399611176",
                   "6586064961",
@@ -256,8 +251,6 @@
                   "9783641173081",
                   "6043684969",
                   "9786043684964",
-                  "8072149415",
-                  "9788072149414",
                   "9178934753",
                   "9789178934751",
                   "044100590X",
@@ -270,6 +263,8 @@
                   "9788072141838",
                   "902140768X",
                   "9789021407685",
+                  "1101385456",
+                  "9781101385456",
                   "8466353771",
                   "9788466353779",
                   "1473696216",
@@ -298,6 +293,8 @@
                   "9780425266540",
                   "3453186834",
                   "9783453186835",
+                  "1427218366",
+                  "9781427218360",
                   "0441172660",
                   "9780441172665",
                   "222112748X",
@@ -312,6 +309,8 @@
                   "9789603063957",
                   "8834739671",
                   "9788834739679",
+                  "8381887534",
+                  "9788381887533",
                   "3641139570",
                   "9783641139575",
                   "9512340844",
@@ -334,6 +333,10 @@
                   "9786231340061",
                   "1399601784",
                   "9781399601788",
+                  "8834733797",
+                  "9788834733790",
+                  "8072149415",
+                  "9788072149414",
                   "042507160X",
                   "9780425071601",
                   "0399128964",
@@ -364,8 +367,6 @@
                   "9789510113769",
                   "8373017232",
                   "9788373017238",
-                  "3453323130",
-                  "9783453323131",
                   "605375479X",
                   "9786053754794",
                   "0425027066",
@@ -437,8 +438,6 @@
                   "9782266008563",
                   "0593438361",
                   "9780593438367",
-                  "1427218366",
-                  "9781427218360",
                   "8378180239",
                   "9788378180234",
                   "1529347858",
@@ -481,8 +480,6 @@
                   "9781444738209",
                   "0792748662",
                   "9780792748663",
-                  "1101385456",
-                  "9781101385456",
                   "8470021818",
                   "9788470021817",
                   "0450051722",
@@ -588,7 +585,9 @@
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [],
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
                     "snippet": "scrubbed"
                   },
                   {
@@ -642,30 +641,6 @@
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
                     "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
@@ -690,27 +665,7 @@
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
                     "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
                     "snippet": "scrubbed"
                   },
                   {
@@ -741,6 +696,48 @@
                     "matched_tokens": [
                       "scrubbed"
                     ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
                   {
@@ -1047,6 +1044,9 @@
                     "contributor_role_blurb": "scrubbed",
                     "contributor_role_id": 0,
                     "contributor_role_name": "scrubbed",
+                    "contributor_specialization_blurb": null,
+                    "contributor_specialization_id": null,
+                    "contributor_specialization_name": null,
                     "primary": false
                   }
                 ],
@@ -1083,6 +1083,8 @@
                   "width": 0
                 },
                 "isbns": [
+                  "6171249645",
+                  "9786171249646",
                   "9021461781",
                   "9789021461786",
                   "8466356967",
@@ -1099,8 +1101,12 @@
                   "9789606232190",
                   "9897835431",
                   "9789897835438",
+                  "9532031987",
+                  "9789532031980",
                   "8381882036",
                   "9788381882033",
+                  "8381887542",
+                  "9788381887540",
                   "0450012298",
                   "9780450012297",
                   "8576573822",
@@ -1115,10 +1121,10 @@
                   "9780425043462",
                   "6586064929",
                   "9786586064926",
-                  "6171249645",
-                  "9786171249646",
                   "0425043797",
                   "9780425043790",
+                  "8466372016",
+                  "9788466372015",
                   "8470022008",
                   "9788470022005",
                   "3641228247",
@@ -1157,8 +1163,6 @@
                   "9781427218377",
                   "6094275292",
                   "9786094275296",
-                  "8381880823",
-                  "9788381880824",
                   "9545700351",
                   "9789545700354",
                   "8498006813",
@@ -1175,8 +1179,8 @@
                   "9788886845533",
                   "517099480X",
                   "9785170994809",
-                  "8466372016",
-                  "9788466372015",
+                  "8381880823",
+                  "9788381880824",
                   "8834728424",
                   "9788834728420",
                   "8466342672",
@@ -1251,8 +1255,6 @@
                   "9789612740900",
                   "8834747569",
                   "9788834747568",
-                  "9532031987",
-                  "9789532031980",
                   "0575104422",
                   "9780575104426",
                   "2266114042",
@@ -1263,8 +1265,6 @@
                   "9788081597893",
                   "8473863542",
                   "9788473863544",
-                  "8381887542",
-                  "9788381887540",
                   "0399102264",
                   "9780399102264",
                   "9934553538",
@@ -1346,23 +1346,13 @@
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
                     "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [],
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
                     "snippet": "scrubbed"
                   },
                   {
@@ -1380,6 +1370,16 @@
                     "snippet": "scrubbed"
                   },
                   {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
                     "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
@@ -1389,6 +1389,17 @@
                   },
                   {
                     "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed",
+                      "scrubbed"
+                    ],
                     "snippet": "scrubbed"
                   },
                   {
@@ -1470,13 +1481,6 @@
                   },
                   {
                     "matched_tokens": [
-                      "scrubbed",
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
                       "scrubbed"
                     ],
                     "snippet": "scrubbed"
@@ -1539,10 +1543,6 @@
                       "scrubbed",
                       "scrubbed"
                     ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
                   {
@@ -1654,6 +1654,7 @@
                       "scrubbed"
                     ],
                     [
+                      "scrubbed",
                       "scrubbed"
                     ],
                     [
@@ -1827,6 +1828,8 @@
                   "9788886845540",
                   "993455383X",
                   "9789934553837",
+                  "8466372024",
+                  "9788466372022",
                   "0425071790",
                   "9780425071793",
                   "0593201744",
@@ -1839,8 +1842,6 @@
                   "9786257737616",
                   "3453186850",
                   "9783453186859",
-                  "8834735390",
-                  "9788834735398",
                   "8470022334",
                   "9788470022333",
                   "6171276650",
@@ -1865,8 +1866,6 @@
                   "9787559411174",
                   "1436221188",
                   "9781436221184",
-                  "8466372024",
-                  "9788466372022",
                   "3453319559",
                   "9783453319554",
                   "8834728602",
@@ -1875,6 +1874,8 @@
                   "9788834721308",
                   "2221259939",
                   "9782221259931",
+                  "8834735390",
+                  "9788834735398",
                   "0425054721",
                   "9780425054727",
                   "0593098242",
@@ -2069,46 +2070,46 @@
                     "snippet": "scrubbed"
                   },
                   {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [
-                      "scrubbed"
-                    ],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
-                    "matched_tokens": [],
-                    "snippet": "scrubbed"
-                  },
-                  {
                     "matched_tokens": [
                       "scrubbed",
                       "scrubbed"
                     ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [
+                      "scrubbed"
+                    ],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
+                    "snippet": "scrubbed"
+                  },
+                  {
+                    "matched_tokens": [],
                     "snippet": "scrubbed"
                   },
                   {
