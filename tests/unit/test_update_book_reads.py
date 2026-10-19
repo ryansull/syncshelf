@@ -11,6 +11,7 @@ import pytest
 from mcp import Client
 
 from syncshelf.app import create_app
+from syncshelf.sync import apply
 
 from clock import FakeClock
 from fakes.hardcover import READ_FIELDS, FakeHardcover
@@ -384,3 +385,32 @@ async def test_a_stamped_open_read_is_finished_in_one_write(
     async with connect() as mcp:
         await edit(mcp, book_id=7, finished_on="2099-12-20")
     assert sum(w[0] == "update_user_book_read" for w in fake.writes) == 1
+
+
+# --- reads that lag writes (#150) -----------------------------------------------------------
+
+
+async def test_a_status_write_that_shows_late_is_waited_for(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)
+    fake.lag(reads=2)  # the first looks after the write still see Want to Read
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, status="currently-reading")
+    assert state(fake) == (2, [])
+    assert no_today(fake)
+
+
+async def test_a_status_write_that_never_shows_is_completed_by_the_same_call(
+    connect: Any, fake: FakeHardcover, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(apply, "SETTLE_TIMEOUT", 0.0)  # one look, then give up
+    shelve(fake, 1)
+    fake.lag(reads=1)
+    async with connect() as mcp:
+        assert "Partly done" in await refused(mcp, book_id=7, status="currently-reading")
+        assert not no_today(fake)  # Hardcover's invented read, not yet undone
+        result = await edit(mcp, book_id=7, status="currently-reading")
+    assert state(fake) == (2, [])
+    assert no_today(fake)
+    assert [c["field"] for c in result["changes"]] == ["status"]
