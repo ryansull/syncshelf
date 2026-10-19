@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:xhtml="http://www.w3.org/1999/xhtml" version="2.0">
+  <channel>
+    <xhtml:meta name="robots" content="noindex" />
+    <title>scrubbed's bookshelf: all</title>
+    <copyright>scrubbed</copyright>
+    <link>https://example.com/</link>
+    <atom:link href="https://example.com/" rel="self" type="application/rss+xml" />
+    <description>scrubbed</description>
+    <language>en-US</language>
+    <lastBuildDate>Sat, 01 Jan 2000 00:00:00 -0700</lastBuildDate>
+    <ttl>60</ttl>
+    <image>
+      <title>scrubbed's bookshelf: all</title>
+      <link>https://example.com/</link>
+      <width>144</width>
+      <height>41</height>
+      <url>https://example.com/</url>
+    </image>
+    
+
+  </channel>
+</rss>

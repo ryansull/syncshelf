@@ -694,6 +694,8 @@ def test_every_secret_key_is_expanded(tmp_path: Path) -> None:
             hardcover_token: ${HC}
             ingest_secret: ${INGEST}
             goodreads:
+              user_id: "1"
+              shelf_map: {read: 3}
               rss_key: ${RSS}
               email: ${GR_EMAIL}
               password: ${GR_PASSWORD}
@@ -784,6 +786,8 @@ def test_repr_never_shows_secret_values(tmp_path: Path) -> None:
 
 # --- service hosts and aliases ----------------------------------------------------------
 
+GOODREADS_ALIASES = {"www.goodreads.com": "goodreads", "goodreads.com": "goodreads"}
+
 
 def test_host_aliases_map_configured_service_hosts(tmp_path: Path) -> None:
     config = load(
@@ -805,6 +809,7 @@ def test_host_aliases_map_configured_service_hosts(tmp_path: Path) -> None:
         "abs.home.arpa": "abs",
         "chaptarr.home.arpa": "chaptarr",
         "browser": "browser",
+        **GOODREADS_ALIASES,
     }
 
 
@@ -812,6 +817,7 @@ def test_host_aliases_with_only_the_required_service(tmp_path: Path) -> None:
     assert load(tmp_path, MINIMAL).host_aliases() == {
         "localhost": "public",
         "api.hardcover.app": "hardcover",
+        **GOODREADS_ALIASES,
     }
 
 
@@ -825,12 +831,17 @@ def test_host_aliases_include_the_public_and_access_hosts(tmp_path: Path) -> Non
         "127.0.0.1": "public",
         "example.cloudflareaccess.com": "access",
         "api.hardcover.app": "hardcover",
+        **GOODREADS_ALIASES,
     }
 
 
 def test_a_service_alias_wins_over_the_public_alias_on_a_shared_host(tmp_path: Path) -> None:
     config = load(tmp_path, MINIMAL + "services:\n  browser_ws: ws://localhost:3000/\n")
-    assert config.host_aliases() == {"localhost": "browser", "api.hardcover.app": "hardcover"}
+    assert config.host_aliases() == {
+        "localhost": "browser",
+        "api.hardcover.app": "hardcover",
+        **GOODREADS_ALIASES,
+    }
 
 
 # --- the Hardcover keys (phase 3) -------------------------------------------------------
@@ -990,3 +1001,87 @@ def test_hardcover_privacy_must_be_a_known_value(tmp_path: Path, value: str) -> 
 def test_committed_example_sets_hardcover_privacy() -> None:
     raw = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
     assert "\n    hardcover_privacy: private" in raw
+
+
+# --- goodreads (phase 4a) ---------------------------------------------------------------
+
+GOODREADS = """
+profiles:
+  alice:
+    goodreads:
+      user_id: "00000000"
+      shelf_map:
+        read: 3
+        currently-reading: 2
+        to-read: 1
+        did-not-finish: 5
+"""
+
+
+def test_a_profile_without_goodreads_has_no_goodreads_sync(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).profiles["alice"].goodreads is None
+
+
+def test_goodreads_reads_the_user_id_and_shelf_map(tmp_path: Path) -> None:
+    goodreads = load(tmp_path, MINIMAL + GOODREADS).profiles["alice"].goodreads
+    assert goodreads is not None
+    assert goodreads.user_id == "00000000"
+    assert goodreads.rss_key is None
+    assert dict(goodreads.shelf_map) == {
+        "read": 3,
+        "currently-reading": 2,
+        "to-read": 1,
+        "did-not-finish": 5,
+    }
+
+
+def test_the_rss_key_is_a_secret(tmp_path: Path) -> None:
+    text = MINIMAL + GOODREADS.replace('user_id: "00000000"', 'user_id: "1"\n      rss_key: ${K}')
+    goodreads = load(tmp_path, text, {"K": SECRET}).profiles["alice"].goodreads
+    assert goodreads is not None and goodreads.rss_key == SECRET
+    assert SECRET not in repr(goodreads)
+
+
+def test_the_user_id_keeps_its_leading_zeros(tmp_path: Path) -> None:
+    goodreads = load(tmp_path, MINIMAL + GOODREADS).profiles["alice"].goodreads
+    assert goodreads is not None and goodreads.user_id == "00000000"
+
+
+@pytest.mark.parametrize("value", ["12345678", "abc", "''", "'12 34'"])
+def test_the_user_id_is_a_quoted_number(tmp_path: Path, value: str) -> None:
+    # Unquoted, YAML reads the id as a number and would drop leading zeros.
+    text = MINIMAL + GOODREADS.replace('"00000000"', value)
+    assert "profiles.alice.goodreads.user_id: must be" in load_error(tmp_path, text)
+
+
+def test_the_user_id_is_required(tmp_path: Path) -> None:
+    text = MINIMAL + GOODREADS.replace('      user_id: "00000000"\n', "")
+    assert "profiles.alice.goodreads.user_id: required" in load_error(tmp_path, text)
+
+
+def test_the_shelf_map_is_required(tmp_path: Path) -> None:
+    text = MINIMAL + GOODREADS.split("      shelf_map:")[0]
+    assert "profiles.alice.goodreads.shelf_map: required" in load_error(tmp_path, text)
+
+
+@pytest.mark.parametrize("status", ["0", "6", "'3'", "3.0", "true"])
+def test_shelf_map_values_are_statuses_1_to_5(tmp_path: Path, status: str) -> None:
+    text = MINIMAL + GOODREADS.replace("did-not-finish: 5", f"did-not-finish: {status}")
+    message = load_error(tmp_path, text)
+    assert "profiles.alice.goodreads.shelf_map.did-not-finish" in message
+
+
+def test_the_shelf_map_is_a_mapping_of_shelf_names(tmp_path: Path) -> None:
+    text = MINIMAL + GOODREADS.split("      shelf_map:")[0] + "      shelf_map: [read]\n"
+    assert "profiles.alice.goodreads.shelf_map" in load_error(tmp_path, text)
+
+
+def test_goodreads_must_be_a_mapping(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    goodreads: yes\n"
+    assert "profiles.alice.goodreads: must be a mapping" in load_error(tmp_path, text)
+
+
+def test_goodreads_hosts_are_always_aliased(tmp_path: Path) -> None:
+    aliases = load(tmp_path, MINIMAL).host_aliases()
+    assert aliases["www.goodreads.com"] == "goodreads"
+    assert aliases["goodreads.com"] == "goodreads"

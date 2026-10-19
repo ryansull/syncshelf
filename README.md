@@ -38,6 +38,7 @@ uv run pre-commit install   # gitleaks and the private denylist on every commit
 | Live tests (opt-in, never in CI) | `SYNCSHELF_LIVE=1 uv run pytest --live` |
 | Live write tests (test account only, never in CI) | `SYNCSHELF_LIVE=1 SYNCSHELF_LIVE_WRITE=1 uv run pytest --live tests/live/test_writes_live.py` |
 | Record fixtures (live reads) | `uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE` |
+| Record Goodreads RSS fixtures (live reads) | `uv run python tests/live/record.py goodreads_rss --user-var GOODREADS_USER_ID_ALICE` |
 | All pre-commit hooks | `uv run pre-commit run --all-files` |
 | Check changelog fragments | `uv run python scripts/changelog.py check` |
 | Assemble the changelog (release-prep PR only) | `uv run python scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD --title "Phase N: …"` |
@@ -64,7 +65,11 @@ profile's `hardcover_token` (the Hardcover API token, without its `Bearer ` pref
 required. `cadence.hardcover_daily_reserve` (default 1000) is how many of each profile's 5000
 daily Hardcover requests the syncs leave for Claude, and each profile's `hardcover_privacy`
 (public, followers or private, the default) is who sees books SyncShelf adds to its shelves.
-The file is the only source of profiles: at each start, a profile removed from it is marked
+From phase 4a, a profile with a `goodreads` section is read from its Goodreads shelf RSS feed:
+`goodreads.user_id` (the number in `goodreads.com/user/show/<id>`, quoted) and
+`goodreads.shelf_map` (each exclusive shelf's Hardcover status, 1 to 5) are both required in
+it, and `rss_key` is needed only if the profile isn't public. A profile without the section has
+no Goodreads sync. The file is the only source of profiles: at each start, a profile removed from it is marked
 removed and its Claude connections are revoked, and a name added back is restored.
 
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says
