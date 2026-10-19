@@ -22,6 +22,7 @@ from syncshelf.sync.observations import Batch, Observation
 __all__ = [
     "Baseline",
     "IdentitySource",
+    "Observed",
     "Pending",
     "Placement",
     "SourceRow",
@@ -68,6 +69,7 @@ class SourceRow:
     hc_book_id: int | None
     hc_user_book_id: int | None
     baselines: Mapping[str, Baseline] = field(default_factory=dict[str, Baseline])
+    gone_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,16 @@ class Placement:
     hc_user_book_id: int | None = None
     reason: str | None = None
     """Why a queued row is queued, when its hit doesn't say (a ``stale`` link)."""
+
+
+@dataclass(frozen=True)
+class Observed:
+    """What diffing one batch found."""
+
+    pending: list[Pending]
+    """The pending changes ready to apply: on linked rows, not quarantined."""
+    gone: int
+    """Rows this batch concluded are gone from the source."""
 
 
 @dataclass(frozen=True)
@@ -142,9 +154,9 @@ def load_rows(
         baseline = Baseline(*rest)
         baselines.setdefault(source_id, {})[baseline.field] = baseline
     return {
-        source_id: SourceRow(source_id, state, book, user_book, baselines.get(source_id, {}))
-        for source_id, state, book, user_book in conn.execute(
-            "SELECT source_id, state, hc_book_id, hc_user_book_id FROM source_rows "
+        source_id: SourceRow(source_id, state, book, user_book, baselines.get(source_id, {}), gone)
+        for source_id, state, book, user_book, gone in conn.execute(
+            "SELECT source_id, state, hc_book_id, hc_user_book_id, gone_at FROM source_rows "
             "WHERE profile = ? AND source = ?",
             (profile, source),
         )
@@ -238,9 +250,9 @@ def observe(
     source: IdentitySource,
     batch: Batch,
     now: int,
-) -> list[Pending]:
-    """Diff a batch against the rows' baselines (§3.4a.6), recording what it saw, and return
-    the pending changes ready to apply: on linked rows, not quarantined.
+) -> Observed:
+    """Diff a batch against the rows' baselines (§3.4a.6), record what it saw, and return the
+    pending changes ready to apply and how many rows it found gone.
 
     A field applies only if the batch carries it and is newer than its baseline (rule 8):
     - equal to the baseline: its ``observed_at`` advances, and any pending change it had is
@@ -248,6 +260,10 @@ def observe(
     - different: it becomes the pending change. A value that differs from the one already
       pending supersedes it, starting over (the attempts and quarantine are cleared);
     - never observed on this row before: it only sets the baseline (rule 3).
+
+    **Removals are recorded, never pushed** (rule 4). Only a complete enumeration may conclude
+    a row is gone: it gets ``gone_at``, its ``last_seen_at`` freezes, and a ``gone`` row goes
+    in ``change_log``. A row seen again isn't gone any more, so its ``gone_at`` clears.
 
     Only rows SyncShelf already has are diffed; rows first seen now are left to the caller.
     """
@@ -270,14 +286,36 @@ def observe(
             elif baseline.observed_at is None or batch.observed_at > baseline.observed_at:
                 _diff_field(conn, baseline, value, batch.observed_at, now)
     conn.executemany(
-        "UPDATE source_rows SET last_seen_at = ? WHERE profile = ? AND source = ? "
-        "AND source_id = ?",
+        "UPDATE source_rows SET last_seen_at = ?, gone_at = NULL WHERE profile = ? "
+        "AND source = ? AND source_id = ?",
         seen,
     )
+    gone = 0
+    if batch.complete:
+        listed = {obs.source_id for obs in batch.rows}
+        for row in rows.values():
+            if row.source_id not in listed and row.gone_at is None:
+                gone += 1
+                _mark_gone(conn, profile, source, row, now)
     # A row this batch didn't list keeps its pending change for a batch that does, so the
     # baseline is never stamped with a time it wasn't observed at.
     listed_now = {source_id for _, _, _, source_id in seen}
-    return [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
+    pending = [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
+    return Observed(pending, gone)
+
+
+def _mark_gone(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, row: SourceRow, now: int
+) -> None:
+    conn.execute(
+        "UPDATE source_rows SET gone_at = ? WHERE profile = ? AND source = ? AND source_id = ?",
+        (now, profile, source, row.source_id),
+    )
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, kind,"
+        " at) VALUES (?, ?, ?, ?, ?, 'gone', ?)",
+        (profile, source, row.source_id, row.hc_book_id, row.hc_user_book_id, now),
+    )
 
 
 def _diff_field(

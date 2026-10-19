@@ -220,6 +220,20 @@ async def test_startup_marks_a_run_left_running_as_aborted(w: World) -> None:
     assert await w.rows("SELECT state, ended_at FROM runs WHERE id = ?", run_id) == [("aborted", 2)]
 
 
+async def test_a_404_user_fails_the_fetch_and_concludes_nothing(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    del w.goodreads.users[GR_USER]
+    run_id = await w.sync.run_rss("alice")
+    assert await state(w, run_id) == (
+        "fetch_failed",
+        0,
+        0,
+        "page 1: Goodreads has no such user (HTTP 404)",
+    )
+    assert await w.rows("SELECT count(*) FROM source_rows WHERE gone_at IS NOT NULL") == [(0,)]
+
+
 async def test_a_change_hardcover_cant_take_fails_alone_and_the_run_goes_on(w: World) -> None:
     w.hardcover.add_user_book(HC_USER, 9, status_id=3, rating=2.0)
     w.hardcover.add_mapping(400, 9)

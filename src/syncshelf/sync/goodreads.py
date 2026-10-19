@@ -189,8 +189,13 @@ class GoodreadsSync:
 
         # Stage 2: the diff, against baselines only.
         now = int(self._clock.time())
-        pending = await self._db.write(identity.observe, profile, SOURCE, batch, now)
-        work = [change for change in pending if _target(change) is not None]
+        observed = await self._db.write(identity.observe, profile, SOURCE, batch, now)
+        if observed.gone:
+            log.info(
+                "Goodreads no longer lists some books; recorded, never pushed",
+                extra={"event": "rows_gone", "profile": profile, "count": observed.gone},
+            )
+        work = [change for change in observed.pending if _target(change) is not None]
         if not work:
             return "ok" if batch.complete else "partial"
         self._started(profile, run_id)
