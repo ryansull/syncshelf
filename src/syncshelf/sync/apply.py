@@ -113,6 +113,15 @@ class ReadStillOpen(Exception):
         self.started_on = started_on
 
 
+class NotYetShown(HardcoverError):
+    """Hardcover took a write but hasn't shown it within :data:`SETTLE_TIMEOUT` (trap 5)."""
+
+
+SETTLE_TIMEOUT = 3.0
+"""How long to wait for Hardcover to show a write before calling the change partly done."""
+SETTLE_POLL = 0.25
+"""How often to look meanwhile (seconds)."""
+
 PENDING_TTL = 3600.0
 """How long an unfinished change waits for the same call to complete it (seconds)."""
 
@@ -152,7 +161,7 @@ class Applied:
 _FIELDS = {
     "status_id": ("status_id", "status_id"),
     "rating": ("rating", "rating"),
-    "review": ("review_raw", "review_markdown"),
+    "review": ("review_markdown", "review_markdown"),
     "review_has_spoilers": ("review_has_spoilers", "review_has_spoilers"),
 }
 
@@ -235,7 +244,8 @@ class Applier:
             self._pending[key] = _Pending(target, basis, landed, time.monotonic())
             fixes: list[Change] = []
             try:
-                await self._reconcile(client, book_id, basis, op, edition, fixes)
+                after = await self._settled(client, book_id, wanted.get("status_id", UNSET))
+                await self._reconcile(client, after, basis, op, edition, fixes)
             except HardcoverError as exc:
                 for change in fixes:
                     _log_change(profile, book_id, change, trigger)
@@ -292,21 +302,35 @@ class Applier:
             book = books[0] if books else {}
         return (book.get(EDITION_FOR[op.format]) or {}).get("id")
 
+    async def _settled(
+        self, client: HardcoverClient, book_id: int, status_id: Any
+    ) -> dict[str, Any]:
+        """The user_book once Hardcover shows the write just made: it exists, with
+        ``status_id`` when one was written. Hardcover's reads can lag its writes, and
+        reconciling against the state before the status write would miss the reads it
+        invents (§3.3.1 trap 5, #150). Raises :class:`NotYetShown` after
+        :data:`SETTLE_TIMEOUT` seconds."""
+        deadline = time.monotonic() + SETTLE_TIMEOUT
+        while True:
+            row = await self._fetch(client, book_id)
+            if row is not None and (status_id is UNSET or row.get("status_id") == status_id):
+                return row
+            if time.monotonic() >= deadline:
+                raise NotYetShown("Hardcover hasn't shown the change yet")
+            await asyncio.sleep(SETTLE_POLL)
+
     async def _reconcile(
         self,
         client: HardcoverClient,
-        book_id: int,
+        after: dict[str, Any],
         snapshot: list[dict[str, Any]],
         op: ReadOp | None,
         edition: int | None,
         changes: list[Change],
     ) -> None:
-        """Bring the reads back to ``snapshot`` and write the read ``op`` asks for, in as few
-        full-object writes as possible (rules 4–6). Each read change made is appended to
-        ``changes`` as it lands, so a failure part-way still accounts for it."""
-        after = await self._fetch(client, book_id)
-        if after is None:
-            return
+        """Bring ``after``'s reads back to ``snapshot`` and write the read ``op`` asks for, in
+        as few full-object writes as possible (rules 4–6). Each read change made is appended
+        to ``changes`` as it lands, so a failure part-way still accounts for it."""
         before = {r["id"]: r for r in snapshot}
         # The read the op rewrites (the open read a finish completes, the read a correction
         # moves) becomes the intended read in one write, stamped by Hardcover or not.
@@ -370,10 +394,11 @@ class Applier:
         self, client: HardcoverClient, user_book: dict[str, Any], reads: list[dict[str, Any]]
     ) -> None:
         """Set ``first_started_reading_date`` to the earliest read's start (rule 6). Hardcover
-        never recomputes it, and stamps it on the reads it invents."""
+        never recomputes it, and stamps it on the reads it invents. With no dated start left,
+        it stays as Hardcover has it: Hardcover ignores a null there (trap 1, #148)."""
         starts = [r["started_at"][:10] for r in reads if r.get("started_at")]
         earliest = min(starts, default=None)
-        if earliest != (user_book.get("first_started_reading_date") or None):
+        if earliest is not None and earliest != user_book.get("first_started_reading_date"):
             result = await client.execute(
                 UPDATE_USER_BOOK,
                 {"id": user_book["id"], "object": {"first_started_reading_date": earliest}},

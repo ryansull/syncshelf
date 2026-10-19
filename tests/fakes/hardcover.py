@@ -75,6 +75,9 @@ class FakeHardcover:
         self.callers: list[int] = []
         """The user id whose token sent each request, in the same order."""
         self.daily_remaining = 5000
+        self._lag = 0
+        self._stale: dict[int, list[dict[str, Any]]] | None = None
+        self._stale_reads = 0
         self._faults: dict[str, list[_Fault]] = {}
         self._ids = count(1)
 
@@ -355,11 +358,27 @@ class FakeHardcover:
 
     # --- writes ---------------------------------------------------------------------------
 
+    def lag(self, reads: int) -> None:
+        """Make the next user_book write invisible to the ``reads`` UserBook queries after
+        it, which see the state before it, as Hardcover's reads sometimes lag its writes
+        (§3.3.1 trap 5)."""
+        self._lag = reads
+
+    def _before_write(self) -> None:
+        if self._lag:
+            self._stale = copy.deepcopy(self.user_books)
+            self._stale_reads, self._lag = self._lag, 0
+
     def _user_book(self, user_id: int, variables: dict[str, Any]) -> list[dict[str, Any]]:
         assert variables["user_id"] == user_id, "a query must filter by the caller's own id"
-        return [r for r in self.user_books[user_id] if r["book_id"] == variables["book_id"]]
+        rows = self.user_books
+        if self._stale is not None and self._stale_reads:
+            self._stale_reads -= 1
+            rows = self._stale
+        return [r for r in rows.get(user_id, []) if r["book_id"] == variables["book_id"]]
 
     def _insert_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        self._before_write()
         obj = dict(variables["object"])
         if error := _rating_error(obj):
             return {"insert_user_book": {"id": None, "error": error}}
@@ -401,6 +420,7 @@ class FakeHardcover:
         return {"delete_reading_journals_for_book": {"ids": gone}}
 
     def _update_user_book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        self._before_write()
         obj = dict(variables["object"])
         if error := _rating_error(obj):
             return {"update_user_book": {"id": None, "error": error}}
@@ -549,7 +569,7 @@ def user_book_row(user_book_id: int, book_id: int) -> dict[str, Any]:
         "status_id": 1,
         "rating": None,
         "has_review": False,
-        "review_raw": None,
+        "review_markdown": None,
         "review_has_spoilers": False,
         "date_added": "2026-01-01",
         "first_started_reading_date": None,
@@ -625,8 +645,10 @@ def _apply_fields(row: dict[str, Any], obj: dict[str, Any]) -> None:
     """Apply a user_book write the way Hardcover stores it."""
     for key, value in obj.items():
         if key == "review_markdown":
-            row["review_raw"] = value
+            row["review_markdown"] = value
             row["has_review"] = bool(value)
+        elif key == "first_started_reading_date" and value is None:
+            pass  # Hardcover ignores it: the date can be replaced, never cleared (trap 1)
         else:
             row[key] = value
 

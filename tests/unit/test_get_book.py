@@ -34,7 +34,7 @@ def fake() -> FakeHardcover:
         status_id=3,
         rating=4.5,
         date_added="2026-01-02",
-        review_raw="Loved it.",
+        review_markdown="Loved it.",
         review_has_spoilers=True,
         user_book_reads=[
             {
@@ -76,7 +76,7 @@ def fake() -> FakeHardcover:
         cached_contributors=[person("Dan Simmons")],
     )
     fake.add_book(30, title="Foundation", cached_contributors=[person("Isaac Asimov")])
-    fake.add_user_book(BOB, 7, status_id=3, rating=2.0, review_raw="Bob's private note.")
+    fake.add_user_book(BOB, 7, status_id=3, rating=2.0, review_markdown="Bob's private note.")
     fake.add_list(ALICE, "Favourites", [7])
     return fake  # fmt: skip
 

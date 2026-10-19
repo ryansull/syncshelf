@@ -404,7 +404,7 @@ async def remove_book(book_id: int, confirm_token: str | None = None) -> Removal
         removed=removal.removed,
         status=_SLUGS.get(ub.get("status_id") or 0),
         rating=ub.get("rating"),
-        has_review=bool(ub.get("has_review") or ub.get("review_raw")),
+        has_review=bool(ub.get("has_review") or ub.get("review_markdown")),
         review_has_spoilers=bool(ub.get("review_has_spoilers")),
         reads=[_shown_read(r) for r in ub.get("user_book_reads") or []],
         has_journal=removal.has_journal,
@@ -431,7 +431,7 @@ def _preview_note(outcome: list[Redeemed], done: str) -> str:
 
 def _snapshot(user_book: dict[str, Any], has_journal: bool | None = None) -> str:
     """What a confirm token is bound to: everything on the shelf a deletion would lose."""
-    keys = ("id", "status_id", "rating", "review_raw", "review_has_spoilers", "edition_id")
+    keys = ("id", "status_id", "rating", "review_markdown", "review_has_spoilers", "edition_id")
     reads = [
         {k: r.get(k) for k in ("id", *READ_FIELDS)} for r in user_book.get("user_book_reads") or []
     ]

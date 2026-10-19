@@ -1046,7 +1046,7 @@ def _shelf(name: str, ub: dict[str, Any], lists: list[str], *, own: bool) -> She
         lists=lists,
     )
     if own:
-        shelf["review"] = ub.get("review_raw") or None
+        shelf["review"] = ub.get("review_markdown") or None
         shelf["review_has_spoilers"] = bool(ub.get("review_has_spoilers"))
     return shelf
 

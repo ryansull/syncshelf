@@ -1002,7 +1002,7 @@ Verified live on 2026-10-17 unless marked *(docs only)*.
   | 5 | Did Not Finish | did-not-finish | |
   | 6 | Ignored | ignored | **Never written by sync.** |
 - **Rating:** `numeric`, **0.5–5 in 0.5 steps**. `null` clears it. Anything else returns 200 with `error` "Rating must be between 0.5 and 5 in 0.5 increments" and leaves the row unchanged.
-- **Review:** write `review_markdown` + `review_has_spoilers`. That sets `review_raw`, `has_review` and `reviewed_at`.
+- **Review:** write `review_markdown` + `review_has_spoilers`. That sets `review_raw`, `has_review` and `reviewed_at`. **Read it back as `review_markdown`**, which round-trips exactly. `review_raw` is the text with its Markdown stripped (`review` is HTML), so it never equals a formatted review. Decided in [Hardcover's review_raw strips Markdown](https://github.com/ryansull/syncshelf/issues/149).
 - **Privacy:** `privacy_setting_id` is 1 Public, 2 Followers, 3 Private. Public rows may post to followers' feeds *(not tested)*.
 - **Reading formats:** `reading_format_id` is 1 Read (physical), 2 Listened, 3 Both, 4 Ebook. `edition_format` is free text and often null, so use `reading_format_id`. In SyncShelf's format buckets (`audio | ebook | print | unknown`), a **Both** read counts as **both `audio` and `print`**: it matches either filter, and `reading_stats` counts its pages and its hours, so a format grouping can add up to more books than were read. Decided in [Reading format 3 ("Both"): which format bucket does it count in?](https://github.com/ryansull/syncshelf/issues/108).
 - **Mutations** (introspected; all exercised live):
@@ -1022,10 +1022,11 @@ Verified live on 2026-10-17 unless marked *(docs only)*.
 - **Insert straight into Read with dates, in one call:** `{book_id, edition_id, status_id: 3, user_start_date, user_date, privacy_setting_id}` creates the read with those dates.
 
 **Traps the client must handle:**
-1. **Status 2 or 3 invents "today" dates.** Setting 2 opens a read with `started_at = today`. Setting 3 stamps `finished_at = today` on the open read. 4 → 2 opens another read. 2 → 1 keeps the reads. `first_started_reading_date` is never recomputed.
+1. **Status 2 or 3 invents "today" dates.** Setting 2 opens a read with `started_at = today`. Setting 3 stamps `finished_at = today` on the open read. 4 → 2 opens another read. 2 → 1 keeps the reads. `first_started_reading_date` is never recomputed, and **can't be cleared**: writing `null` returns no error and changes nothing, though another date replaces it ([Hardcover won't clear first_started_reading_date](https://github.com/ryansull/syncshelf/issues/148)).
 2. **`upsert_user_book_reads` is unsafe.** It resets omitted fields and silently ignores entries without an `id`. Use the single-read mutations with **full objects**.
 3. **Read aggregates (`read_count`, `last_read_date`) update about 3–5 s later.** Never read them back right after a write. SyncShelf counts reads itself.
 4. **`delete_user_book` leaves `reading_journals` rows behind.** Every write produces journal history.
+5. **Reads can lag writes.** A read right after a write occasionally returns the state before it (seen on an insert, for under a second). Read your own write back before acting on it (§3.3.6 rule 4). Decided in [Hardcover reads can lag writes](https://github.com/ryansull/syncshelf/issues/150).
 
 **Queries** (each one top-level field unless noted):
 
@@ -1059,7 +1060,7 @@ query Search($q: String!, $filter: String, $sort: String, $per: Int!, $page: Int
 ```graphql
 query Library($user_id: Int!, $limit: Int = 1000, $offset: Int = 0) {
   user_books(where: {user_id: {_eq: $user_id}}, order_by: {id: asc}, limit: $limit, offset: $offset) {
-    id book_id edition_id status_id rating has_review review_raw review_has_spoilers
+    id book_id edition_id status_id rating has_review review_markdown review_has_spoilers
     date_added first_started_reading_date privacy_setting_id updated_at
     user_book_reads(order_by: {id: asc}) {
       id started_at finished_at paused_at edition_id progress_pages progress_seconds
@@ -1082,7 +1083,7 @@ query Library($user_id: Int!, $limit: Int = 1000, $offset: Int = 0) {
 ```
 
 Notes on this query:
-- A sync's own fetch keeps `review_raw` **in memory only**, to skip no-op review writes. The mirror never stores it.
+- A sync's own fetch keeps `review_markdown` **in memory only**, to skip no-op review writes. The mirror never stores it ([Hardcover's review_raw strips Markdown](https://github.com/ryansull/syncshelf/issues/149)).
 - A key with a space needs the bracket form (`cached_tags(path: "[\"Content Warning\"]")`).
 - Narrators are on the **audio edition**, not the book.
 - `book.audio_seconds` is unreliable, so use the edition's.
@@ -1175,10 +1176,11 @@ This is one procedure, used by every SyncShelf write: Goodreads (4a), ABS (5), C
    - status 2 → `user_start_date`;
    - status 3 → `user_date` (+ `user_start_date` if known).
 
-   Privacy applies **to inserts only**; updates never change an existing row's privacy. *Verify on the test account in phase 3:* what a status-3 insert with `user_date` and no `user_start_date` creates.
+   Privacy applies **to inserts only**; updates never change an existing row's privacy. A status-3 insert with `user_date` and no `user_start_date` creates exactly one read, finished on that date, with no start (verified live in phase 3, [#94](https://github.com/ryansull/syncshelf/issues/94)).
 4. **Existing user_book: status write, then read reconciliation.**
    - Snapshot the reads.
    - Write the status (`update_user_book`).
+   - **Wait for it to show** (trap 5): re-fetch until the user_book has the new `status_id`, or after an insert until it exists, for at most 3 s. If it never shows, the change fails as partly done, and a replay completes it (rule 9). Decided in [Hardcover reads can lag writes](https://github.com/ryansull/syncshelf/issues/150).
    - Re-fetch the reads and compare them with the snapshot. Every difference Hardcover made (a read it **created**, a `finished_at` it **stamped** with today) is either turned into the intended read with a full-object `update_user_book_read`, or **undone**:
      - delete a read the write created that isn't the intended one;
      - restore a stamped read to its snapshot values.
@@ -1187,7 +1189,7 @@ This is one procedure, used by every SyncShelf write: Goodreads (4a), ABS (5), C
    - **`finish`** completes or adopts an **adoptable read** (±14 days, or an open read started on or before the date): an open read gets `finished_at`, and a read already within the window is left as it is. Otherwise it inserts a new read (start, finish, edition).
    - **`correct`** updates the read whose `finished_at` equals the old date. If none matches, it inserts one, unless an adoptable read exists.
    - **`start`** opens a read with the explicit `started_at`.
-6. **`first_started_reading_date`** is set explicitly whenever the earliest read's start changes.
+6. **`first_started_reading_date`** is set explicitly whenever the earliest read's start changes. With no dated start left, it's left as Hardcover has it: Hardcover can't clear it (trap 1), so SyncShelf sends no `null`. Decided in [Hardcover won't clear first_started_reading_date](https://github.com/ryansull/syncshelf/issues/148).
 7. **Never read back** `read_count` / `last_read_date` after a write.
 8. **Never delete** a read, or a user_book, except a read Hardcover created as a side effect of this same write (rule 4). The only other deletions are Claude's confirmed ones (`remove_book`, `correct_read(delete=true)`, §3.3.9), which run outside this procedure.
 9. **One change, all or nothing, and convergent.** A status write and its read edits are one change. If any step fails, the change fails, and its baseline (4a+) doesn't advance. A replay re-runs the whole procedure: steps already done are skipped as no-ops, and the rest are applied. **Nothing besides baselines ever needs undoing.**

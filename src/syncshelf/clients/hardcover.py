@@ -77,7 +77,7 @@ GOALS = "query Goals { me { goals { metric goal progress start_date end_date sta
 """The token owner's reading goals with their progress (§3.3.7, ``reading_stats``)."""
 
 _SHELF_FIELDS = """
-    id book_id edition_id status_id rating has_review review_raw review_has_spoilers
+    id book_id edition_id status_id rating has_review review_markdown review_has_spoilers
     date_added first_started_reading_date privacy_setting_id updated_at
     user_book_reads(order_by: {id: asc}) {
       id started_at finished_at paused_at edition_id progress_pages progress_seconds

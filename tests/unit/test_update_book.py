@@ -136,7 +136,7 @@ async def test_a_review_is_set_and_an_empty_one_clears_it_and_its_flag(
         {"field": "review", "before": "Loved it.", "after": None},
         {"field": "review_has_spoilers", "before": True, "after": False},
     ]
-    assert (row(fake, 7)["review_raw"], row(fake, 7)["review_has_spoilers"]) == (None, False)
+    assert (row(fake, 7)["review_markdown"], row(fake, 7)["review_has_spoilers"]) == (None, False)
 
 
 async def test_the_mirror_sees_the_edit_at_once(connect: Any, fake: FakeHardcover) -> None:
