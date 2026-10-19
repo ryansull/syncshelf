@@ -29,7 +29,7 @@ CREATE TABLE source_rows (                          -- per profile; the unmatche
   hc_user_book_id INTEGER,
   queue_reason    TEXT CHECK (queue_reason IN
                     ('no_hit','id_title_mismatch','fuzzy_low','fuzzy_ambiguous',
-                     'not_in_library','profile_conflict','stale')),
+                     'not_in_library','profile_conflict','stale','ambiguous_mapping')),
   queued_at       INTEGER,
   match_input     TEXT,                             -- JSON: title, authors, isbns, asin, gr_book_id, format, year
   first_seen_at   INTEGER NOT NULL,

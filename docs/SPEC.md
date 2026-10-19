@@ -1523,7 +1523,7 @@ This contradicts the originating prompt's ISBN-first order. The Goodreads mappin
   `fuzzy` is the weakest method, so any later exact hit replaces it.
 - **The thresholds (60 / 95 / 90 / 10) are starting values, not measured ones.** They're calibrated, then pinned (tests).
 - **What a queue entry holds.** A queue entry is a `source_rows` row in state `queued`, plus:
-  - `queue_reason`: `no_hit | id_title_mismatch | fuzzy_low | fuzzy_ambiguous | not_in_library | profile_conflict | stale`;
+  - `queue_reason`: `no_hit | id_title_mismatch | fuzzy_low | fuzzy_ambiguous | not_in_library | profile_conflict | stale | ambiguous_mapping` (`ambiguous_mapping`: the Goodreads id's `book_mappings` rows point at different books after `canonical_id`, each kept as a candidate; decided in [Matcher: one Goodreads id with several book_mappings rows](https://github.com/ryansull/syncshelf/issues/185));
   - `queued_at`;
   - `match_input` (JSON: title, authors, ISBNs, ASIN, Goodreads `Book Id`, format, year, as seen);
   - up to 5 `match_candidates` (`hc_book_id`, `hc_edition_id?`, method, title score, author score, rank, `fetched_at`);
@@ -2523,7 +2523,7 @@ CREATE TABLE source_rows (                          -- per profile; the unmatche
   hc_user_book_id INTEGER,
   queue_reason    TEXT CHECK (queue_reason IN
                     ('no_hit','id_title_mismatch','fuzzy_low','fuzzy_ambiguous',
-                     'not_in_library','profile_conflict','stale')),
+                     'not_in_library','profile_conflict','stale','ambiguous_mapping')),
   queued_at       INTEGER,
   match_input     TEXT,                             -- JSON: title, authors, isbns, asin, gr_book_id, format, year
   first_seen_at   INTEGER NOT NULL,

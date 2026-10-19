@@ -154,6 +154,7 @@ class TestSourceRows:
             "not_in_library",
             "profile_conflict",
             "stale",
+            "ambiguous_mapping",
         ],
     )
     def test_every_queue_reason_is_accepted(self, sync: sqlite3.Connection, reason: str) -> None:
