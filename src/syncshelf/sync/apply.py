@@ -225,7 +225,8 @@ class Applier:
         # Hardcover invented when its first attempt's status write landed.
         basis = pending.snapshot if pending else list((current or {}).get("user_book_reads") or [])
         if isinstance(op, Correct) and _finished_on(basis, op.old) is None:
-            op = Finish(op.on, format=op.format)  # nothing logged on the old date (rule 5)
+            # Nothing logged on the old date (rule 5).
+            op = Finish(op.on, format=op.format, edition=op.edition)
         edition = await self._edition(client, book_id, current, op, basis)
         if current is None:
             if "status_id" not in wanted:
@@ -287,6 +288,8 @@ class Applier:
         one, which keep their own editions; otherwise the format is needed."""
         if op is None:
             return None
+        if op.edition is not UNSET:
+            return op.edition
         if op.format is None:
             if isinstance(op, Correct):
                 return None  # the read it moves keeps its edition
@@ -750,6 +753,10 @@ class Start:
 
     on: str
     format: str | None = None
+    edition: Settable[int | None] = UNSET
+    """The exact edition a new read is written with, ``None`` for none, in place of the
+    format's default edition (§3.3.5: an RSS-only Goodreads row's read takes its link's
+    edition, or none)."""
 
 
 @dataclass(frozen=True)
@@ -761,6 +768,8 @@ class Finish:
     format: str | None = None
     reread: bool = False
     """Never adopt: always add a new read."""
+    edition: Settable[int | None] = UNSET
+    """As :attr:`Start.edition`."""
 
 
 @dataclass(frozen=True)
@@ -771,6 +780,8 @@ class Correct:
     old: str
     on: str
     format: str | None = None
+    edition: Settable[int | None] = UNSET
+    """As :attr:`Start.edition`, for the read added when nothing was logged on ``old``."""
 
 
 type ReadOp = Start | Finish | Correct

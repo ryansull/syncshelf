@@ -10,10 +10,16 @@
 #   baselines   {source_id: {field: value}} for the fields given
 #   pending     {source_id: {field: value}} for pending changes; null value = pending clear
 #   change_log  [source_id, field, old, new] rows written by this run
+#   log         [kind, field, trigger, date_source] rows written by this run
+#   reads       {book_id: [[started, finished, edition], ...]} on Hardcover afterwards
 #   gone        the source ids marked gone, after this run
 #   backfill    [rows_linked, rows_queued]
 #
-# Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review.
+# Hardcover: a shelf entry may list `reads: [[started, finished, edition?], ...]`; a mapping is
+# a book id, or {book, edition, format} for the edition it names and its reading_format_id.
+# Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review,
+# added (RSS user_date_added; "" for none). The fake's default added date is 2026-10-15, its
+# "today" (what Hardcover stamps on reads it invents) 2100-01-01, and the profile is in UTC.
 # A run may add `filler: N` unmatched books after its feed (to make a second page) and
 # `fail: {page: N, fault: …}` to make a page unusable.
 # When a case and a ticket disagree, fix the case.
@@ -175,4 +181,188 @@ cases:
       - feed: [{id: 100, title: Dune, shelf: to-read}]
         expect:
           gone: []
-          pending: {"100": {status: to-read}}
+          writes: [[update_user_book, {status_id: 1}]]
+          baselines: {"100": {status: to-read}}
+
+  # --- reads (rule 6) ----------------------------------------------------------------------
+
+  - name: a Kindle finish completes the open read on the date Goodreads last touched it
+    hardcover:
+      shelf: {7: {status: 2, reads: [["2026-10-01", null, 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          state: ok
+          reads: {7: [["2026-10-01", "2026-10-15", 70]]}
+          baselines: {"100": {status: read}}
+          log: [[push, status, status, user_date_added], [read_adopt, null, status, user_date_added]]
+
+  - name: a finish with a Goodreads Date Read inserts a read with the link's edition
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-10-02", 70]]}
+          log: [[push, status, status, goodreads_date_read], [read_insert, null, status, goodreads_date_read]]
+
+  - name: an undated finish with no Goodreads date at all takes the day SyncShelf saw it
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read, added: ""}]
+      - feed: [{id: 100, title: Dune, added: ""}]
+        expect:
+          reads: {7: [[null, "2100-01-01", 70]]}
+          log: [[push, status, status, first_seen], [read_insert, null, status, first_seen]]
+
+  - name: an RSS-only read is written with no edition when the link's edition has no format
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 71}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-10-02", null]]}
+
+  - name: going Currently Reading opens a read on the date Goodreads last touched it
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+        expect:
+          reads: {7: [["2026-10-15", null, 70]]}
+          log: [[push, status, status, user_date_added], [read_insert, null, status, user_date_added]]
+
+  - name: going Currently Reading over a read already open opens no second one
+    hardcover:
+      shelf: {7: {status: 1, reads: [["2026-09-01", null, 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+        expect:
+          state: ok
+          reads: {7: [["2026-09-01", null, 70]]}
+
+  - name: a changed Date Read moves the read finished on the old date
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-09-20", "2026-10-02", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [["2026-09-20", "2026-10-05", 70]]}
+          log: [[push, date_read, null, goodreads_date_read]]
+
+  - name: a Date Read change with nothing on the old date adopts a read within 14 days
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-10", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          writes: []
+          reads: {7: [[null, "2026-10-10", 70]]}
+          baselines: {"100": {date_read: "2026-10-05"}}
+
+  - name: a Date Read change with nothing near inserts a read
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-08-01", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-08-01", 70], [null, "2026-10-05", 70]]}
+
+  - name: a vanished Date Read is never pushed, but its baseline moves on
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-02", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          writes: []
+          reads: {7: [[null, "2026-10-02", 70]]}
+          baselines: {"100": {date_read: null}}
+          log: []
+
+  - name: a Date Read on a book that isn't Read moves the baseline only
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: to-read, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          writes: []
+          baselines: {"100": {date_read: "2026-10-02"}}
+
+  - name: Read, Currently Reading, Read again is a re-read, one new read
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-01-01", "2026-01-20", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+        expect:
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", null, 70]]}
+      - feed: [{id: 100, title: Dune, added: "Sat, 17 Oct 2026 08:00:00 -0700"}]
+        expect:
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", "2026-10-17", 70]]}
+          log: [[push, status, reread_cycle, user_date_added], [read_adopt, null, reread_cycle, user_date_added]]
+
+  - name: a finish whose read fix-up failed converges on the next run without a second read
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        hardcover_fail: {op: InsertRead, fault: unavailable}
+        expect:
+          state: partial
+          pending: {"100": {status: read, date_read: "2026-10-02"}}
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          state: ok
+          reads: {7: [[null, "2026-10-02", 70]]}
+          pending: {}
+
+  - name: a re-read with Goodreads' old Date Read left alone finishes on its own date
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-01-01", "2026-01-20", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Sat, 17 Oct 2026 08:00:00 -0700"}]
+        expect:
+          state: ok
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", "2026-10-17", 70]]}
+          log: [[push, status, reread_cycle, user_date_added], [read_adopt, null, reread_cycle, user_date_added]]
+
+  - name: a Date Read change alongside a move off Read is planned on its own and not pushed
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-02", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          state: ok
+          reads: {7: [[null, "2026-10-02", 70], ["2026-10-15", null, 70]]}
+          baselines: {"100": {date_read: "2026-10-05", status: currently-reading}}
+          pending: {}

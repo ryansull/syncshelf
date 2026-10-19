@@ -10,6 +10,7 @@ import pytest
 
 from syncshelf.sync import runs
 
+from fakes.hardcover import read_row
 from sync_world import GR_USER, HC_USER, World, world
 
 pytestmark = pytest.mark.anyio
@@ -324,3 +325,54 @@ async def test_a_library_syncshelf_cant_store_defers_the_run(w: World) -> None:
         "Hardcover sent data SyncShelf couldn't store (IntegrityError)",
     )
     assert w.hardcover.writes == []
+
+
+async def test_a_re_read_with_no_open_read_is_always_a_new_read(w: World) -> None:
+    dune = w.hardcover.user_books[HC_USER][0]
+    dune["user_book_reads"] = [read_row(1, "2026-09-20", "2026-10-10", 70)]
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    items = {i["book_id"]: i for i in w.goodreads.users[GR_USER].items}
+    items[str(DUNE)]["user_shelves"] = "currently-reading"
+    await w.sync.run_rss("alice")  # opens a read on 2026-10-15, the default added date
+    # That read is removed in Hardcover before the book is finished again.
+    dune["user_book_reads"] = [r for r in dune["user_book_reads"] if r["finished_at"]]
+    w.clock.advance(3600)
+    items[str(DUNE)]["user_shelves"] = ""
+    await w.sync.run_rss("alice")
+    # 2026-10-15 is within 14 days of the old finish, but a re-read is never adopted.
+    finishes = sorted(r["finished_at"][:10] for r in dune["user_book_reads"])
+    assert finishes == ["2026-10-10", "2026-10-15"]
+
+
+async def test_a_failed_edition_lookup_holds_only_the_reads(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    items = {i["book_id"]: i for i in w.goodreads.users[GR_USER].items}
+    items[str(DUNE)]["user_rating"] = "5"
+    items[str(DUNE)]["user_read_at"] = "Fri, 2 Oct 2026 00:00:00 +0000"  # a correction read
+    w.hardcover.user_books[HC_USER][0]["user_book_reads"] = [read_row(1, None, "2026-01-01", 70)]
+    w.hardcover.fail_next("EditionFormats", "unavailable")
+    run_id = await w.sync.run_rss("alice")
+    (run_state, applied, failed, _) = await state(w, run_id)
+    assert (run_state, applied, failed) == ("partial", 1, 1)
+    assert w.hardcover.user_books[HC_USER][0]["rating"] == 5.0
+    assert await w.rows("SELECT field FROM baseline_fields WHERE pending_since IS NOT NULL") == [
+        ("date_read",)
+    ]
+
+
+async def test_a_link_edition_of_another_book_is_not_written(tmp_path: Path) -> None:
+    async with world(tmp_path) as w:
+        w.hardcover.add_user_book(HC_USER, 7, status_id=1)
+        w.hardcover.add_mapping(DUNE, 7)
+        w.hardcover.editions[90] = {"book_id": 9, "reading_format_id": 4}  # not Dune's
+        w.goodreads.add_item(GR_USER, DUNE, "Dune", shelf="to-read")
+        await w.sync.run_rss("alice")
+        await w.db.write(lambda conn: conn.execute("UPDATE links SET hc_edition_id = 90"))
+        w.clock.advance(3600)
+        w.goodreads.users[GR_USER].items[0]["user_shelves"] = ""
+        w.goodreads.users[GR_USER].items[0]["user_read_at"] = "Fri, 2 Oct 2026 00:00:00 +0000"
+        await w.sync.run_rss("alice")
+        (read,) = w.hardcover.user_books[HC_USER][0]["user_book_reads"]
+        assert (read["finished_at"][:10], read["edition_id"]) == ("2026-10-02", None)

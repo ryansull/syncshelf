@@ -21,16 +21,31 @@ CASES = GOLDEN["cases"]
 async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
     async with world(tmp_path) as w:
         hardcover = case.get("hardcover") or {}
-        for book_id, fields in (hardcover.get("shelf") or {}).items():
-            w.hardcover.add_user_book(HC_USER, int(book_id), **_shelf_fields(fields))
-        for goodreads_id, book_id in (hardcover.get("mappings") or {}).items():
-            w.hardcover.add_mapping(goodreads_id, book_id)
+        for n, (book_id, fields) in enumerate((hardcover.get("shelf") or {}).items()):
+            fields = dict(fields)
+            reads = [
+                {"id": 1000 * (n + 1) + i, "started_at": r[0], "finished_at": r[1],
+                 "edition_id": r[2] if len(r) > 2 else None}
+                for i, r in enumerate(fields.pop("reads", []))
+            ]  # fmt: skip
+            w.hardcover.add_user_book(
+                HC_USER, int(book_id), user_book_reads=reads, **_shelf_fields(fields)
+            )
+        for goodreads_id, mapping in (hardcover.get("mappings") or {}).items():
+            if isinstance(mapping, dict):
+                book, edition = mapping["book"], mapping.get("edition")
+                extra = {"reading_format_id": mapping["format"]} if "format" in mapping else {}
+                w.hardcover.add_mapping(goodreads_id, book, edition, **extra)
+            else:
+                w.hardcover.add_mapping(goodreads_id, mapping)
         for n, run in enumerate(case["runs"]):
             if n:
                 w.clock.advance(3600)
             _serve(w, run["feed"], run.get("filler", 0))
             if fail := run.get("fail"):
                 w.goodreads.fail_next(fail["fault"], page=fail.get("page"))
+            if fail := run.get("hardcover_fail"):
+                w.hardcover.fail_next(fail["op"], fail["fault"])
             writes_before = len(w.hardcover.writes)
             log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
             run_id = await w.sync.run_rss("alice")
@@ -54,6 +69,8 @@ def _serve(w: World, feed: list[dict[str, Any]], filler: int) -> None:
             extra["user_read_at"] = item["read_at"]
         if "review" in item:
             extra["user_review"] = item["review"]
+        if "added" in item:
+            extra["user_date_added"] = item["added"]
         w.goodreads.add_item(
             GR_USER,
             item["id"],
@@ -103,6 +120,24 @@ async def _check(
             log_before,
         )
         assert [list(r) for r in found] == expect["change_log"]
+    for book_id, wanted in (expect.get("reads") or {}).items():
+        (row,) = [ub for ub in w.hardcover.user_books[HC_USER] if ub["book_id"] == int(book_id)]
+        found = [
+            [(r["started_at"] or None) and r["started_at"][:10],
+             (r["finished_at"] or None) and r["finished_at"][:10],
+             r["edition_id"]]
+            for r in sorted(
+                row["user_book_reads"],
+                key=lambda r: (r["started_at"] or r["finished_at"] or "", r["id"]),
+            )
+        ]  # fmt: skip
+        assert found == wanted, f"book {book_id} reads"
+    if "log" in expect:
+        found = await w.rows(
+            "SELECT kind, field, trigger, date_source FROM change_log WHERE id > ? ORDER BY id",
+            log_before,
+        )
+        assert [list(r) for r in found] == expect["log"]
     if "gone" in expect:
         found = await w.rows(
             "SELECT source_id FROM source_rows WHERE gone_at IS NOT NULL ORDER BY source_id"

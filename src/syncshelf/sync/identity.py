@@ -26,12 +26,14 @@ __all__ = [
     "Pending",
     "Placement",
     "SourceRow",
+    "LogRow",
     "backfilled",
-    "commit",
+    "link_editions",
     "load_rows",
     "match_input",
     "observe",
     "record_backfill",
+    "settle",
     "shared_links",
 ]
 
@@ -103,8 +105,26 @@ class Pending:
     source_id: str
     field: str
     old: str | None
+    """The baseline's value: what was last accepted."""
     new: str | None
+    """The pending value."""
     hc_book_id: int
+    prev_value: str | None = None
+    """The value before ``old``: the Read → Currently Reading → Read re-read signal."""
+    pending_since: int | None = None
+    """When SyncShelf first saw the change: the date of an undated finish, failing all else."""
+
+
+@dataclass(frozen=True)
+class LogRow:
+    """One ``change_log`` row written with a settled change."""
+
+    kind: Literal["push", "read_insert", "read_adopt"]
+    field: str | None
+    old: str | None = None
+    new: str | None = None
+    trigger: str | None = None
+    date_source: str | None = None
 
 
 def backfilled(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> bool:
@@ -344,7 +364,8 @@ def _pending(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> 
     return [
         Pending(*row)
         for row in conn.execute(
-            "SELECT b.id, b.source_id, b.field, b.value, b.pending_value, r.hc_book_id "
+            "SELECT b.id, b.source_id, b.field, b.value, b.pending_value, r.hc_book_id, "
+            "b.prev_value, b.pending_since "
             "FROM baseline_fields b JOIN source_rows r USING (profile, source, source_id) "
             "WHERE b.profile = ? AND b.source = ? AND b.pending_since IS NOT NULL "
             "AND b.quarantined_at IS NULL AND r.state = 'linked' ORDER BY b.id",
@@ -353,33 +374,59 @@ def _pending(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> 
     ]
 
 
-def commit(
+def settle(
     conn: sqlite3.Connection,
     profile: str,
     source: IdentitySource,
-    change: Pending,
+    source_id: str,
+    hc_book_id: int,
+    changes: list[Pending],
     observed_at: int,
-    hc_user_book_id: int,
+    hc_user_book_id: int | None,
+    logs: list[LogRow],
     run_id: int | None,
     now: int,
 ) -> None:
-    """After Hardcover took a change: advance its baseline and write the ``change_log`` row,
-    in one transaction (§3.4a.6, rule 9)."""
-    conn.execute(
+    """After Hardcover took a change (or when it needs no write): advance each baseline it
+    settles and write its ``change_log`` rows, in one transaction (§3.4a.6, rule 9)."""
+    conn.executemany(
         "UPDATE baseline_fields SET prev_value = value, value = pending_value, observed_at = ?, "
         "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
         "last_error = NULL, last_error_class = NULL, quarantined_at = NULL WHERE id = ?",
-        (observed_at, change.baseline_id),
+        [(observed_at, change.baseline_id) for change in changes],
     )
-    conn.execute(
-        "UPDATE source_rows SET hc_user_book_id = ? WHERE profile = ? AND source = ? "
-        "AND source_id = ?",
-        (hc_user_book_id, profile, source, change.source_id),
-    )
-    conn.execute(
+    if hc_user_book_id is not None:
+        conn.execute(
+            "UPDATE source_rows SET hc_user_book_id = ? WHERE profile = ? AND source = ? "
+            "AND source_id = ?",
+            (hc_user_book_id, profile, source, source_id),
+        )
+    conn.executemany(
         "INSERT INTO change_log (run_id, profile, source, source_id, hc_book_id, "
-        "hc_user_book_id, kind, field, old_value, new_value, at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'push', ?, ?, ?, ?)",
-        (run_id, profile, source, change.source_id, change.hc_book_id, hc_user_book_id,
-         change.field, change.old, change.new, now),
+        "hc_user_book_id, kind, field, old_value, new_value, trigger, date_source, at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (run_id, profile, source, source_id, hc_book_id, hc_user_book_id, row.kind,
+             row.field, row.old, row.new, row.trigger, row.date_source, now)
+            for row in logs
+        ],
     )  # fmt: skip
+
+
+def link_editions(
+    conn: sqlite3.Connection, source: IdentitySource, ids: Iterable[str]
+) -> dict[str, int]:
+    """The edition each row's shared link names, for rows whose link has one (§3.3.5)."""
+    wanted = list(ids)
+    found: dict[str, int] = {}
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        found.update(
+            conn.execute(
+                "SELECT source_id, hc_edition_id FROM links WHERE source = ? "  # noqa: S608
+                f"AND hc_edition_id IS NOT NULL AND source_id IN ({marks})",
+                (source, *chunk),
+            ).fetchall()
+        )
+    return found
