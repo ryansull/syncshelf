@@ -217,3 +217,17 @@ async def test_startup_marks_a_run_left_running_as_aborted(w: World) -> None:
     run_id = await w.db.write(runs.start, "alice", "gr_rss", "schedule", 1)
     assert await w.db.write(runs.abort_running, 2) == 1
     assert await w.rows("SELECT state, ended_at FROM runs WHERE id = ?", run_id) == [("aborted", 2)]
+
+
+async def test_a_404_user_fails_the_fetch_and_concludes_nothing(w: World) -> None:
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    del w.goodreads.users[GR_USER]
+    run_id = await w.sync.run_rss("alice")
+    assert await state(w, run_id) == (
+        "fetch_failed",
+        0,
+        0,
+        "page 1: Goodreads has no such user (HTTP 404)",
+    )
+    assert await w.rows("SELECT count(*) FROM source_rows WHERE gone_at IS NOT NULL") == [(0,)]

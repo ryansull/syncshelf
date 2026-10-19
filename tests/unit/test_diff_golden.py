@@ -28,7 +28,9 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
         for n, run in enumerate(case["runs"]):
             if n:
                 w.clock.advance(3600)
-            _serve(w, run["feed"])
+            _serve(w, run["feed"], run.get("filler", 0))
+            if fail := run.get("fail"):
+                w.goodreads.fail_next(fail["fault"], page=fail.get("page"))
             writes_before = len(w.hardcover.writes)
             log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
             run_id = await w.sync.run_rss("alice")
@@ -39,8 +41,11 @@ def _shelf_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return {{"status": "status_id"}.get(k, k): v for k, v in fields.items()}
 
 
-def _serve(w: World, feed: list[dict[str, Any]]) -> None:
+def _serve(w: World, feed: list[dict[str, Any]], filler: int) -> None:
     w.goodreads.users[GR_USER].items.clear()
+    # Unmatched books older than the feed's own, to push it past one page of 200.
+    for n in range(filler):
+        w.goodreads.add_item(GR_USER, 900_000 + n, f"Filler {n}")
     for item in reversed(feed):  # add_item puts each on top: the feed is newest first
         extra = {}
         if "rating" in item:
@@ -98,6 +103,11 @@ async def _check(
             log_before,
         )
         assert [list(r) for r in found] == expect["change_log"]
+    if "gone" in expect:
+        found = await w.rows(
+            "SELECT source_id FROM source_rows WHERE gone_at IS NOT NULL ORDER BY source_id"
+        )
+        assert [r[0] for r in found] == [str(i) for i in expect["gone"]]
     if "backfill" in expect:
         found = await w.rows(
             "SELECT rows_linked, rows_queued FROM backfills WHERE run_id = ?", run_id

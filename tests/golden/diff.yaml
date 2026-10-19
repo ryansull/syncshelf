@@ -10,9 +10,12 @@
 #   baselines   {source_id: {field: value}} for the fields given
 #   pending     {source_id: {field: value}} for pending changes; null value = pending clear
 #   change_log  [source_id, field, old, new] rows written by this run
+#   gone        the source ids marked gone, after this run
 #   backfill    [rows_linked, rows_queued]
 #
 # Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review.
+# A run may add `filler: N` unmatched books after its feed (to make a second page) and
+# `fail: {page: N, fault: …}` to make a page unusable.
 # When a case and a ticket disagree, fix the case.
 
 cases:
@@ -108,3 +111,68 @@ cases:
         expect:
           pending: {}
           baselines: {"100": {rating: "4"}}
+
+  # --- removals (rule 4) -----------------------------------------------------------------
+
+  - name: a complete feed that no longer lists a book records it gone and pushes nothing
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          gone: [200]
+          change_log: [["200", null, null, null]]
+
+  - name: a partial feed concludes nothing about absence
+    hardcover:
+      shelf: {7: {status: 3}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune}]
+        filler: 200
+        fail: {page: 2, fault: server_error}
+        expect:
+          state: partial
+          gone: []
+          change_log: []
+
+  - name: an empty feed concludes nothing about absence
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: []
+        expect:
+          state: partial
+          gone: []
+          change_log: []
+
+  - name: a book seen again is no longer gone
+    hardcover:
+      shelf: {7: {status: 3}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          gone: [200]
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+        expect:
+          gone: []
+
+  - name: a move to another shelf is a status change, not a removal
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+        expect:
+          gone: []
+          pending: {"100": {status: to-read}}
