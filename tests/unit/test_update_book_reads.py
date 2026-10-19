@@ -85,7 +85,9 @@ def state(fake: FakeHardcover, book_id: int = 7) -> tuple[int, list[tuple[Any, .
 
 
 def no_today(fake: FakeHardcover) -> bool:
-    return TODAY not in str(fake.user_books[ALICE])
+    """No read is dated today. Reads only: the first-start date Hardcover stamps can't be
+    cleared (#148)."""
+    return TODAY not in str([r["user_book_reads"] for r in fake.user_books[ALICE]])
 
 
 # --- no date means no read ------------------------------------------------------------------
@@ -345,11 +347,24 @@ async def test_a_read_hardcover_opened_on_another_edition_isnt_taken_as_asked(
     assert state(fake) == (2, [(TODAY, None, AUDIO)])
 
 
-async def test_an_invented_first_start_date_is_cleared(connect: Any, fake: FakeHardcover) -> None:
+async def test_a_first_start_date_hardcover_stamped_is_left_without_a_null_write(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    # Hardcover can't clear it (#148), so no write is wasted trying.
     shelve(fake, 1)
     async with connect() as mcp:
         await edit(mcp, book_id=7, status="currently-reading")
-    assert fake.user_books[ALICE][0]["first_started_reading_date"] is None
+    assert fake.user_books[ALICE][0]["first_started_reading_date"] == TODAY
+    assert not any("first_started_reading_date" in w[2] for w in fake.writes)
+
+
+async def test_a_stated_start_replaces_the_stamped_first_start_date(
+    connect: Any, fake: FakeHardcover
+) -> None:
+    shelve(fake, 1)
+    async with connect() as mcp:
+        await edit(mcp, book_id=7, started_on="2099-12-05", format="audio")
+    assert fake.user_books[ALICE][0]["first_started_reading_date"] == "2099-12-05"
 
 
 @pytest.mark.parametrize(

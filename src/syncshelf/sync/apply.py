@@ -370,10 +370,11 @@ class Applier:
         self, client: HardcoverClient, user_book: dict[str, Any], reads: list[dict[str, Any]]
     ) -> None:
         """Set ``first_started_reading_date`` to the earliest read's start (rule 6). Hardcover
-        never recomputes it, and stamps it on the reads it invents."""
+        never recomputes it, and stamps it on the reads it invents. With no dated start left,
+        it stays as Hardcover has it: Hardcover ignores a null there (trap 1, #148)."""
         starts = [r["started_at"][:10] for r in reads if r.get("started_at")]
         earliest = min(starts, default=None)
-        if earliest != (user_book.get("first_started_reading_date") or None):
+        if earliest is not None and earliest != user_book.get("first_started_reading_date"):
             result = await client.execute(
                 UPDATE_USER_BOOK,
                 {"id": user_book["id"], "object": {"first_started_reading_date": earliest}},
