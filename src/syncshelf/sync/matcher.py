@@ -1,7 +1,8 @@
 """The matcher's normalisation and scoring helpers (SPEC §3.4a.5).
 
-Phase 3 brings only these: ``check_books`` scores search hits with them. The matcher chain
-(Goodreads mapping, ISBNs, then fuzzy) and the unmatched queue build on them in phase 4a.
+Phase 3 brings only these: ``check_books`` scores search hits with them. Phase 4a adds the
+chain's id steps, starting with the Goodreads mapping (:func:`goodreads_mappings`); the ISBN
+steps, fuzzy matching and the unmatched queue build on them.
 
 The thresholds are starting values, not measured ones (§3.4a.5). They're pinned by
 ``tests/golden/matcher.yaml`` and calibrated in 4a, so they live here as named constants.
@@ -11,20 +12,27 @@ import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from rapidfuzz.fuzz import token_sort_ratio
+
+from syncshelf.clients.hardcover import BY_GOODREADS, HardcoverClient
 
 __all__ = [
     "AUTO_ACCEPT_AUTHOR",
     "AUTO_ACCEPT_TITLE",
+    "ID_BATCH",
     "LIKELY_AUTHOR",
     "LIKELY_TITLE",
     "MARGIN",
     "TITLE_FLOOR",
+    "IdHit",
+    "Method",
     "Scored",
     "author_score",
     "auto_accepts",
     "full_title_score",
+    "goodreads_mappings",
     "is_likely",
     "normalise",
     "title_score",
@@ -48,6 +56,13 @@ LIKELY_AUTHOR = 80.0
 
 MARGIN = 10.0
 """Every other candidate's title score must be at least this many points below the top one."""
+
+ID_BATCH = 200
+"""Ids per batched lookup: well under Hardcover's silent 1,000-row cap on a list field, even
+when an id maps to several rows."""
+
+Method = Literal["human", "gr_mapping", "isbn13", "isbn10", "asin", "fuzzy"]
+"""A link's ``method``: the chain step (or person) that made it."""
 
 _SERIES = re.compile(r"\s*\([^()]*#\s*\d+(?:\.\d+)?\s*\)\s*$")
 _LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+")
@@ -145,3 +160,46 @@ def _passes(ranked: Sequence[Scored], title: float, author: float) -> bool:
 
 def _ratio(a: str, b: str) -> float:
     return token_sort_ratio(a, b) if a and b else 0.0
+
+
+# --- the chain's id steps -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class IdHit:
+    """An exact id match (the Goodreads mapping, an ISBN, an ASIN), already following
+    ``canonical_id``: ``book_id`` is the book that counts (§3.4a.5)."""
+
+    book_id: int
+    edition_id: int | None
+    """The edition the id names: informational, and the RSS-only read's edition (§3.3.5)."""
+    title: str
+    """The title Hardcover gave with the hit, for the title floor."""
+    method: Method
+    reading_format_id: int | None = None
+    """The edition's format: 1 physical, 2 audio, 3 both, 4 ebook, or unknown."""
+
+
+async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dict[str, IdHit]:
+    """The chain's first step (§3.4a.5): each Goodreads edition id Hardcover's
+    ``book_mappings`` (platform 1) knows, as an :class:`IdHit`. Batched, at one request per
+    :data:`ID_BATCH` ids. An id with no mapping is left out."""
+    wanted = sorted(set(ids))
+    hits: dict[str, IdHit] = {}
+    for start in range(0, len(wanted), ID_BATCH):
+        result = await client.execute(BY_GOODREADS, {"ids": wanted[start : start + ID_BATCH]})
+        for row in result.data.get("book_mappings") or []:
+            external_id, book_id = row.get("external_id"), row.get("book_id")
+            if external_id is None or book_id is None or str(external_id) in hits:
+                continue
+            book = row.get("book") or {}
+            edition = row.get("edition") or {}
+            hits[str(external_id)] = IdHit(
+                # A merged book counts as the book it was merged into.
+                book_id=book.get("canonical_id") or book_id,
+                edition_id=row.get("edition_id"),
+                title=book.get("title") or "",
+                method="gr_mapping",
+                reading_format_id=edition.get("reading_format_id"),
+            )
+    return hits

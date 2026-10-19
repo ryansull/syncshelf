@@ -49,6 +49,7 @@ CATALOG: frozenset[str] = frozenset(
         "book_id",
         "edition_id",
         "author_id",
+        "external_id",
         "book.id",
         "books.id",
         "edition.id",

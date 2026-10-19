@@ -15,6 +15,7 @@ What's kept is what the read tools need: no review text and no private notes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -43,6 +44,11 @@ AUTHOR_ROLES = (None, "", "Author")
 
 TAG_CATEGORIES = ("genres", "moods", "tags")
 """The ``cached_tags`` categories the library query fetches, as ``tags_json`` keys."""
+
+
+_REFRESH_ERRORS = (HardcoverError, sqlite3.Error, KeyError, TypeError)
+"""What a failed refresh raises: Hardcover unreachable or refusing, or a shape the copy can't
+hold."""
 
 
 class NoMirror(Exception):
@@ -112,28 +118,41 @@ class Mirror:
             as_of = await self._db.read(_as_of, profile)
             if as_of is not None and self._clock() - as_of < self._ttl:
                 return Freshness(as_of)
-            self._attempts[profile] += 1
-            try:
-                library = await self._clients[profile].library()
-                now = int(self._clock())
-                await self._db.write(replace_library, profile, library, now)
-            except (HardcoverError, sqlite3.Error, KeyError, TypeError) as exc:
-                # A database or shape error means Hardcover sent something the copy can't
-                # hold; like an unreachable Hardcover, the old copy is served meanwhile.
-                self._last[profile] = await self._failed(profile, exc)
-                return self._outcome(profile)
-            log.info(
-                "refreshed the Hardcover mirror",
-                extra={
-                    "event": "mirror_refreshed",
-                    "profile": profile,
-                    "user_books": len(library.user_books),
-                    "cost": library.cost,
-                },
-            )
-            done = Freshness(now)
-            self._last[profile] = done
-            return done
+            # A database or shape error means Hardcover sent something the copy can't hold;
+            # like an unreachable Hardcover, the old copy is served meanwhile.
+            with contextlib.suppress(*_REFRESH_ERRORS):
+                await self._refresh(profile)
+            return self._outcome(profile)
+
+    async def fetch(self, profile: str) -> Library:
+        """Fetch ``profile``'s whole library now, whatever the copy's age, replace the copy
+        with it, and return it: a sync run's Hardcover fetch (§3.4a.7 stage 3), whose write
+        decisions use only this same-run fetch. A failure is recorded as the copy's last
+        error, as a read-triggered one is, and raised."""
+        async with self._locks[profile]:
+            return await self._refresh(profile)
+
+    async def _refresh(self, profile: str) -> Library:
+        # The caller holds the profile's lock.
+        self._attempts[profile] += 1
+        try:
+            library = await self._clients[profile].library()
+            now = int(self._clock())
+            await self._db.write(replace_library, profile, library, now)
+        except _REFRESH_ERRORS as exc:
+            self._last[profile] = await self._failed(profile, exc)
+            raise
+        log.info(
+            "refreshed the Hardcover mirror",
+            extra={
+                "event": "mirror_refreshed",
+                "profile": profile,
+                "user_books": len(library.user_books),
+                "cost": library.cost,
+            },
+        )
+        self._last[profile] = Freshness(now)
+        return library
 
     def _outcome(self, profile: str) -> Freshness:
         last = self._last[profile]
