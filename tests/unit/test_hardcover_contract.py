@@ -19,6 +19,7 @@ from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
     BY_GOODREADS,
+    EDITION_FORMATS,
     GOALS,
     INSERT_USER_BOOK,
     LIBRARY,
@@ -198,3 +199,11 @@ async def test_by_goodreads_matches_the_recording(fake: FakeHardcover) -> None:
     result = await client.execute(BY_GOODREADS, {"ids": ["34873380", "1", "404"]})
     assert_same_shape(shape({"data": result.data}), recorded("by_goodreads"))
     assert [m["external_id"] for m in result.data["book_mappings"]] == ["34873380", "1"]
+
+
+async def test_edition_formats_match_the_recording(fake: FakeHardcover) -> None:
+    fake.add_mapping("1", 7, 70, reading_format_id=4)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(EDITION_FORMATS, {"ids": [70, 404]})
+    assert_same_shape(shape({"data": result.data}), recorded("edition_formats"))
+    assert result.data["editions"] == [{"id": 70, "book_id": 7, "reading_format_id": 4}]

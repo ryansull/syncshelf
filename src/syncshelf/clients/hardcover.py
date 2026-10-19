@@ -35,6 +35,7 @@ __all__ = [
     "BOOK",
     "BOOKS_BY_ID",
     "BY_GOODREADS",
+    "EDITION_FORMATS",
     "GOALS",
     "LIBRARY_PAGE",
     "Gate",
@@ -211,6 +212,14 @@ query ByGoodreads($ids: [String!]!) {
 """Goodreads edition ids (``Book Id``) to Hardcover books, batched (cost 1): the matcher's
 first step (§3.4a.5). Platform 1 is Goodreads. Oldest mapping first, so when one id has
 several the same one wins every time."""
+
+EDITION_FORMATS = """
+query EditionFormats($ids: [Int!]!) {
+  editions(where: {id: {_in: $ids}}, order_by: {id: asc}) { id book_id reading_format_id }
+}
+"""
+"""The reading format of editions named by id, batched (cost 1): an RSS-only Goodreads read
+is written with its link's edition only when that edition has a format (§3.3.5)."""
 
 BOOKS_BY_ID = """
 query BooksById($ids: [Int!]!) {

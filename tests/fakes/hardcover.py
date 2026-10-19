@@ -63,6 +63,8 @@ class FakeHardcover:
         self.catalog: dict[int, dict[str, Any]] = {}
         """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
         library query's. Shelving a book adds it."""
+        self.editions: dict[int, dict[str, Any]] = {}
+        """Editions by id, for ``EditionFormats``: each mapped edition, plus any a test adds."""
         self.mappings: dict[str, dict[str, Any]] = {}
         """Goodreads edition ids (``external_id``) to ``{book_id, edition}``, for
         ``ByGoodreads``; see :meth:`add_mapping`."""
@@ -204,6 +206,8 @@ class FakeHardcover:
         fields = {"isbn_13": None, "isbn_10": None, "asin": None, "reading_format_id": None}
         edition_row = None if edition_id is None else {"id": edition_id, **fields, **edition}
         self.mappings[str(goodreads_id)] = {"book_id": book_id, "edition": edition_row}
+        if edition_row is not None:
+            self.editions[edition_id] = {"book_id": book_id, **edition_row}  # type: ignore[index]
 
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
         list_id = next(self._ids)
@@ -312,6 +316,7 @@ class FakeHardcover:
             "Search": self._search,
             "BooksById": self._books_by_id,
             "ByGoodreads": self._by_goodreads,
+            "EditionFormats": self._edition_formats,
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -591,6 +596,19 @@ class FakeHardcover:
                 }
             )
         return {"book_mappings": rows[:ROW_CAP]}
+
+    def _edition_formats(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        found = sorted(i for i in variables["ids"] if i in self.editions)
+        return {
+            "editions": [
+                {
+                    "id": i,
+                    "book_id": self.editions[i]["book_id"],
+                    "reading_format_id": self.editions[i].get("reading_format_id"),
+                }
+                for i in found
+            ]
+        }
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.
