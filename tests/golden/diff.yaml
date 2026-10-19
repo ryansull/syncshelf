@@ -366,3 +366,126 @@ cases:
           reads: {7: [[null, "2026-10-02", 70], ["2026-10-15", null, 70]]}
           baselines: {"100": {date_read: "2026-10-05", status: currently-reading}}
           pending: {}
+
+  # --- reviews, new rows and pending changes (rules 1-3, 5, 8, 10) ------------------------
+
+  - name: a review written after the backfill is pushed as review_markdown
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 100, title: Dune, review: "Loved it.<br/>Would &amp; will reread."}]
+        expect:
+          writes: [[update_user_book, {review_markdown: "Loved it.\nWould & will reread."}]]
+          baselines: {"100": {review: "Loved it.\nWould & will reread."}}
+
+  - name: an emptied review clears it on Hardcover
+    hardcover:
+      shelf: {7: {status: 3, review_markdown: "Fine."}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, review: "Fine."}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          writes: [[update_user_book, {review_markdown: null}]]  # spoilers already off: no-op skipped
+          baselines: {"100": {review: null}}
+
+  - name: a book first seen after the backfill pushes every field, inserted privately
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: {book: 8, edition: 80, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed:
+          - {id: 200, title: Messiah, rating: "5", read_at: "Fri, 2 Oct 2026 00:00:00 +0000", review: "Grand."}
+          - {id: 100, title: Dune}
+        expect:
+          state: ok
+          shelf: {8: {status: 3, rating: 5.0, review_markdown: "Grand.", privacy_setting_id: 3}}
+          reads: {8: [[null, "2026-10-02", 80]]}
+          baselines: {"200": {status: read, rating: "5", review: "Grand.", date_read: "2026-10-02"}}
+          pending: {}
+
+  - name: a new book Goodreads' mapping doesn't know is queued with its pending diff
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 100, title: Dune}]
+        expect:
+          writes: []
+          pending: {"300": {status: read, rating: "4"}}
+
+  - name: a new book on a shelf not yet classified waits for its status before anything
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 200, title: Messiah, rating: "5", shelves: [kindle]}, {id: 100, title: Dune}]
+        expect:
+          state: ok
+          writes: []
+          pending: {"200": {rating: "5"}}
+
+  - name: a status first observed on a known row only sets its baseline
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelves: [kindle]}]
+        expect:
+          backfill: [1, 0]
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+        expect:
+          writes: []
+          baselines: {"100": {status: to-read}}
+          pending: {}
+
+  - name: a newer value supersedes the change still pending
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        hardcover_fail: {op: UpdateUserBook, fault: validation}
+        expect:
+          state: partial
+          pending: {"100": {rating: "5"}}
+      - feed: [{id: 100, title: Dune, rating: "3"}]
+        expect:
+          writes: [[update_user_book, {rating: 3.0}]]
+          shelf: {7: {rating: 3.0}}
+          pending: {}
+
+  - name: the last writer wins when Goodreads changes a book Claude edited
+    hardcover:
+      shelf: {7: {status: 3, rating: 2.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          writes: []
+          shelf: {7: {rating: 2.0}}
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          shelf: {7: {rating: 5.0}}
+
+  - name: a new book whose shelf couldn't be read is pushed once its status is seen
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 200, title: Messiah, rating: "5", shelves: [kindle]}, {id: 100, title: Dune}]
+        expect:
+          writes: []
+      - feed: [{id: 200, title: Messiah, rating: "5", shelf: to-read}, {id: 100, title: Dune}]
+        expect:
+          state: ok
+          shelf: {8: {status: 1, rating: 5.0}}
+          pending: {}

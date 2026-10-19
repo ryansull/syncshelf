@@ -26,13 +26,16 @@ incomplete stores nothing and pushes nothing; the next one tries again.
   logged and settles its baseline without a push;
 - any other **Date Read** change is a correction of the read finished on the old date, or a
   finish when there was none. A vanished Date Read is never pushed, but its baseline moves on;
-- a **rating** change sets or clears the Hardcover rating.
+- a **rating**, **review** or **spoiler** change sets or clears that field; an emptied
+  review clears the review and its spoiler flag (rule 5).
 
 A new read carries the link's edition when Hardcover gives that edition a format, else no
 edition (§3.3.5, an RSS-only row), and inserts take the profile's ``hardcover_privacy``.
 
-Phase 4a builds this up ticket by ticket: review and spoiler changes, and rows first seen
-after the backfill, are left for #162.
+**Books first seen after the backfill** are matched and added from an empty baseline, so
+every non-empty field of their first observation is pushed (rule 3); unlike the backfill, a
+match links whether or not the book is on the profile's shelves. A change with no status, on
+a row with no Hardcover shelf entry known, waits for the row's status to be observed (#182).
 """
 
 import asyncio
@@ -51,6 +54,7 @@ from syncshelf.db import Database
 from syncshelf.logging import scrub
 from syncshelf.sync import identity, runs
 from syncshelf.sync.apply import (
+    UNSET,
     Applied,
     Applier,
     Correct,
@@ -80,8 +84,8 @@ TRIGGER = "goodreads"
 """Who the write procedure's change lines name as asking."""
 LOGGED = frozenset({"status", "rating", "date_read", "read_count", "spoiler"})
 """The fields whose values a change line may carry (§2.7)."""
-PUSHED = frozenset({"status", "date_read", "rating"})
-"""The fields whose changes reach Hardcover so far; the others wait as pending (#162)."""
+PUSHED = frozenset({"status", "date_read", "rating", "review", "spoiler"})
+"""The fields whose changes reach Hardcover. ``read_count`` is a re-read signal (#168)."""
 READ, CURRENTLY_READING = 3, 2
 """The Hardcover statuses that carry read edits."""
 
@@ -219,38 +223,78 @@ class GoodreadsSync:
                 "Goodreads no longer lists some books; recorded, never pushed",
                 extra={"event": "rows_gone", "profile": profile, "count": observed.gone},
             )
-        work = [change for change in observed.pending if change.field in PUSHED]
-        if not work:
+        rows = await self._db.read(identity.load_rows, profile, SOURCE)
+        work = _ready_to_push(observed.pending, rows)
+        if not work and not observed.new:
             return "ok" if batch.complete else "partial"
         self._started(profile, run_id)
         assert batch.observed_at is not None
-        rows = await self._db.read(identity.load_rows, profile, SOURCE)
         observations = {obs.source_id: obs for obs in batch.rows}
-        plans = _plans(work, observations, rows, goodreads.shelf_map, zone)
-        # What needs no Hardcover write settles first, so it never costs the fetch.
-        for plan in plans:
-            if plan.target is None:
-                await self._settle(profile, plan, batch.observed_at, None, run_id)
-        writes = [plan for plan in plans if plan.target is not None]
-        if not writes:
-            return "ok" if batch.complete else "partial"
 
         # Stages 3 and 4, under the profile's apply lock.
         async with self._applier.lock(profile):
-            try:
-                library = await self._mirror.fetch(profile)
-                writes = await self._ready(profile, writes, library.user_books, counts)
-            except FetchFailed as exc:
-                counts.error(str(exc))
-                return "deferred"
-            except HardcoverError as exc:
-                counts.error(scrub(str(exc)))
-                return "deferred"
-            for plan in writes:
+            if observed.new:
+                try:
+                    added = await self._add(profile, batch, observed.new)
+                except HardcoverError as exc:
+                    # The books stay new, so the next run matches them; the rest goes on.
+                    counts.error(scrub(str(exc)))
+                    log.warning(
+                        "couldn't match books first seen on Goodreads; next run tries again",
+                        extra={"event": "match_failed", "profile": profile},
+                    )
+                else:
+                    rows = await self._db.read(identity.load_rows, profile, SOURCE)
+                    work = _ready_to_push([*observed.pending, *added], rows)
+            plans = _plans(work, observations, rows, goodreads.shelf_map, zone)
+            # What needs no Hardcover write settles first, never costing the fetch.
+            for plan in plans:
+                if plan.target is None:
+                    await self._settle(profile, plan, batch.observed_at, None, run_id)
+            writes = [plan for plan in plans if plan.target is not None]
+            if writes:
+                try:
+                    library = await self._mirror.fetch(profile)
+                    writes = await self._ready(profile, writes, library.user_books, counts)
+                except FetchFailed as exc:
+                    counts.error(str(exc))
+                    return "deferred"
+                except HardcoverError as exc:
+                    counts.error(scrub(str(exc)))
+                    return "deferred"
+            for plan in _shelf_first(writes, rows):
                 await self._apply(profile, plan, batch.observed_at, run_id, counts)
         if counts.failed or not batch.complete:
             return "partial"
         return "ok"
+
+    async def _add(self, profile: str, batch: Batch, new: list[Observation]) -> list[Pending]:
+        """Match the books first seen now and add them from an empty baseline (§3.4a.6,
+        rule 3), returning their pending changes. Unlike the backfill, a match links whether
+        or not the book is on the profile's shelves: it's the book Goodreads now has."""
+        ids = [obs.source_id for obs in new]
+        shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
+        unlinked = [i for i in ids if i not in shared and i not in stale]
+        hits = {**await goodreads_mappings(self._hardcover[profile], unlinked), **shared}
+        placements = []
+        for obs in new:
+            if obs.source_id in stale:
+                placements.append(Placement(obs, None, False, reason="stale"))
+            else:
+                hit = hits.get(obs.source_id)
+                placements.append(Placement(obs, hit, hit is not None))
+        now = int(self._clock.time())
+        added = await self._db.write(identity.add_rows, profile, SOURCE, batch, placements, now)
+        log.info(
+            "added books first seen on Goodreads",
+            extra={
+                "event": "rows_added",
+                "profile": profile,
+                "linked": sum(p.linked for p in placements),
+                "queued": sum(not p.linked for p in placements),
+            },
+        )
+        return added
 
     async def _ready(
         self,
@@ -522,9 +566,78 @@ def _plans(
         if (rating := fields.get("rating")) is not None:
             # Goodreads rates in whole stars; unrated clears the Hardcover rating.
             target = Target(rating=None if rating.new is None else float(rating.new))
-            push = LogRow("push", "rating", rating.old, rating.new)
-            plans.append(_Plan(source_id, rating.hc_book_id, [rating], target, [push]))
+            plans.append(_push(rating, target))
+        review, spoiler = fields.get("review"), fields.get("spoiler")
+        text = review.new if review is not None else _value(row, "review")
+        if review is not None:
+            # Written as review_markdown; an emptied review clears it and its spoiler flag
+            # (rule 5), so a spoiler change alongside settles with it.
+            plan = _push(review, Target(review=review.new))
+            if spoiler is not None and text is None:
+                plan.settles.append(spoiler)
+                spoiler = None
+            plans.append(plan)
+        if spoiler is not None:
+            if text is None:
+                plans.append(_Plan(source_id, spoiler.hc_book_id, [spoiler]))  # no review
+            else:
+                plans.append(_push(spoiler, Target(review_has_spoilers=spoiler.new == "1")))
     return plans
+
+
+def _push(change: Pending, target: Target) -> _Plan:
+    """A plain field push: one change, one write, one ``push`` row."""
+    push = LogRow("push", change.field, change.old, change.new)
+    return _Plan(change.source_id, change.hc_book_id, [change], target, [push])
+
+
+def _shelf_first(plans: list[_Plan], rows: Mapping[str, SourceRow]) -> list[_Plan]:
+    """The writes for a row with no shelf entry known go in one insert (§3.3.6 rule 3): its
+    status plan takes every other field's target, so the book is added with them. Without a
+    status plan that writes, nothing can add the book, so its other changes wait (#182)."""
+    by_row: dict[str, list[_Plan]] = {}
+    for plan in plans:
+        by_row.setdefault(plan.source_id, []).append(plan)
+    ready: list[_Plan] = []
+    for source_id, group in by_row.items():
+        if rows[source_id].hc_user_book_id is not None:
+            ready.extend(group)
+            continue
+        status = next((p for p in group if any(c.field == "status" for c in p.settles)), None)
+        if status is None or status.target is None:
+            continue  # they wait for the row's status
+        target, settles, logs = status.target, list(status.settles), list(status.logs)
+        for other in group:
+            if other is status or other.target is None:
+                continue
+            target = _merged(target, other.target)
+            settles.extend(other.settles)
+            logs.extend(other.logs)
+        ready.append(replace(status, target=target, settles=settles, logs=logs))
+    return ready
+
+
+def _merged(target: Target, other: Target) -> Target:
+    """``target`` with every field ``other`` sets."""
+    fields = ("status_id", "rating", "review", "review_has_spoilers")
+    changes = {f: getattr(other, f) for f in fields if getattr(other, f) is not UNSET}
+    if other.read is not None:
+        changes["read"] = other.read
+    return replace(target, **changes)
+
+
+def _ready_to_push(changes: list[Pending], rows: Mapping[str, SourceRow]) -> list[Pending]:
+    """The changes to plan this run: the fields that reach Hardcover, less those that must
+    wait for a status. A change with no status, on a row with no shelf entry known, can't be
+    written (the write procedure adds a book only with a status), so it waits for the row's
+    status to be observed rather than failing every run (#182)."""
+    with_status = {c.source_id for c in changes if c.field == "status"}
+    return [
+        c
+        for c in changes
+        if c.field in PUSHED
+        and (c.source_id in with_status or rows[c.source_id].hc_user_book_id is not None)
+    ]
 
 
 def _status_plan(

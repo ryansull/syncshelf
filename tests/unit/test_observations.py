@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from syncshelf.clients.goodreads_rss import RssItem, RssPass
-from syncshelf.sync.observations import Batch, observe_rss, review_text
+from syncshelf.sync.observations import Batch, ShelfVocabulary, observe_rss, review_text
 
 SHELF_MAP = {"read": 3, "currently-reading": 2, "to-read": 1, "did-not-finish": 5}
 OBSERVED_AT = 4_102_444_800
@@ -54,7 +54,6 @@ def test_rss_carries_only_its_own_fields() -> None:
     ("shelves", "status", "others"),
     [
         ("", "read", ()),
-        ("favourites, kindle", "read", ("favourites", "kindle")),
         ("currently-reading", "currently-reading", ()),
         ("to-read, favourites", "to-read", ("favourites",)),
         ("favourites, did-not-finish", "did-not-finish", ("favourites",)),
@@ -66,6 +65,28 @@ def test_the_status_is_the_exclusive_shelf_and_none_means_read(
     (row,) = observe(item(user_shelves=shelves)).rows
     assert row.fields["status"] == status
     assert row.shelves == others
+
+
+def test_a_shelf_not_yet_classified_leaves_the_status_unobserved() -> None:
+    # It may be an exclusive shelf missing from shelf_map (#182): never guess Read.
+    (row,) = observe(item(user_shelves="favourites, kindle")).rows
+    assert "status" not in row.fields
+    assert row.shelves == ("favourites", "kindle")
+
+
+def test_known_tags_still_mean_read() -> None:
+    vocabulary = ShelfVocabulary(tags=frozenset({"favourites", "kindle"}))
+    rss = RssPass([item(user_shelves="favourites, kindle")], pages=1, complete=True)
+    (row,) = observe_rss(rss, SHELF_MAP, OBSERVED_AT, LONDON, vocabulary).rows
+    assert row.fields["status"] == "read"
+
+
+def test_an_exclusive_shelf_a_csv_showed_is_the_status_even_unmapped() -> None:
+    vocabulary = ShelfVocabulary(exclusive=frozenset({"abandoned"}), tags=frozenset({"kindle"}))
+    rss = RssPass([item(user_shelves="kindle, abandoned")], pages=1, complete=True)
+    (row,) = observe_rss(rss, SHELF_MAP, OBSERVED_AT, LONDON, vocabulary).rows
+    assert row.fields["status"] == "abandoned"
+    assert row.shelves == ("kindle",)
 
 
 def test_a_built_in_shelf_is_exclusive_even_when_unmapped() -> None:

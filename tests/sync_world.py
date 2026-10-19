@@ -49,16 +49,18 @@ class World:
 
 
 @asynccontextmanager
-async def world(tmp_path: Path, *, profile: str = "alice") -> AsyncIterator[World]:
-    """A world for one profile with a Goodreads section, a Goodreads user and a Hardcover
-    user, both empty."""
+async def world(
+    tmp_path: Path, *, profile: str = "alice", shelf_map: str = SHELF_MAP
+) -> AsyncIterator[World]:
+    """A world for one profile with a Goodreads section (``shelf_map`` as flow YAML), a
+    Goodreads user and a Hardcover user, both empty."""
     clock = FakeClock()
     goodreads = FakeGoodreads(clock)
     goodreads.add_user(GR_USER)
     hardcover = FakeHardcover()
     hardcover.today = clock.now().date().isoformat()
     hardcover.add_user(hardcover_token(profile), user_id=HC_USER)
-    body = f'{{goodreads: {{user_id: "{GR_USER}", shelf_map: {SHELF_MAP}}}, timezone: Etc/UTC}}'
+    body = f'{{goodreads: {{user_id: "{GR_USER}", shelf_map: {shelf_map}}}, timezone: Etc/UTC}}'
     config = make_config(tmp_path, profiles=[profile], profile_yaml={profile: body})
 
     def route(request: httpx2.Request) -> httpx2.Response:

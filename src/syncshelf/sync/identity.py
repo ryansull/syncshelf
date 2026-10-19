@@ -26,6 +26,7 @@ __all__ = [
     "Pending",
     "Placement",
     "SourceRow",
+    "add_rows",
     "LogRow",
     "backfilled",
     "link_editions",
@@ -92,9 +93,12 @@ class Observed:
     """What diffing one batch found."""
 
     pending: list[Pending]
-    """The pending changes ready to apply: on linked rows, not quarantined."""
+    """The pending changes ready to apply: on linked rows this batch lists, not
+    quarantined."""
     gone: int
     """Rows this batch concluded are gone from the source."""
+    new: list[Observation] = field(default_factory=list[Observation])
+    """Rows SyncShelf has never seen: the caller matches them, then :func:`add_rows`."""
 
 
 @dataclass(frozen=True)
@@ -218,13 +222,7 @@ def record_backfill(
         if place.linked:
             assert hit is not None
             linked += 1
-            conn.execute(
-                "INSERT INTO links (source, source_id, hc_book_id, hc_edition_id, format, method,"
-                " linked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT "
-                "(source, source_id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
-                (source, obs.source_id, hit.book_id, hit.edition_id, obs.format, hit.method, now,
-                 now),
-            )  # fmt: skip
+            _link(conn, source, obs, hit, now)
             conn.execute(
                 "INSERT INTO source_rows (profile, source, source_id, state, hc_book_id, "
                 "hc_user_book_id, match_input, first_seen_at, last_seen_at) "
@@ -285,14 +283,18 @@ def observe(
     a row is gone: it gets ``gone_at``, its ``last_seen_at`` freezes, and a ``gone`` row goes
     in ``change_log``. A row seen again isn't gone any more, so its ``gone_at`` clears.
 
-    Only rows SyncShelf already has are diffed; rows first seen now are left to the caller.
+    Rows SyncShelf has never seen are returned as ``new``, for the caller to match and add
+    with :func:`add_rows`.
     """
     assert batch.observed_at is not None, "a stale batch only fills"
     rows = load_rows(conn, profile, source)
     seen: list[tuple[int, str, str, str]] = []
+    new: list[Observation] = []
     for obs in batch.rows:
         row = rows.get(obs.source_id)
         if row is None:
+            if all(n.source_id != obs.source_id for n in new):
+                new.append(obs)
             continue
         seen.append((now, profile, source, obs.source_id))
         for name, value in obs.fields.items():
@@ -321,7 +323,73 @@ def observe(
     # baseline is never stamped with a time it wasn't observed at.
     listed_now = {source_id for _, _, _, source_id in seen}
     pending = [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
-    return Observed(pending, gone)
+    return Observed(pending, gone, new)
+
+
+def add_rows(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    batch: Batch,
+    placements: Iterable[Placement],
+    now: int,
+) -> list[Pending]:
+    """Add rows first seen after the backfill, each linked or queued, from an **empty
+    baseline** (§3.4a.6, rule 3): every non-empty field of this first observation is a
+    pending change, and an empty one just sets its baseline. Returns the pending changes on
+    the rows linked."""
+    assert batch.observed_at is not None
+    added: list[str] = []
+    for place in placements:
+        obs, hit = place.observation, place.hit
+        added.append(obs.source_id)
+        if place.linked:
+            assert hit is not None
+            _link(conn, source, obs, hit, now)
+            conn.execute(
+                "INSERT INTO source_rows (profile, source, source_id, state, hc_book_id, "
+                "match_input, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'linked', ?, ?, ?, ?)",
+                (profile, source, obs.source_id, hit.book_id, match_input(obs), now, now),
+            )
+        else:
+            reason = place.reason or ("not_in_library" if hit is not None else "no_hit")
+            conn.execute(
+                "INSERT INTO source_rows (profile, source, source_id, state, queue_reason, "
+                "queued_at, match_input, first_seen_at, last_seen_at) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+                (profile, source, obs.source_id, reason, now, match_input(obs), now, now),
+            )
+        # A status this observation couldn't read (#182) starts empty too, so the first
+        # status seen later is a change, not a baseline.
+        fields = {"status": None, **obs.fields}
+        conn.executemany(
+            "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at,"
+            " pending_value, pending_since) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
+            [
+                (profile, source, obs.source_id, name)
+                + (
+                    (None, None, None)
+                    if name not in obs.fields
+                    else (batch.observed_at, None, None)
+                    if value is None
+                    else (None, value, now)
+                )
+                for name, value in fields.items()
+            ],
+        )
+    listed = set(added)
+    return [p for p in _pending(conn, profile, source) if p.source_id in listed]
+
+
+def _link(
+    conn: sqlite3.Connection, source: IdentitySource, obs: Observation, hit: IdHit, now: int
+) -> None:
+    conn.execute(
+        "INSERT INTO links (source, source_id, hc_book_id, hc_edition_id, format, method,"
+        " linked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT "
+        "(source, source_id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        (source, obs.source_id, hit.book_id, hit.edition_id, obs.format, hit.method, now, now),
+    )
 
 
 def _mark_gone(
