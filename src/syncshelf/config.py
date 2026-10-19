@@ -207,8 +207,9 @@ class GoodreadsConfig:
     user_id: str
     """The numeric Goodreads user id, kept as a string so leading zeros survive."""
     shelf_map: Mapping[str, int]
-    """Each exclusive shelf's Hardcover ``status_id`` (1–5). An exclusive shelf missing from
-    it is logged and its status isn't pushed (§3.4a.6)."""
+    """Each exclusive shelf's Hardcover ``status_id`` (1–5). Goodreads' own three shelves and
+    these keys are the shelves RSS treats as exclusive: the feed lists them with the others,
+    so a custom exclusive shelf left out of the map reads as an ordinary shelf (#182)."""
     rss_key: str | None = field(default=None, repr=False)
     """The private-feed key, only if the profile isn't public. Never logged."""
 

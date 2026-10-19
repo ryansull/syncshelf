@@ -49,11 +49,15 @@ async def test_a_pass_pages_until_an_empty_page(fake: FakeGoodreads, clock: Fake
         assert request.params["per_page"] == str(PER_PAGE)
 
 
-async def test_an_empty_library_is_one_empty_page_and_complete(
+async def test_an_empty_feed_is_usable_but_never_complete(
     fake: FakeGoodreads, clock: FakeClock
 ) -> None:
+    # An empty feed concludes nothing about absence (§3.4a.6, rule 4): a private profile read
+    # without its key may look exactly like this.
     result = await client(fake, clock).fetch_all()
-    assert result.complete and result.items == [] and result.pages == 1
+    assert result.usable and not result.complete
+    assert result.items == [] and result.pages == 1
+    assert result.problem == "page 1: the feed lists no books"
 
 
 async def test_items_carry_the_feed_fields(fake: FakeGoodreads, clock: FakeClock) -> None:
@@ -168,3 +172,13 @@ async def test_the_log_carries_no_query_or_user_id(
     assert record.__dict__["service"] == "goodreads"
     text = record.getMessage() + repr(record.__dict__)
     assert "feed-key" not in text and USER not in text
+
+
+async def test_a_book_listed_twice_on_one_page_stops_the_pass(clock: FakeClock) -> None:
+    fake = FakeGoodreads(clock)
+    fake.add_user(USER)
+    fake.add_item(USER, 1, "Twice")
+    fake.add_item(USER, 1, "Twice")
+    result = await client(fake, clock).fetch_all()
+    assert not result.complete and result.items == []
+    assert result.problem == "page 1: repeats earlier items"

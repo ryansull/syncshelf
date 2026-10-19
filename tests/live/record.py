@@ -24,6 +24,8 @@ from syncshelf.clients.goodreads_rss import (  # noqa: E402
     ALL_SHELF,
     MIN_INTERVAL,
     USER_AGENT,
+    Unusable,
+    page_items,
     rss_url,
 )
 from syncshelf.clients.hardcover import (  # noqa: E402
@@ -119,25 +121,32 @@ async def record_hardcover(token: str, limit: int) -> None:
 
 async def record_goodreads_rss(user_id: str, limit: int) -> None:
     """Two anonymous reads of a public profile's feed, paced like production: a first page of
-    ``limit`` items, and a page past the end (HTTP 200 with no items)."""
+    ``limit`` items, and a page past the end (HTTP 200 with no items). Both must pass the
+    client's usable-page check before either file is written."""
     recorded_at = datetime.now(UTC).date().isoformat()
     out = FIXTURES / "goodreads"
     pages = {"rss_page": 1, "rss_end": 100_000}
+    bodies: dict[str, str] = {}
     async with httpx2.AsyncClient(headers={"user-agent": USER_AGENT}, timeout=30) as http:
         for i, (name, page) in enumerate(pages.items()):
             if i:
                 await asyncio.sleep(MIN_INTERVAL)
             params = {"shelf": ALL_SHELF, "per_page": str(limit), "page": str(page)}
             response = await http.get(rss_url(user_id), params=params)
-            if response.status_code != 200:
-                sys.exit(f"Goodreads returned HTTP {response.status_code}; nothing written")
-            write_native_fixture(
-                out / f"{name}.xml",
-                response.text,
-                recorded_at=recorded_at,
-                server_version=GOODREADS_VERSION,
-            )
-            print(f"wrote {out / f'{name}.xml'}")
+            try:
+                found = page_items(response)
+            except Unusable as exc:
+                sys.exit(f"{name}: {exc}; nothing written")
+            if bool(found) != (name == "rss_page"):
+                sys.exit(
+                    f"{name}: expected {'items' if name == 'rss_page' else 'none'}; nothing written"
+                )
+            bodies[name] = response.text
+    for name, body in bodies.items():
+        write_native_fixture(
+            out / f"{name}.xml", body, recorded_at=recorded_at, server_version=GOODREADS_VERSION
+        )
+        print(f"wrote {out / f'{name}.xml'}")
 
 
 def main() -> None:
