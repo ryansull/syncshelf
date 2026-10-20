@@ -273,7 +273,8 @@ async def test_a_pending_change_waits_for_a_batch_that_lists_its_row(w: World) -
     w.clock.advance(3600)
     dune = next(i for i in w.goodreads.users[GR_USER].items if i["book_id"] == str(DUNE))
     dune["user_rating"] = "5"
-    w.hardcover.fail_next("UpdateUserBook", "unavailable")
+    for _ in range(3):  # the write and both in-run retries
+        w.hardcover.fail_next("UpdateUserBook", "unavailable")
     await w.sync.run_rss("alice")  # sees the change; the write fails
     w.clock.advance(3600)
     w.goodreads.fail_next("server_error", page=2)  # Dune's page is missing this time

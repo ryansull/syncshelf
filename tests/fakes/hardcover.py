@@ -44,6 +44,8 @@ class _Fault:
     user_id: int | None = None
     after: int = 0
     """Matching requests still to let through before this one fails."""
+    landed: bool = False
+    """A ``timeout`` after the request was applied: the write landed, the client saw none."""
 
 
 class FakeHardcover:
@@ -234,15 +236,20 @@ class FakeHardcover:
         message: str = "refused",
         user_id: int | None = None,
         after: int = 0,
+        landed: bool = False,
     ) -> None:
         """Make the next request for ``operation`` fail with ``kind`` (one of :data:`FAULTS`),
         from any user, or only from ``user_id``; with ``after``, that many succeed first.
 
-        ``validation`` answers 200 with ``message`` in the mutation result's ``error``.
+        ``validation`` answers 200 with ``message`` in the mutation result's ``error``. A
+        ``timeout`` with ``landed`` applies the request first (§2.9: the write landed, but
+        the client saw an error).
         """
         if kind not in FAULTS:
             raise ValueError(f"unknown fault {kind!r}")
-        fault = _Fault(kind, retry_after, message, user_id, after)
+        if landed and kind != "timeout":
+            raise ValueError("only a timeout can land")
+        fault = _Fault(kind, retry_after, message, user_id, after, landed)
         self._faults.setdefault(operation, []).append(fault)
 
     # --- transport ------------------------------------------------------------------------
@@ -274,6 +281,9 @@ class FakeHardcover:
         if fault is not None:
             faults.remove(fault)
             if fault.kind == "timeout":
+                if fault.landed:
+                    handler = self._handlers()[operation]
+                    handler(user_id, variables)
                 raise httpx2.ReadTimeout("timed out", request=request)
             if fault.kind == "rate_limited":
                 return httpx2.Response(

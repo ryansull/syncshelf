@@ -73,6 +73,7 @@ from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
+from syncshelf.sync.identity import release_on_new_version
 from syncshelf.sync.limiter import Clock, HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 from syncshelf.sync.runs import abort_running
@@ -203,9 +204,14 @@ def create_app(
                     "marked runs left running by the last process as aborted",
                     extra={"event": "runs_aborted", "count": aborted},
                 )
-            await _purge(db, clock)
-            # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
+            # A new version releases every quarantined change once (§2.2 step 4, #50).
+            if released := await db.write(release_on_new_version, __version__):
+                log.info(
+                    "a new SyncShelf version released quarantined changes",
+                    extra={"event": "quarantine_released", "count": released},
+                )
             _log_startup(config, db)
+            await _purge(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db

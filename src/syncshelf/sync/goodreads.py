@@ -48,7 +48,14 @@ from typing import Any, Protocol
 import httpx2
 
 from syncshelf.clients.goodreads_rss import GoodreadsRss, Pacer
-from syncshelf.clients.hardcover import EDITION_FORMATS, HardcoverClient, HardcoverError
+from syncshelf.clients.hardcover import (
+    EDITION_FORMATS,
+    HardcoverCapacityError,
+    HardcoverClient,
+    HardcoverError,
+    HardcoverRateLimited,
+    HardcoverUnavailable,
+)
 from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
 from syncshelf.logging import scrub
@@ -69,7 +76,8 @@ from syncshelf.sync.apply import (
     Start,
     Target,
 )
-from syncshelf.sync.identity import LogRow, Pending, Placement, SourceRow
+from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, SourceRow
+from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
@@ -264,8 +272,17 @@ class GoodreadsSync:
                 except HardcoverError as exc:
                     counts.error(scrub(str(exc)))
                     return "deferred"
-            for plan in _shelf_first(writes, rows):
-                await self._apply(profile, plan, batch.observed_at, run_id, counts)
+            try:
+                for plan in _shelf_first(writes, rows):
+                    await self._apply(profile, plan, batch.observed_at, run_id, counts)
+            except Deferred as exc:
+                # The daily reserve: what's left waits for the reset, uncounted (§3.3.3). The
+                # run is deferred only if nothing was done before it.
+                counts.error(scrub(str(exc)))
+                return "deferred" if not (counts.applied or counts.failed) else "partial"
+            except _Unavailable as exc:
+                counts.error(str(exc))
+                return "partial"
         if counts.failed or not batch.complete:
             return "partial"
         return "ok"
@@ -455,17 +472,76 @@ class GoodreadsSync:
     async def _apply(
         self, profile: str, plan: _Plan, observed_at: int, run_id: int, counts: RunCounts
     ) -> None:
+        """Apply one plan (§3.4a.7). A transient failure is retried twice in the run, after
+        :data:`RETRY_DELAYS`; a replay is safe, since the write procedure converges. A change
+        that still fails keeps its baselines and counts an attempt, and is quarantined once
+        it has failed long and often enough, or at once for a bug. Raises
+        :class:`~syncshelf.sync.limiter.Deferred` when the daily reserve stops the run."""
         assert plan.target is not None
-        try:
-            applied = await self._applier.apply(
-                profile, plan.hc_book_id, plan.target, trigger=TRIGGER, locked=True
-            )
-        except (HardcoverError, *REFUSALS) as exc:
-            # The baselines stay put, so the next run tries again (§3.4a.6, rule 9).
-            reason = _failure(exc, plan.hc_book_id)
-            counts.failed += 1
-            counts.error(reason)
-            for change in plan.settles:
+        for attempt, delay in enumerate((*RETRY_DELAYS, None)):
+            try:
+                applied = await self._applier.apply(
+                    profile, plan.hc_book_id, plan.target, trigger=TRIGGER, locked=True
+                )
+            except (HardcoverError, *REFUSALS) as exc:
+                # A change left partly done says why in its cause (the procedure wraps it).
+                cause = exc.__cause__ if isinstance(exc, Incomplete) else exc
+                if isinstance(cause, Deferred):
+                    raise cause from None
+                if isinstance(cause, HardcoverRateLimited):
+                    raise _Unavailable(scrub(str(cause))) from None  # a 429 isn't a failure
+                kind = _error_class(cause if isinstance(cause, Exception) else exc)
+                reason = _failure(exc, plan.hc_book_id)
+                if kind == "transient" and delay is not None:
+                    log.warning(
+                        "a Hardcover write failed; retrying in %ss: %s",
+                        delay,
+                        reason,
+                        extra={
+                            "event": "change_retry",
+                            "profile": profile,
+                            "change_id": plan.settles[0].baseline_id,
+                            "attempt": attempt + 1,
+                        },
+                    )
+                    await self._clock.sleep(delay)
+                    continue
+                await self._failed(profile, plan, kind, reason, counts)
+                if kind == "transient":
+                    # Hardcover is down for now: the rest wait for the next run, rather than
+                    # each holding the apply lock through its own retries.
+                    raise _Unavailable(reason) from None
+                return
+            await self._settle(profile, plan, observed_at, applied, run_id)
+            counts.applied += 1
+            return
+
+    async def _failed(
+        self, profile: str, plan: _Plan, kind: ErrorClass, reason: str, counts: RunCounts
+    ) -> None:
+        # The baselines stay put, so the change stays pending (§3.4a.6, rule 9).
+        now = int(self._clock.time())
+        ids = [change.baseline_id for change in plan.settles]
+        quarantined = await self._db.write(identity.record_failure, ids, kind, reason, now)
+        counts.failed += 1
+        counts.error(reason)
+        if quarantined:
+            counts.quarantined += 1
+        for change in plan.settles:
+            if change.baseline_id in quarantined:
+                log.error(
+                    "a Goodreads change is quarantined: %s",
+                    reason,
+                    extra={
+                        "event": "change_quarantined",
+                        "profile": profile,
+                        "change_id": change.baseline_id,
+                        "hc_book_id": plan.hc_book_id,
+                        "field": change.field,
+                        "error_class": kind,
+                    },
+                )
+            else:
                 log.warning(
                     "a Goodreads change didn't reach Hardcover: %s",
                     reason,
@@ -475,11 +551,9 @@ class GoodreadsSync:
                         "change_id": change.baseline_id,
                         "hc_book_id": plan.hc_book_id,
                         "field": change.field,
+                        "error_class": kind,
                     },
                 )
-            return
-        await self._settle(profile, plan, observed_at, applied, run_id)
-        counts.applied += 1
 
     async def _settle(
         self,
@@ -583,6 +657,28 @@ REFUSALS = (
 )
 """What the write procedure raises for a change it can't make as asked: each fails that one
 change and leaves its baseline, never the run."""
+
+
+RETRY_DELAYS = (2.0, 8.0)
+"""Seconds before each in-run retry of a transient failure (§3.4a.7)."""
+
+
+class _Unavailable(Exception):
+    """Hardcover can't take writes for now (a transient failure out of retries, or a 429
+    the limiter gave up on): the run's remaining changes wait, uncounted, for the next run."""
+
+
+def _error_class(exc: Exception) -> ErrorClass:
+    """A failure's class (§3.4a.7): ``transient`` (5xx, timeout, network; a change left
+    partly done, which a replay completes), ``bug`` (``403 request_exceeds_capacity``), or
+    ``permanent`` (a 200 with ``error``, any other 4xx, a change the write procedure
+    refuses). A 429 isn't a failure: the limiter waits it out, and one it gives up on
+    leaves the run's changes for the next run."""
+    if isinstance(exc, HardcoverCapacityError | TooCostly):
+        return "bug"
+    if isinstance(exc, HardcoverUnavailable | Incomplete):
+        return "transient"
+    return "permanent"
 
 
 def _failure(exc: Exception, book_id: int) -> str:

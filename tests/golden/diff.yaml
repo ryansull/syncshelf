@@ -23,7 +23,8 @@
 # isbn (ISBN-10), added (RSS user_date_added; "" for none). The fake's default added date is 2026-10-15, its
 # "today" (what Hardcover stamps on reads it invents) 2100-01-01, and the profile is in UTC.
 # A run may add `filler: N` unmatched books after its feed (to make a second page) and
-# `fail: {page: N, fault: …}` to make a page unusable.
+# `fail: {page: N, fault: …}` to make a page unusable, and `hardcover_fail: {op, fault, times?}`
+# to fail Hardcover operations (a transient fault is retried twice within the run).
 # When a case and a ticket disagree, fix the case.
 
 cases:
@@ -333,7 +334,7 @@ cases:
     runs:
       - feed: [{id: 100, title: Dune, shelf: to-read}]
       - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
-        hardcover_fail: {op: InsertRead, fault: unavailable}
+        hardcover_fail: {op: InsertRead, fault: unavailable, times: 3}  # and both retries
         expect:
           state: partial
           pending: {"100": {status: read, date_read: "2026-10-02"}}

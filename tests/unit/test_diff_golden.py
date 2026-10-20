@@ -52,7 +52,8 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
             if fail := run.get("fail"):
                 w.goodreads.fail_next(fail["fault"], page=fail.get("page"))
             if fail := run.get("hardcover_fail"):
-                w.hardcover.fail_next(fail["op"], fail["fault"])
+                for _ in range(fail.get("times", 1)):
+                    w.hardcover.fail_next(fail["op"], fail["fault"])
             writes_before = len(w.hardcover.writes)
             log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
             run_id = await w.sync.run_rss("alice")
