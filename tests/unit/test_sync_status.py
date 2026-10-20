@@ -11,8 +11,9 @@ import pytest
 
 from syncshelf.app import create_app
 from syncshelf.sync import runs
+from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.sync.runs import RunCounts
-from syncshelf.tools.sync import status
+from syncshelf.tools.sync import _limiter, status
 
 from clock import FakeClock
 from fakes.hardcover import FakeHardcover
@@ -166,3 +167,23 @@ async def test_the_tool_answers_for_the_callers_own_profile(
         source = body["sources"]["gr_rss"]
         assert (source["enabled"], source["backfill"]) == (False, {"state": "pending"})
         assert body["hardcover"]["limiter"] == "ok"
+
+
+async def test_a_disabled_source_shows_no_next_run(w: World) -> None:
+    await w.db.write(
+        lambda conn: conn.execute(
+            "INSERT INTO schedules (profile, source, next_due_at) VALUES ('alice', 'gr_rss', 9)"
+        )
+    )
+    shown = await w.db.read(status, "alice", int(w.clock.time()), False)
+    assert shown["sources"]["gr_rss"]["next_due_at"] is None
+
+
+def test_the_limiter_shows_a_pause_in_wall_clock_time(clock: FakeClock) -> None:
+    from syncshelf.clients.hardcover import RateLimit
+
+    limiter = HardcoverLimiter("alice", reserve=1000, clock=clock)
+    assert _limiter(limiter) == {"limiter": "ok", "paused_until": None, "daily_remaining": None}
+    limiter.observe(RateLimit(daily_remaining=900))
+    assert _limiter(limiter)["limiter"] == "reserve"
+    assert _limiter(limiter)["daily_remaining"] == 900

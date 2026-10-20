@@ -27,7 +27,7 @@ RECENT_RUNS = 3
 RECENT_CAP = 20
 """...up to this many in all."""
 QUARANTINE_SHOWN = 25
-"""Quarantined changes listed; ``total`` counts them all."""
+"""Quarantined changes listed, newest first; ``total`` counts them all."""
 REVIEW_SHOWN = 40
 """Characters of a review shown."""
 DAY = 86400
@@ -154,7 +154,8 @@ def _source(
         last_run_at=_iso(run_at),
         last_success_at=_iso(success_at),
         last_observed_at=_iso(observed_at),
-        next_due_at=_iso(due_at),
+        # A source taken out of the config keeps its history but runs no more.
+        next_due_at=_iso(due_at) if enabled else None,
         consecutive_failures=failures,
         backoff_until=_iso(backoff_until),
         backfill=backfill,
@@ -205,7 +206,8 @@ def _quarantine(conn: sqlite3.Connection, profile: str) -> dict[str, Any]:
         "b.last_error_class, b.first_failed_at, b.attempts FROM baseline_fields b "
         "JOIN source_rows r USING (profile, source, source_id) "
         "LEFT JOIN mirror_books m ON m.profile = b.profile AND m.hc_book_id = r.hc_book_id "
-        "WHERE b.profile = ? AND b.quarantined_at IS NOT NULL ORDER BY b.quarantined_at, b.id "
+        "WHERE b.profile = ? AND b.quarantined_at IS NOT NULL "
+        "ORDER BY b.quarantined_at DESC, b.id DESC "
         "LIMIT ?",
         (profile, QUARANTINE_SHOWN),
     )
@@ -269,7 +271,7 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     Times are ISO 8601 UTC. A review is shown only as its length and first 40 characters.
     """
     if profile == "household":
-        raise ToolError("The household health view isn't available yet.")
+        raise ToolError("The household health view arrives with attention items (#171).")
     caller = current_profile()
     bound = services()
     now = int(bound.clock())
