@@ -5,7 +5,9 @@ query costs 2–3 requests and 2–3 s, and the answers (counts, stats, filters)
 library anyway. The copy is refreshed on read once it's older than ``cadence.mirror_ttl``:
 
 - **Full replace per profile**, in one transaction. A user_book deleted in Hardcover just
-  disappears; there are no tombstones, and links and baselines (4a) are never touched.
+  disappears; there are no tombstones, and baselines are never touched.
+- **Merges are followed** (4a): a fetch that shows a book Hardcover merged into another moves
+  the links and source rows on it to that book (§3.4a.4 rule 7).
 - **One refresh at a time per profile.** A reader that finds a refresh in progress waits for
   it, then uses its result rather than starting another.
 - **Refresh failure serves stale, flagged.** The tool answers from the copy with ``stale`` and
@@ -19,13 +21,14 @@ import contextlib
 import json
 import logging
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from syncshelf.clients.hardcover import HardcoverClient, HardcoverError, Library
 from syncshelf.db import Database
 from syncshelf.logging import scrub
+from syncshelf.sync.identity import follow_merges
 
 __all__ = [
     "TAG_CATEGORIES",
@@ -100,6 +103,8 @@ class Mirror:
         doesn't wait for the TTL (§3.3.4, Write-through)."""
         async with self._locks[profile]:
             await self._db.write(store_user_book, profile, book_id, user_book)
+        if user_book is not None:
+            await self._follow([user_book], int(self._clock()))
 
     async def fresh(self, profile: str) -> Freshness:
         """Make ``profile``'s copy current enough to read, refreshing it if it's older than
@@ -147,6 +152,7 @@ class Mirror:
             library = await self._clients[profile].library()
             now = int(self._clock())
             await self._db.write(replace_library, profile, library, now)
+            await self._follow(library.user_books, now)
         except _REFRESH_ERRORS as exc:
             self._last[profile] = await self._failed(profile, exc)
             raise
@@ -161,6 +167,20 @@ class Mirror:
         )
         self._last[profile] = Freshness(now)
         return library
+
+    async def _follow(self, user_books: Iterable[Mapping[str, Any]], now: int) -> None:
+        """A fetch that shows a merged book moves the links and source rows on it to the book
+        it was merged into (§3.3.4, §3.4a.4 rule 7)."""
+        merged = {
+            ub["book_id"]: canonical
+            for ub in user_books
+            if (canonical := (ub.get("book") or {}).get("canonical_id"))
+        }
+        if merged and (moved := await self._db.write(follow_merges, merged, now)):
+            log.info(
+                "followed Hardcover merges onto the books they became",
+                extra={"event": "merges_followed", "count": moved},
+            )
 
     def _outcome(self, profile: str) -> Freshness:
         last = self._last[profile]

@@ -78,7 +78,7 @@ from syncshelf.sync.apply import (
 )
 from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, SourceRow
 from syncshelf.sync.limiter import Deferred, TooCostly
-from syncshelf.sync.matcher import Candidate, MatchInput, Outcome, match
+from syncshelf.sync.matcher import Candidate, IdHit, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
 from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
@@ -305,10 +305,11 @@ class GoodreadsSync:
             obs for obs in [*new, *rematch] if not rows.get(obs.source_id, _NEW).backfill_queued
         ]
         backfilled = [obs for obs in rematch if rows[obs.source_id].backfill_queued]
-        placements = await self._placements(profile, later, shelved=None)
+        # The profile's shelves, for the backfill's rules and the conflict check.
+        library = await self._mirror.fetch(profile)
+        shelved = _shelved(library.user_books)
+        placements = await self._placements(profile, later, shelved=None, on_shelves=shelved)
         if backfilled:
-            library = await self._mirror.fetch(profile)
-            shelved = _shelved(library.user_books)
             placements += await self._placements(profile, backfilled, shelved=shelved)
         changed = {obs.source_id for obs in rematch}
         now = int(self._clock.time())
@@ -348,23 +349,40 @@ class GoodreadsSync:
         observations: list[Observation],
         *,
         shelved: Mapping[int, int] | None,
+        on_shelves: Mapping[int, int] | None = None,
     ) -> list[Placement]:
-        """Where each row goes: an active shared link is reused, a stale one queues the row,
-        and the rest go through the matcher chain (§3.4a.5). ``shelved`` (the profile's shelf
-        entries by book) makes it the backfill: a link only to a book on those shelves, and
-        no fuzzy auto-link (§3.4a.12)."""
+        """Where each row goes: an active shared link is reused, unless this profile's own
+        shelves contradict it, a stale one queues the row, and the rest go through the
+        matcher chain (§3.4a.5). ``shelved`` (the profile's shelf entries by book) makes it
+        the backfill: a link only to a book on those shelves, and no fuzzy auto-link
+        (§3.4a.12). ``on_shelves`` is those entries outside the backfill, for the conflict
+        check alone."""
+        on_shelves = shelved if shelved is not None else on_shelves
         ids = [obs.source_id for obs in observations]
         shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
+        client = self._hardcover[profile]
         inputs = [
-            MatchInput(obs.source_id, obs.title, obs.author, obs.isbn13, obs.isbn10)
+            _input(obs)
             for obs in observations
             if obs.source_id not in shared and obs.source_id not in stale
         ]
+        vanished: set[int] = set()
         outcomes = (
-            await match(self._hardcover[profile], inputs, accept_fuzzy=shelved is None)
+            await match(client, inputs, accept_fuzzy=shelved is None, vanished=vanished)
             if inputs
             else {}
         )
+        if vanished:
+            await self._stale(vanished)
+        # A shared link's book that isn't on this profile's shelves may contradict them: the
+        # exact ids may put this profile's copy on another book it has (§3.4a.4 rule 6).
+        checks = [
+            _input(obs)
+            for obs in observations
+            if (hit := shared.get(obs.source_id)) and on_shelves is not None
+            and hit.book_id not in on_shelves
+        ]  # fmt: skip
+        own = await match(client, checks, accept_fuzzy=False) if checks else {}
         placements = []
         for obs in observations:
             if obs.source_id in stale:
@@ -372,9 +390,33 @@ class GoodreadsSync:
                 placements.append(Placement(obs, None, False, reason="stale"))
                 continue
             shared_hit = shared.get(obs.source_id)
+            mine = (own.get(obs.source_id) or Outcome(None)).hit
+            conflicts = (
+                shared_hit is not None
+                and mine is not None
+                and on_shelves is not None
+                and mine.book_id in on_shelves
+                and mine.book_id != shared_hit.book_id
+            )
+            if conflicts:
+                assert shared_hit is not None and mine is not None
+                candidates = (_candidate(mine), _candidate(shared_hit))
+                placements.append(
+                    Placement(obs, None, False, reason="profile_conflict", candidates=candidates)
+                )
+                continue
             outcome = Outcome(shared_hit) if shared_hit else outcomes[obs.source_id]
             placements.append(_place(obs, outcome, shelved))
         return placements
+
+    async def _stale(self, books: set[int]) -> None:
+        """Books a by-id lookup didn't find: their links are re-queued (§3.4a.4 rule 7)."""
+        now = int(self._clock.time())
+        if queued := await self._db.write(identity.mark_stale, books, now):
+            log.warning(
+                "Hardcover no longer has some linked books; their rows are queued",
+                extra={"event": "rows_stale", "count": queued},
+            )
 
     async def _ready(
         self,
@@ -615,6 +657,14 @@ class GoodreadsSync:
                 "run_id": run_id,
             },
         )
+
+
+def _input(obs: Observation) -> MatchInput:
+    return MatchInput(obs.source_id, obs.title, obs.author, obs.isbn13, obs.isbn10)
+
+
+def _candidate(hit: IdHit) -> Candidate:
+    return Candidate(hit.book_id, hit.edition_id, hit.method, None)
 
 
 _NEW = SourceRow("", "queued", None, None)

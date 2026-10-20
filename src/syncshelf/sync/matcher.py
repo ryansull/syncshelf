@@ -366,7 +366,11 @@ class Outcome:
 
 
 async def match(
-    client: HardcoverClient, rows: Sequence[MatchInput], *, accept_fuzzy: bool
+    client: HardcoverClient,
+    rows: Sequence[MatchInput],
+    *,
+    accept_fuzzy: bool,
+    vanished: set[int] | None = None,
 ) -> dict[str, Outcome]:
     """Run the chain over ``rows`` (§3.4a.5): the Goodreads mapping, then ISBN-13, then
     ISBN-10, then fuzzy. The first step yielding an **accepted** hit wins:
@@ -383,7 +387,8 @@ async def match(
       ``canonical_id``) count once.
 
     The id steps are batched across rows; fuzzy costs at most 2 searches and 1 hydrate per
-    row that reaches it.
+    row that reaches it. Books a hydrate asked for and Hardcover didn't return are added to
+    ``vanished`` (§3.4a.4 rule 7: a by-id lookup that finds no row).
     """
     outcomes: dict[str, Outcome] = {}
     refused: dict[str, Outcome] = {}
@@ -405,7 +410,7 @@ async def match(
         if row.source_id in refused:
             outcomes[row.source_id] = refused[row.source_id]
         else:
-            outcomes[row.source_id] = await _fuzzy(client, row, accept_fuzzy)
+            outcomes[row.source_id] = await _fuzzy(client, row, accept_fuzzy, vanished)
     return outcomes
 
 
@@ -441,7 +446,9 @@ def _decide(
     return rest
 
 
-async def _fuzzy(client: HardcoverClient, row: MatchInput, accept: bool) -> Outcome:
+async def _fuzzy(
+    client: HardcoverClient, row: MatchInput, accept: bool, vanished: set[int] | None
+) -> Outcome:
     hits = await search_candidates(client, row.title, row.author)
     kept = [h for h in hits if h.scored.title >= TITLE_FLOOR]
     if not kept:
@@ -450,6 +457,11 @@ async def _fuzzy(client: HardcoverClient, row: MatchInput, accept: bool) -> Outc
     # records of one book (a merge Typesense still shows) are one candidate, not a rival.
     result = await client.execute(BOOKS_BY_ID, {"ids": [h.book_id for h in kept]})
     canonical = {b["id"]: b.get("canonical_id") for b in result.data.get("books") or []}
+    if vanished is not None:
+        vanished.update(h.book_id for h in kept if h.book_id not in canonical)
+    kept = [h for h in kept if h.book_id in canonical]
+    if not kept:
+        return Outcome(None, "no_hit")
     books: dict[int, Hit] = {}
     for hit in kept:
         books.setdefault(canonical.get(hit.book_id) or hit.book_id, hit)

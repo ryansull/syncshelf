@@ -29,8 +29,10 @@ __all__ = [
     "add_rows",
     "LogRow",
     "backfilled",
+    "follow_merges",
     "link_editions",
     "load_rows",
+    "mark_stale",
     "match_input",
     "observe",
     "pending_for",
@@ -406,6 +408,63 @@ def rematch_rows(
                 (_reason(place), match_input(obs), profile, source, obs.source_id),
             )
             _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int) -> int:
+    """Follow Hardcover's merges (§3.4a.4 rule 7): each ``merged`` book (old id → the book it
+    was merged into) is rewritten to the canonical book on its shared links and on every
+    profile's source rows, each rewrite logged as a ``merge``, never queued. Returns how many
+    source rows moved."""
+    moved = 0
+    for old, canonical in merged.items():
+        if old == canonical:
+            continue
+        rows = conn.execute(
+            "SELECT profile, source, source_id, hc_user_book_id FROM source_rows "
+            "WHERE hc_book_id = ?",
+            (old,),
+        ).fetchall()
+        conn.execute("UPDATE links SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
+        conn.execute("UPDATE source_rows SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
+        conn.executemany(
+            "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, "
+            "kind, old_value, new_value, at) VALUES (?, ?, ?, ?, ?, 'merge', ?, ?, ?)",
+            [
+                (profile, source, source_id, canonical, user_book, str(old), str(canonical), now)
+                for profile, source, source_id, user_book in rows
+            ],
+        )
+        moved += len(rows)
+    return moved
+
+
+def mark_stale(conn: sqlite3.Connection, book_ids: Iterable[int], now: int) -> int:
+    """Books Hardcover no longer returns (§3.4a.4 rule 7): their links become ``stale``, and
+    each profile's rows on them are queued ``stale`` for a person to resolve, keeping their
+    baselines. Returns how many rows were queued."""
+    queued = 0
+    for book_id in set(book_ids):
+        rows = conn.execute(
+            "SELECT profile, source, source_id, hc_user_book_id FROM source_rows "
+            "WHERE hc_book_id = ? AND state = 'linked'",
+            (book_id,),
+        ).fetchall()
+        conn.execute("UPDATE links SET state = 'stale' WHERE hc_book_id = ?", (book_id,))
+        conn.execute(
+            "UPDATE source_rows SET state = 'queued', hc_book_id = NULL, queue_reason = 'stale',"
+            " queued_at = ? WHERE hc_book_id = ? AND state = 'linked'",
+            (now, book_id),
+        )
+        conn.executemany(
+            "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, "
+            "kind, at) VALUES (?, ?, ?, ?, ?, 'stale', ?)",
+            [
+                (profile, source, source_id, book_id, user_book, now)
+                for profile, source, source_id, user_book in rows
+            ],
+        )
+        queued += len(rows)
+    return queued
 
 
 QUARANTINE_AFTER = 24 * 3600

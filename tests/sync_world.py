@@ -1,8 +1,8 @@
-"""One profile's whole sync world against the fakes (SPEC §2.9): its Goodreads feed, its
-Hardcover shelves, the database, the mirror, the write procedure and the Goodreads engine,
-all on the injectable clock. Tests and golden runners build one with :func:`world`."""
+"""A household's whole sync world against the fakes (SPEC §2.9): each profile's Goodreads
+feed and Hardcover shelves, the database, the mirror, the write procedure and the Goodreads
+engine, all on the injectable clock. Tests and golden runners build one with :func:`world`."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,10 @@ from serving import HARDCOVER_URL, hardcover_token, make_config
 
 GR_USER = "31415926"
 HC_USER = 42
+GR_USERS = {"alice": GR_USER, "bob": "27182818"}
+"""Each profile's Goodreads user id."""
+HC_USERS = {"alice": HC_USER, "bob": 43}
+"""Each profile's Hardcover user id."""
 SHELF_MAP = "{read: 3, currently-reading: 2, to-read: 1, did-not-finish: 5}"
 
 
@@ -39,6 +43,7 @@ class World:
     goodreads: FakeGoodreads
     hardcover: FakeHardcover
     sync: GoodreadsSync
+    mirror: Mirror
 
     async def rows(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
         """Run a read query against the database."""
@@ -56,18 +61,26 @@ async def world(
     profile: str = "alice",
     shelf_map: str = SHELF_MAP,
     reserve: int | None = None,
+    others: Sequence[str] = (),
 ) -> AsyncIterator[World]:
-    """A world for one profile with a Goodreads section (``shelf_map`` as flow YAML), a
-    Goodreads user and a Hardcover user, both empty. With ``reserve``, Hardcover calls go
-    through a real limiter on the clock, keeping that much of the daily budget back."""
+    """A world for ``profile`` (and the ``others``, from ``bob``), each with a Goodreads
+    section (``shelf_map`` as flow YAML), a Goodreads user and a Hardcover user, all empty.
+    With ``reserve``, Hardcover calls go through a real limiter on the clock, keeping that
+    much of the daily budget back."""
+    names = [profile, *others]
     clock = FakeClock()
     goodreads = FakeGoodreads(clock)
-    goodreads.add_user(GR_USER)
     hardcover = FakeHardcover()
     hardcover.today = clock.now().date().isoformat()
-    hardcover.add_user(hardcover_token(profile), user_id=HC_USER)
-    body = f'{{goodreads: {{user_id: "{GR_USER}", shelf_map: {shelf_map}}}, timezone: Etc/UTC}}'
-    config = make_config(tmp_path, profiles=[profile], profile_yaml={profile: body})
+    bodies = {}
+    for name in names:
+        goodreads.add_user(GR_USERS[name])
+        hardcover.add_user(hardcover_token(name), user_id=HC_USERS[name])
+        bodies[name] = (
+            f'{{goodreads: {{user_id: "{GR_USERS[name]}", shelf_map: {shelf_map}}}, '
+            "timezone: Etc/UTC}"
+        )
+    config = make_config(tmp_path, profiles=names, profile_yaml=bodies)
 
     def route(request: httpx2.Request) -> httpx2.Response:
         if request.url.host == "www.goodreads.com":
@@ -76,15 +89,18 @@ async def world(
 
     transport = httpx2.MockTransport(route)
     db = await Database.open(tmp_path / "syncshelf.db", snapshot_dir=tmp_path)
-    gate = None if reserve is None else HardcoverLimiter(profile, reserve=reserve, clock=clock)
     clients = {
-        profile: HardcoverClient(
-            HARDCOVER_URL, hardcover_token(profile), gate=gate, transport=transport
+        name: HardcoverClient(
+            HARDCOVER_URL,
+            hardcover_token(name),
+            gate=None if reserve is None else HardcoverLimiter(name, reserve=reserve, clock=clock),
+            transport=transport,
         )
+        for name in names
     }
     sync = None
     try:
-        await db.write(sync_profiles, [profile], int(clock.time()))
+        await db.write(sync_profiles, names, int(clock.time()))
         mirror = Mirror(db, clients, ttl=600, clock=clock.time)
         applier = Applier(clients, mirror, config.profiles)
         sync = GoodreadsSync(
@@ -96,7 +112,7 @@ async def world(
             clock=clock,
             transport=transport,
         )
-        yield World(config, db, clock, goodreads, hardcover, sync)
+        yield World(config, db, clock, goodreads, hardcover, sync, mirror)
     finally:
         if sync is not None:
             await sync.aclose()
