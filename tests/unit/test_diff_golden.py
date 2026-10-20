@@ -56,7 +56,7 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
                     w.hardcover.fail_next(fail["op"], fail["fault"])
             writes_before = len(w.hardcover.writes)
             log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
-            run_id = await w.sync.run_rss("alice")
+            run_id = (await w.sync.run_rss("alice")).run_id
             await _check(w, run.get("expect") or {}, run_id, writes_before, log_before)
 
 

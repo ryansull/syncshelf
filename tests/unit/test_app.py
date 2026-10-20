@@ -13,7 +13,7 @@ from starlette.routing import Mount, Route
 
 import syncshelf.app
 from syncshelf import __version__
-from syncshelf.app import PURGE_TASK, StartupError, allowed_hosts, create_app
+from syncshelf.app import PURGE_TASK, SYNC_TASK, StartupError, allowed_hosts, create_app
 from syncshelf.tools import ToolRegistry
 
 from clock import FakeClock
@@ -240,6 +240,13 @@ class TestLifespan:
                 while _oauth_rows(data_dir / "syncshelf.db")[:2] != (0, 0):
                     await anyio.sleep(0.01)
         assert not [t for t in asyncio.all_tasks() if t.get_name() == PURGE_TASK]
+
+    async def test_the_sync_loops_run_with_the_app_and_stop_at_shutdown(
+        self, tmp_path: Path, data_dir: Path
+    ) -> None:
+        async with running(create_app(make_config(tmp_path), data_dir=data_dir)):
+            assert [t for t in asyncio.all_tasks() if t.get_name() == SYNC_TASK]
+        assert not [t for t in asyncio.all_tasks() if t.get_name() == SYNC_TASK]
 
     async def test_a_failing_purge_is_logged_and_never_stops_the_app(
         self,

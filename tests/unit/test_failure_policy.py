@@ -39,7 +39,7 @@ def rate(w: World, stars: str) -> None:
 
 
 async def run(w: World) -> tuple[Any, ...]:
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     ((row),) = await w.rows(
         "SELECT state, applied, failed, quarantined, first_error FROM runs WHERE id = ?", run_id
     )
