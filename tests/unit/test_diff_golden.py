@@ -31,13 +31,20 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
             w.hardcover.add_user_book(
                 HC_USER, int(book_id), user_book_reads=reads, **_shelf_fields(fields)
             )
+        # A mapped book carries the title the feed gives it, so the title floor passes.
+        titles = {str(i["id"]): i.get("title") for run in case["runs"] for i in run["feed"]}
         for goodreads_id, mapping in (hardcover.get("mappings") or {}).items():
+            title = titles.get(str(goodreads_id))
             if isinstance(mapping, dict):
                 book, edition = mapping["book"], mapping.get("edition")
                 extra = {"reading_format_id": mapping["format"]} if "format" in mapping else {}
-                w.hardcover.add_mapping(goodreads_id, book, edition, **extra)
+                w.hardcover.add_mapping(goodreads_id, book, edition, title=title, **extra)
             else:
-                w.hardcover.add_mapping(goodreads_id, mapping)
+                w.hardcover.add_mapping(goodreads_id, mapping, title=title)
+        for edition in hardcover.get("editions") or []:
+            keys = {k: edition[k] for k in ("isbn_13", "isbn_10") if k in edition}
+            w.hardcover.add_edition(edition["id"], edition["book"], **keys)
+            w.hardcover.catalog[edition["book"]]["title"] = edition.get("title", "")
         for n, run in enumerate(case["runs"]):
             if n:
                 w.clock.advance(3600)
@@ -71,6 +78,8 @@ def _serve(w: World, feed: list[dict[str, Any]], filler: int) -> None:
             extra["user_review"] = item["review"]
         if "added" in item:
             extra["user_date_added"] = item["added"]
+        if "isbn" in item:
+            extra["isbn"] = item["isbn"]
         w.goodreads.add_item(
             GR_USER,
             item["id"],

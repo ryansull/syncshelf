@@ -70,7 +70,7 @@ from syncshelf.sync.apply import (
     Target,
 )
 from syncshelf.sync.identity import LogRow, Pending, Placement, SourceRow
-from syncshelf.sync.matcher import goodreads_mappings
+from syncshelf.sync.matcher import Candidate, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
 from syncshelf.sync.runs import RunCounts, RunState, Trigger
@@ -225,7 +225,7 @@ class GoodreadsSync:
             )
         rows = await self._db.read(identity.load_rows, profile, SOURCE)
         work = _ready_to_push(observed.pending, rows)
-        if not work and not observed.new:
+        if not work and not observed.new and not observed.rematch:
             return "ok" if batch.complete else "partial"
         self._started(profile, run_id)
         assert batch.observed_at is not None
@@ -233,9 +233,9 @@ class GoodreadsSync:
 
         # Stages 3 and 4, under the profile's apply lock.
         async with self._applier.lock(profile):
-            if observed.new:
+            if observed.new or observed.rematch:
                 try:
-                    added = await self._add(profile, batch, observed.new)
+                    added = await self._add(profile, batch, observed.new, observed.rematch)
                 except HardcoverError as exc:
                     # The books stay new, so the next run matches them; the rest goes on.
                     counts.error(scrub(str(exc)))
@@ -268,33 +268,83 @@ class GoodreadsSync:
             return "partial"
         return "ok"
 
-    async def _add(self, profile: str, batch: Batch, new: list[Observation]) -> list[Pending]:
+    async def _add(
+        self,
+        profile: str,
+        batch: Batch,
+        new: list[Observation],
+        rematch: list[Observation],
+    ) -> list[Pending]:
         """Match the books first seen now and add them from an empty baseline (§3.4a.6,
-        rule 3), returning their pending changes. Unlike the backfill, a match links whether
-        or not the book is on the profile's shelves: it's the book Goodreads now has."""
-        ids = [obs.source_id for obs in new]
-        shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
-        unlinked = [i for i in ids if i not in shared and i not in stale]
-        hits = {**await goodreads_mappings(self._hardcover[profile], unlinked), **shared}
-        placements = []
-        for obs in new:
-            if obs.source_id in stale:
-                placements.append(Placement(obs, None, False, reason="stale"))
-            else:
-                hit = hits.get(obs.source_id)
-                placements.append(Placement(obs, hit, hit is not None))
+        rule 3), and re-match the queued rows whose match input changed, returning the
+        pending changes on the rows now linked. Unlike the backfill, a match links whether or
+        not the book is on the profile's shelves, and a clear fuzzy match links too."""
+        placements = await self._placements(profile, [*new, *rematch], shelved=None)
+        changed = {obs.source_id for obs in rematch}
         now = int(self._clock.time())
-        added = await self._db.write(identity.add_rows, profile, SOURCE, batch, placements, now)
+        added = await self._db.write(
+            identity.add_rows,
+            profile,
+            SOURCE,
+            batch,
+            [p for p in placements if p.observation.source_id not in changed],
+            now,
+        )
+        if rematch:
+            await self._db.write(
+                identity.rematch_rows,
+                profile,
+                SOURCE,
+                [p for p in placements if p.observation.source_id in changed],
+                now,
+            )
         log.info(
-            "added books first seen on Goodreads",
+            "matched books first seen on Goodreads, or whose details changed",
             extra={
-                "event": "rows_added",
+                "event": "rows_matched",
                 "profile": profile,
+                "new": len(new),
+                "rematched": len(rematch),
                 "linked": sum(p.linked for p in placements),
                 "queued": sum(not p.linked for p in placements),
             },
         )
-        return added
+        relinked = await self._db.read(identity.pending_for, profile, SOURCE, changed)
+        return [*added, *relinked]
+
+    async def _placements(
+        self,
+        profile: str,
+        observations: list[Observation],
+        *,
+        shelved: Mapping[int, int] | None,
+    ) -> list[Placement]:
+        """Where each row goes: an active shared link is reused, a stale one queues the row,
+        and the rest go through the matcher chain (§3.4a.5). ``shelved`` (the profile's shelf
+        entries by book) makes it the backfill: a link only to a book on those shelves, and
+        no fuzzy auto-link (§3.4a.12)."""
+        ids = [obs.source_id for obs in observations]
+        shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
+        inputs = [
+            MatchInput(obs.source_id, obs.title, obs.author, obs.isbn13, obs.isbn10)
+            for obs in observations
+            if obs.source_id not in shared and obs.source_id not in stale
+        ]
+        outcomes = (
+            await match(self._hardcover[profile], inputs, accept_fuzzy=shelved is None)
+            if inputs
+            else {}
+        )
+        placements = []
+        for obs in observations:
+            if obs.source_id in stale:
+                # A link Hardcover no longer backs: a person resolves it (§3.4a.4, rule 7).
+                placements.append(Placement(obs, None, False, reason="stale"))
+                continue
+            shared_hit = shared.get(obs.source_id)
+            outcome = Outcome(shared_hit) if shared_hit else outcomes[obs.source_id]
+            placements.append(_place(obs, outcome, shelved))
+        return placements
 
     async def _ready(
         self,
@@ -361,29 +411,18 @@ class GoodreadsSync:
         self, profile: str, batch: Batch, run_id: int, counts: RunCounts
     ) -> RunState:
         """The map-only backfill (§3.4a.12): reads Hardcover, never writes it."""
-        ids = [row.source_id for row in batch.rows]
-        shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
         async with self._applier.lock(profile):
             try:
                 library = await self._mirror.fetch(profile)
-                unlinked = [i for i in ids if i not in shared and i not in stale]
-                hits = {**await goodreads_mappings(self._hardcover[profile], unlinked), **shared}
+                placements = await self._placements(
+                    profile, list(batch.rows), shelved=_shelved(library.user_books)
+                )
             except FetchFailed as exc:
                 counts.error(str(exc))
                 return "deferred"
             except HardcoverError as exc:
                 counts.error(scrub(str(exc)))
                 return "deferred"
-        shelved = _shelved(library.user_books)
-        placements = []
-        for row in batch.rows:
-            if row.source_id in stale:
-                # A link Hardcover no longer backs: a person resolves it (§3.4a.4, rule 7).
-                placements.append(Placement(row, None, False, reason="stale"))
-                continue
-            hit = hits.get(row.source_id)
-            user_book = shelved.get(hit.book_id) if hit is not None else None
-            placements.append(Placement(row, hit, user_book is not None, user_book))
         now = int(self._clock.time())
         linked, queued = await self._db.write(
             identity.record_backfill, profile, SOURCE, batch, placements, run_id, now
@@ -489,6 +528,21 @@ class GoodreadsSync:
                 "run_id": run_id,
             },
         )
+
+
+def _place(obs: Observation, outcome: Outcome, shelved: Mapping[int, int] | None) -> Placement:
+    """A row's place from the chain's outcome. In the backfill (``shelved`` given) a hit
+    links only a book on the profile's shelves; otherwise it's queued ``not_in_library``,
+    with the hit as its candidate (§3.4a.12)."""
+    hit = outcome.hit
+    if hit is None:
+        return Placement(obs, None, False, reason=outcome.reason, candidates=outcome.candidates)
+    if shelved is None:
+        return Placement(obs, hit, True)
+    if (user_book := shelved.get(hit.book_id)) is not None:
+        return Placement(obs, hit, True, user_book)
+    candidate = Candidate(hit.book_id, hit.edition_id, hit.method, None)
+    return Placement(obs, hit, False, reason="not_in_library", candidates=(candidate,))
 
 
 def _shelved(user_books: list[dict[str, Any]]) -> dict[int, int]:

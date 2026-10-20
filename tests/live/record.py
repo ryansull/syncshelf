@@ -32,6 +32,8 @@ from syncshelf.clients.hardcover import (  # noqa: E402
     BOOK,
     BOOKS_BY_ID,
     BY_GOODREADS,
+    BY_ISBN10,
+    BY_ISBN13,
     EDITION_FORMATS,
     GOALS,
     LIBRARY,
@@ -104,6 +106,9 @@ async def record_hardcover(token: str, limit: int) -> None:
             {m["edition_id"] for m in by_goodreads.data["book_mappings"] if m["edition_id"]}
         )
         edition_formats = await client.execute(EDITION_FORMATS, {"ids": edition_ids})
+        # A public ISBN pair (Red Rising), and an ISBN-13 no edition has.
+        by_isbn13 = await client.execute(BY_ISBN13, {"v": ["9780345539793", "9790000000001"]})
+        by_isbn10 = await client.execute(BY_ISBN10, {"v": ["0345539796"]})
     finally:
         await client.aclose()
     out = FIXTURES / "hardcover"
@@ -119,6 +124,8 @@ async def record_hardcover(token: str, limit: int) -> None:
         "books_by_id": by_id.data,
         "by_goodreads": by_goodreads.data,
         "edition_formats": edition_formats.data,
+        "by_isbn13": by_isbn13.data,
+        "by_isbn10": by_isbn10.data,
     }
     for name, data in recorded.items():
         write_fixture(
