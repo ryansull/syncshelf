@@ -37,6 +37,7 @@ __all__ = [
     "observe",
     "pending_for",
     "record_failure",
+    "release_changes",
     "release_on_new_version",
     "release_quarantine",
     "record_backfill",
@@ -520,6 +521,26 @@ def release_quarantine(conn: sqlite3.Connection, profile: str | None = None) -> 
         f"first_failed_at = NULL WHERE {where}",
         (profile,) if profile else (),
     ).rowcount
+
+
+def release_changes(
+    conn: sqlite3.Connection, profile: str, change_ids: Iterable[int] | None
+) -> list[int]:
+    """Release the profile's own quarantined changes, these ones or all of them (``None``):
+    pending again, attempts started over (§3.4a.11 ``retry_failed``). Returns the ids
+    released; another profile's change, or one not quarantined, is never among them."""
+    rows = conn.execute(
+        "SELECT id FROM baseline_fields WHERE profile = ? AND quarantined_at IS NOT NULL",
+        (profile,),
+    ).fetchall()
+    wanted = None if change_ids is None else set(change_ids)
+    ids = [row[0] for row in rows if wanted is None or row[0] in wanted]
+    conn.executemany(
+        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, first_failed_at = NULL "
+        "WHERE id = ?",
+        [(i,) for i in ids],
+    )
+    return ids
 
 
 VERSION_KEY = "last_started_version"

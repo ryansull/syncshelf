@@ -40,8 +40,15 @@ class FakeSync:
     def lock(self, profile: str) -> asyncio.Lock:
         return self.locks[profile]
 
-    async def run_rss(self, profile: str, trigger: Trigger = "schedule") -> RunResult:
+    def running(self, profile: str) -> tuple[int, int] | None:
+        return None
+
+    async def run_rss(
+        self, profile: str, trigger: Trigger = "schedule", started: Any = None
+    ) -> RunResult:
         self.calls.append((profile, trigger, self.clock.time()))
+        if started is not None:
+            started(len(self.calls))
         state, fetched = self.outcomes.pop(0) if self.outcomes else ("ok", True)
         return RunResult(len(self.calls), state, fetched, int(self.clock.time()))
 
@@ -247,7 +254,7 @@ async def test_a_deferred_or_aborted_run_keeps_the_backoff_in_force(
 async def test_a_run_that_raises_moves_the_loop_on(db: Database, clock: FakeClock) -> None:
     sync = FakeSync(clock, ["alice"])
 
-    async def broken(profile: str, trigger: Trigger = "schedule") -> RunResult:
+    async def broken(profile: str, trigger: Trigger = "schedule", started: Any = None) -> RunResult:
         raise RuntimeError("boom")
 
     sync.run_rss = broken  # type: ignore[method-assign]
@@ -265,9 +272,11 @@ async def test_a_run_asked_for_during_a_run_still_happens(db: Database, clock: F
     clock.advance(JITTER)
     original = sync.run_rss
 
-    async def nudged_meanwhile(profile: str, trigger: Trigger = "schedule") -> RunResult:
+    async def nudged_meanwhile(
+        profile: str, trigger: Trigger = "schedule", started: Any = None
+    ) -> RunResult:
         s.nudge(profile, "ingest")
-        return await original(profile, trigger)
+        return await original(profile, trigger, started)
 
     sync.run_rss = nudged_meanwhile  # type: ignore[method-assign]
     await s.tick()
@@ -300,3 +309,16 @@ async def test_a_skipped_tick_is_stored(db: Database, clock: FakeClock) -> None:
     async with sync.lock("alice"):
         await s.tick()
     assert (await schedule(db))[2] == int(clock.time()) + HOUR
+
+
+async def test_a_run_asked_for_now_returns_its_id_and_is_recorded(
+    db: Database, clock: FakeClock
+) -> None:
+    sync = FakeSync(clock, ["alice"])
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    assert await s.run_now("alice", "sync_now") == 1
+    while not (await schedule(db))[0]:
+        await asyncio.sleep(0)
+    assert sync.calls == [("alice", "sync_now", clock.time())]
+    assert (await schedule(db))[3] == "ok"

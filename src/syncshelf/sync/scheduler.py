@@ -93,6 +93,7 @@ class Scheduler:
         self._profiles = sorted(p for p in profiles if sync.enabled(p))
         self._loops: dict[str, _Loop] = {}
         self._wake = asyncio.Event()
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def resume(self) -> None:
         """Load each loop's next run from ``schedules`` (§3.4a.9), creating the rows of loops
@@ -117,6 +118,49 @@ class Scheduler:
         now = self._clock.time()
         loop.due, loop.trigger, loop.nudged = now, trigger, now
         self._wake.set()
+
+    def enabled(self, profile: str) -> bool:
+        """Whether the profile has a sync loop."""
+        return profile in self._loops
+
+    def running(self, profile: str) -> tuple[int, int] | None:
+        """The profile's run in progress, as (run id, when it started), if one is."""
+        return self._sync.running(profile)
+
+    async def run_now(self, profile: str, trigger: Trigger) -> int:
+        """Start a run of the profile's source now, as a task the scheduler holds (not tied
+        to the request that asked), and return its run id once the run has one (§3.4a.9).
+        The run is recorded on the loop's schedule like any other."""
+        started: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(self._run_now(profile, trigger, started))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return await started
+
+    async def _run_now(self, profile: str, trigger: Trigger, started: asyncio.Future[int]) -> None:
+        def told(run_id: int) -> None:
+            if not started.done():
+                started.set_result(run_id)
+
+        try:
+            result = await self._sync.run_rss(profile, trigger, told)
+            next_due = await self._db.write(
+                _record, profile, result, int(self._clock.time()), self._interval
+            )
+            if (loop := self._loops.get(profile)) is not None:
+                loop.due = next_due + self._jitter()
+        except Exception as exc:
+            if not started.done():
+                started.set_exception(exc)
+            log.exception(
+                "a Goodreads run asked for now failed",
+                extra={"event": "run_now_failed", "profile": profile},
+            )
+
+    def close(self) -> None:
+        """Cancel the runs asked for now that are still going (at shutdown)."""
+        for task in self._tasks:
+            task.cancel()
 
     async def tick(self) -> list[RunResult]:
         """Run every loop that is due now, one at a time, and schedule each one's next run."""
