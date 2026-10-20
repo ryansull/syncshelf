@@ -301,11 +301,13 @@ class Started(TypedDict):
 
 
 class SyncNow(TypedDict):
+    """``sync_now``'s answer: each source's run, and a line for Claude to relay."""
+
     runs: list[Started]
     note: str
 
 
-@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True))
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=False))
 async def sync_now(
     source: Literal["goodreads", "abs", "all"] = "all", full: bool = False
 ) -> SyncNow:
@@ -330,18 +332,18 @@ async def sync_now(
     scheduler = services().scheduler
     if not scheduler.enabled(caller):
         raise ToolError("This profile has no Goodreads sync: its config has no goodreads section.")
-    if (going := scheduler.running(caller)) is not None:
-        run_id, since = going
-        started = Started(source="gr_rss", run_id=run_id, started=False, since=_iso(since) or "")
+    run_id, since, new = await scheduler.run_now(caller, "sync_now")
+    started = Started(source="gr_rss", run_id=run_id, started=new, since=_iso(since) or "")
+    if not new:
         note = f"A Goodreads run was already going (since {started['since']}, run {run_id})."
-        return SyncNow(runs=[started], note=note)
-    now = int(services().clock())
-    run_id = await scheduler.run_now(caller, "sync_now")
-    started = Started(source="gr_rss", run_id=run_id, started=True, since=_iso(now) or "")
-    return SyncNow(runs=[started], note="Started; read sync_status for how it went.")
+    else:
+        note = "Started; read sync_status for how it went."
+    return SyncNow(runs=[started], note=note)
 
 
 class Released(TypedDict):
+    """``retry_failed``'s answer: what was released, and whether a run was queued."""
+
     released: list[int]
     """The change ids released, pending again."""
     run: str

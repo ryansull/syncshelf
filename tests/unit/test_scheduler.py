@@ -44,11 +44,16 @@ class FakeSync:
         return None
 
     async def run_rss(
-        self, profile: str, trigger: Trigger = "schedule", started: Any = None
+        self,
+        profile: str,
+        trigger: Trigger = "schedule",
+        started: Any = None,
+        *,
+        held: bool = False,
     ) -> RunResult:
         self.calls.append((profile, trigger, self.clock.time()))
         if started is not None:
-            started(len(self.calls))
+            started(len(self.calls), int(self.clock.time()))
         state, fetched = self.outcomes.pop(0) if self.outcomes else ("ok", True)
         return RunResult(len(self.calls), state, fetched, int(self.clock.time()))
 
@@ -317,7 +322,7 @@ async def test_a_run_asked_for_now_returns_its_id_and_is_recorded(
     sync = FakeSync(clock, ["alice"])
     s = scheduler(db, sync, clock)
     await s.resume()
-    assert await s.run_now("alice", "sync_now") == 1
+    assert await s.run_now("alice", "sync_now") == (1, int(clock.time()), True)
     while not (await schedule(db))[0]:
         await asyncio.sleep(0)
     assert sync.calls == [("alice", "sync_now", clock.time())]

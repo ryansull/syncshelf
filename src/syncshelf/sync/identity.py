@@ -529,18 +529,15 @@ def release_changes(
     """Release the profile's own quarantined changes, these ones or all of them (``None``):
     pending again, attempts started over (§3.4a.11 ``retry_failed``). Returns the ids
     released; another profile's change, or one not quarantined, is never among them."""
+    ids = None if change_ids is None else list(change_ids)
+    only = "" if ids is None else f" AND id IN ({','.join('?' * len(ids))})"
     rows = conn.execute(
-        "SELECT id FROM baseline_fields WHERE profile = ? AND quarantined_at IS NOT NULL",
-        (profile,),
+        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, "  # noqa: S608
+        f"first_failed_at = NULL WHERE profile = ? AND quarantined_at IS NOT NULL{only} "
+        "RETURNING id",
+        (profile, *(ids or [])),
     ).fetchall()
-    wanted = None if change_ids is None else set(change_ids)
-    ids = [row[0] for row in rows if wanted is None or row[0] in wanted]
-    conn.executemany(
-        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, first_failed_at = NULL "
-        "WHERE id = ?",
-        [(i,) for i in ids],
-    )
-    return ids
+    return sorted(row[0] for row in rows)
 
 
 VERSION_KEY = "last_started_version"

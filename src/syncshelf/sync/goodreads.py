@@ -171,12 +171,17 @@ class GoodreadsSync:
         self,
         profile: str,
         trigger: Trigger = "schedule",
-        started: Callable[[int], None] | None = None,
+        started: Callable[[int, int], None] | None = None,
+        *,
+        held: bool = False,
     ) -> RunResult:
         """Run the profile's RSS source once and say how it ended, waiting for a run in
-        progress to finish first. Every outcome is on the run's row; this raises only for a
-        profile with no Goodreads source."""
+        progress to finish first (unless the caller already ``held`` the lock for it).
+        ``started`` hears the run's id and start time as soon as it has them. Every outcome
+        is on the run's row; this raises only for a profile with no Goodreads source."""
         rss = self._rss[profile]
+        if held:  # the caller took the lock for this run, and releases it
+            return await self._locked_run(profile, rss, trigger, started)
         async with self._locks[profile]:
             return await self._locked_run(profile, rss, trigger, started)
 
@@ -185,14 +190,14 @@ class GoodreadsSync:
         profile: str,
         rss: GoodreadsRss,
         trigger: Trigger,
-        told: Callable[[int], None] | None,
+        told: Callable[[int, int], None] | None,
     ) -> RunResult:
         started = int(self._clock.time())
         began = self._clock.monotonic()
         run_id = await self._db.write(runs.start, profile, "gr_rss", trigger, started)
         self._running[profile] = (run_id, started)
         if told is not None:
-            told(run_id)
+            told(run_id, started)
         counts = RunCounts()
         state: RunState = "aborted"
         try:

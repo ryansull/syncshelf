@@ -5,6 +5,7 @@ the real ASGI app."""
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -66,18 +67,82 @@ async def test_all_releases_every_one_of_the_callers(w: World) -> None:
     ) == [(1,)]
 
 
-async def test_run_now_starts_a_run_and_says_its_id_at_once(w: World) -> None:
-    s = Scheduler(db=w.db, sync=w.sync, profiles=w.config.profiles, interval=3600, clock=w.clock)
-    await s.resume()
-    run_id = await s.run_now("alice", "sync_now")
-    # The id is known while the run is still going.
-    going = w.sync.running("alice")
-    assert going is not None and going[0] == run_id
-    while w.sync.running("alice") is not None:
+def scheduler(w: World) -> Scheduler:
+    return Scheduler(db=w.db, sync=w.sync, profiles=w.config.profiles, interval=3600, clock=w.clock)
+
+
+async def settle(w: World) -> None:
+    while w.sync.running("alice") is not None or w.sync.lock("alice").locked():
         await w.clock.sleep(0)
+
+
+async def test_run_now_starts_a_run_and_says_its_id_at_once(w: World) -> None:
+    s = scheduler(w)
+    await s.resume()
+    run_id, since, started = await s.run_now("alice", "sync_now")
+    assert started is True
+    # The id is known while the run is still going.
+    assert w.sync.running("alice") == (run_id, since)
+    await settle(w)
     assert await w.rows("SELECT trigger, state FROM runs WHERE id = ?", run_id) == [
         ("sync_now", "ok")
     ]
+
+
+async def test_run_now_during_a_run_reports_it_and_starts_none(w: World) -> None:
+    s = scheduler(w)
+    await s.resume()
+    first = await s.run_now("alice", "sync_now")
+    again = await s.run_now("alice", "sync_now")
+    assert again == (first[0], first[1], False)
+    await settle(w)
+    assert await w.rows("SELECT count(*) FROM runs WHERE trigger = 'sync_now'") == [(1,)]
+
+
+async def test_the_scheduler_closes_runs_asked_for_now(w: World) -> None:
+    s = scheduler(w)
+    await s.resume()
+    run_id, _, _ = await s.run_now("alice", "sync_now")
+    await s.close()
+    (state,) = (await w.rows("SELECT state FROM runs WHERE id = ?", run_id))[0]
+    assert state != "running"  # closed out before the database would go
+
+
+# --- the tools, called with their caller and services in place --------------------------------
+
+
+@pytest.fixture
+def bound(w: World, monkeypatch: pytest.MonkeyPatch) -> Scheduler:
+    import syncshelf.tools.sync as tools
+
+    s = scheduler(w)
+    monkeypatch.setattr(tools, "current_profile", lambda: "alice")
+    monkeypatch.setattr(
+        tools, "services", lambda: SimpleNamespace(scheduler=s, db=w.db, clock=w.clock.time)
+    )
+    return s
+
+
+async def test_sync_now_starts_a_run_then_reports_it_going(w: World, bound: Scheduler) -> None:
+    from syncshelf.tools.sync import sync_now
+
+    await bound.resume()
+    first = await sync_now()
+    (run,) = first["runs"]
+    assert run["started"] is True and "sync_status" in first["note"]
+    again = await sync_now()
+    assert again["runs"][0] == {**run, "started": False}
+    assert "already going" in again["note"]
+    await settle(w)
+
+
+async def test_retry_failed_releases_and_queues_a_run(w: World, bound: Scheduler) -> None:
+    from syncshelf.tools.sync import retry_failed
+
+    await bound.resume()
+    change = await quarantine(w, "alice")
+    assert await retry_failed(change) == {"released": [change], "run": "queued"}
+    assert bound.due("alice") == w.clock.time()
 
 
 # --- the tools through the app ----------------------------------------------------------------

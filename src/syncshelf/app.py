@@ -275,7 +275,7 @@ def create_app(
             mcp.bind(None)
             verifier.bind(None)
             if scheduler is not None:
-                scheduler.close()
+                await scheduler.close()
             try:
                 if goodreads is not None:
                     await goodreads.aclose()
