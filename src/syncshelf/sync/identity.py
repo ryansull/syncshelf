@@ -412,8 +412,9 @@ def rematch_rows(
 
 def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int) -> int:
     """Follow Hardcover's merges (§3.4a.4 rule 7): each ``merged`` book (old id → the book it
-    was merged into) is rewritten to the canonical book on its shared links and on every
-    profile's source rows, each rewrite logged as a ``merge``, never queued. Returns how many
+    was merged into) is rewritten to the canonical book on its shared links, on every
+    profile's source rows and on queued rows' candidates, each row's rewrite logged as a
+    ``merge``, never queued. Returns how many
     source rows moved."""
     moved = 0
     for old, canonical in merged.items():
@@ -426,6 +427,9 @@ def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int)
         ).fetchall()
         conn.execute("UPDATE links SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
         conn.execute("UPDATE source_rows SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
+        conn.execute(
+            "UPDATE match_candidates SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old)
+        )
         conn.executemany(
             "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, "
             "kind, old_value, new_value, at) VALUES (?, ?, ?, ?, ?, 'merge', ?, ?, ?)",

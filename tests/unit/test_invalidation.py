@@ -4,6 +4,7 @@ that profile only."""
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -109,3 +110,54 @@ async def test_a_profile_whose_shelves_contradict_the_shared_link_is_queued_alon
         assert await w.rows(
             "SELECT rank, hc_book_id FROM match_candidates WHERE profile = 'bob' ORDER BY rank"
         ) == [(1, 9), (2, 7)]
+
+
+async def test_a_merge_the_mapping_step_shows_is_followed(tmp_path: Path) -> None:
+    async with world(tmp_path, others=["bob"]) as w:
+        # Alice linked Goodreads' Dune to book 7; Hardcover has since merged 7 into 70.
+        w.hardcover.add_user_book(HC_USERS["alice"], 7, status_id=3)
+        w.hardcover.add_mapping(DUNE, 7, title="Dune")
+        w.goodreads.add_item(GR_USERS["alice"], DUNE, "Dune")
+        await w.sync.run_rss("alice")
+        w.hardcover.catalog[7]["canonical_id"] = 70
+        # Bob's first sighting of Dune Messiah looks the mapping step up, which shows it.
+        w.hardcover.add_user_book(HC_USERS["bob"], 70, status_id=3)
+        w.hardcover.add_mapping(200, 7, title="Dune")
+        w.goodreads.add_item(GR_USERS["bob"], 200, "Dune")
+        await w.sync.run_rss("bob")
+        assert await w.rows("SELECT DISTINCT hc_book_id FROM source_rows") == [(70,)]
+        assert await w.rows("SELECT hc_book_id FROM links ORDER BY source_id") == [(70,), (70,)]
+
+
+async def test_a_link_on_a_merged_away_book_is_not_a_conflict(tmp_path: Path) -> None:
+    async with world(tmp_path, others=["bob"]) as w:
+        await w.db.write(
+            lambda conn: conn.execute(
+                "INSERT INTO links (source, source_id, hc_book_id, method, linked_at, "
+                "last_seen_at) VALUES ('goodreads', ?, 7, 'gr_mapping', 0, 0)",
+                (str(DUNE),),
+            )
+        )
+        # Book 7 was merged into 70, which is what bob has shelved.
+        w.hardcover.add_mapping(DUNE, 7, title="Dune")
+        w.hardcover.catalog[7]["canonical_id"] = 70
+        w.hardcover.add_user_book(HC_USERS["bob"], 70, status_id=3)
+        w.goodreads.add_item(GR_USERS["bob"], DUNE, "Dune")
+        await w.sync.run_rss("bob")
+        assert await w.rows("SELECT state, hc_book_id FROM source_rows") == [("linked", 70)]
+
+
+def test_a_merge_moves_candidates_too(schema: Any) -> None:
+    with schema:
+        schema.execute("INSERT INTO profiles (name, created_at) VALUES ('alice', 0)")
+        schema.execute(
+            "INSERT INTO source_rows (profile, source, source_id, state, queue_reason, "
+            "queued_at, first_seen_at, last_seen_at) VALUES ('alice', 'goodreads', '1', "
+            "'queued', 'fuzzy_low', 0, 0, 0)"
+        )
+        schema.execute(
+            "INSERT INTO match_candidates (profile, source, source_id, rank, hc_book_id, method,"
+            " fetched_at) VALUES ('alice', 'goodreads', '1', 1, 7, 'fuzzy', 0)"
+        )
+        identity.follow_merges(schema, {7: 70}, 1)
+    assert schema.execute("SELECT hc_book_id FROM match_candidates").fetchall() == [(70,)]

@@ -55,6 +55,7 @@ from syncshelf.clients.hardcover import (
     HardcoverError,
     HardcoverRateLimited,
     HardcoverUnavailable,
+    Library,
 )
 from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
@@ -240,10 +241,13 @@ class GoodreadsSync:
         assert batch.observed_at is not None
         observations = {obs.source_id: obs for obs in batch.rows}
 
+        matched: Library | None = None
         if observed.new or observed.rematch:
             # Matching only reads Hardcover, so it doesn't hold the apply lock.
             try:
-                added = await self._add(profile, batch, observed.new, observed.rematch, rows)
+                added, matched = await self._add(
+                    profile, batch, observed.new, observed.rematch, rows
+                )
             except (HardcoverError, FetchFailed) as exc:
                 # The books stay as they were, so the next run matches them; the rest goes on.
                 counts.error(str(exc) if isinstance(exc, FetchFailed) else scrub(str(exc)))
@@ -265,7 +269,8 @@ class GoodreadsSync:
             writes = [plan for plan in plans if plan.target is not None]
             if writes:
                 try:
-                    library = await self._mirror.fetch(profile)
+                    # The fetch this run made for matching, if it made one, serves here too.
+                    library = matched or await self._mirror.fetch(profile)
                     writes = await self._ready(profile, writes, library.user_books, counts)
                 except FetchFailed as exc:
                     counts.error(str(exc))
@@ -295,21 +300,29 @@ class GoodreadsSync:
         new: list[Observation],
         rematch: list[Observation],
         rows: Mapping[str, SourceRow],
-    ) -> list[Pending]:
+    ) -> tuple[list[Pending], Library | None]:
         """Match the books first seen now and add them from an empty baseline (§3.4a.6,
         rule 3), and re-match the queued rows whose match input changed, returning the
         pending changes on the rows now linked. Unlike the backfill, a match links whether or
         not the book is on the profile's shelves, and a clear fuzzy match links too; but a
-        row the backfill queued is re-matched by the backfill's rules (§3.4a.12)."""
+        row the backfill queued is re-matched by the backfill's rules (§3.4a.12). Also returns
+        the library fetched for that, which the run's writes use (it is this run's fetch)."""
         later = [
             obs for obs in [*new, *rematch] if not rows.get(obs.source_id, _NEW).backfill_queued
         ]
         backfilled = [obs for obs in rematch if rows[obs.source_id].backfill_queued]
-        # The profile's shelves, for the backfill's rules and the conflict check.
-        library = await self._mirror.fetch(profile)
-        shelved = _shelved(library.user_books)
+        # The profile's shelves, for the backfill's rules and the conflict check. Without
+        # them, matching goes on: the conflict check is skipped, and the backfill-queued rows
+        # wait for a run that has them.
+        library: Library | None
+        try:
+            library = await self._mirror.fetch(profile)
+            shelved: dict[int, int] | None = _shelved(library.user_books)
+        except FetchFailed:
+            library, shelved = None, None
+            backfilled, rematch = [], [o for o in rematch if o not in backfilled]
         placements = await self._placements(profile, later, shelved=None, on_shelves=shelved)
-        if backfilled:
+        if backfilled and shelved is not None:
             placements += await self._placements(profile, backfilled, shelved=shelved)
         changed = {obs.source_id for obs in rematch}
         now = int(self._clock.time())
@@ -341,7 +354,7 @@ class GoodreadsSync:
             },
         )
         relinked = await self._db.read(identity.pending_for, profile, SOURCE, changed)
-        return [*added, *relinked]
+        return [*added, *relinked], library
 
     async def _placements(
         self,
@@ -367,13 +380,18 @@ class GoodreadsSync:
             if obs.source_id not in shared and obs.source_id not in stale
         ]
         vanished: set[int] = set()
+        merges: dict[int, int] = {}
         outcomes = (
-            await match(client, inputs, accept_fuzzy=shelved is None, vanished=vanished)
+            await match(
+                client,
+                inputs,
+                accept_fuzzy=shelved is None,
+                vanished=vanished,
+                merges=merges,
+            )
             if inputs
             else {}
         )
-        if vanished:
-            await self._stale(vanished)
         # A shared link's book that isn't on this profile's shelves may contradict them: the
         # exact ids may put this profile's copy on another book it has (§3.4a.4 rule 6).
         checks = [
@@ -382,7 +400,16 @@ class GoodreadsSync:
             if (hit := shared.get(obs.source_id)) and on_shelves is not None
             and hit.book_id not in on_shelves
         ]  # fmt: skip
-        own = await match(client, checks, accept_fuzzy=False) if checks else {}
+        own = (
+            await match(client, checks, accept_fuzzy=False, merges=merges, exact_only=True)
+            if checks
+            else {}
+        )
+        if merges or vanished:
+            # What the lookups showed moves the links first, so rows are placed on the books
+            # Hardcover has now (§3.4a.4 rule 7).
+            await self._follow(merges, vanished)
+            shared, stale = await self._db.read(identity.shared_links, SOURCE, ids)
         placements = []
         for obs in observations:
             if obs.source_id in stale:
@@ -396,7 +423,7 @@ class GoodreadsSync:
                 and mine is not None
                 and on_shelves is not None
                 and mine.book_id in on_shelves
-                and mine.book_id != shared_hit.book_id
+                and shared_hit.book_id not in (mine.book_id, mine.merged_from)
             )
             if conflicts:
                 assert shared_hit is not None and mine is not None
@@ -409,10 +436,17 @@ class GoodreadsSync:
             placements.append(_place(obs, outcome, shelved))
         return placements
 
-    async def _stale(self, books: set[int]) -> None:
-        """Books a by-id lookup didn't find: their links are re-queued (§3.4a.4 rule 7)."""
+    async def _follow(self, merges: dict[int, int], vanished: set[int]) -> None:
+        """What a lookup showed about books already linked (§3.4a.4 rule 7): a merge moves
+        their links and rows to the canonical book; a book a by-id lookup didn't find makes
+        its links stale and re-queues its rows."""
         now = int(self._clock.time())
-        if queued := await self._db.write(identity.mark_stale, books, now):
+        if merges and (moved := await self._db.write(identity.follow_merges, merges, now)):
+            log.info(
+                "followed Hardcover merges onto the books they became",
+                extra={"event": "merges_followed", "count": moved},
+            )
+        if vanished and (queued := await self._db.write(identity.mark_stale, vanished, now)):
             log.warning(
                 "Hardcover no longer has some linked books; their rows are queued",
                 extra={"event": "rows_stale", "count": queued},

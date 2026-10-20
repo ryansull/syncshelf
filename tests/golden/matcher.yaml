@@ -104,6 +104,7 @@ decide:
 #   hardcover.books:    {book: {title, canonical}}
 #   hardcover.editions: [{id, book, isbn_13?, isbn_10?}]
 #   hardcover.search:   [{book, title, authors}]          (Typesense documents, in rank order)
+#   hardcover.vanished: [book]                            (searchable, but gone by id)
 chain:
   - name: the Goodreads mapping wins
     hardcover:
@@ -263,3 +264,11 @@ chain:
     row: {id: "100", title: Dune, author: Frank Herbert}
     accept_fuzzy: true
     expect: {method: fuzzy, book: 7}
+
+  - name: a search hit Hardcover no longer has by id is not a candidate
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+      vanished: [7]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: no_hit, candidates: []}

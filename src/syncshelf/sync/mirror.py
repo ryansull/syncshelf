@@ -152,7 +152,6 @@ class Mirror:
             library = await self._clients[profile].library()
             now = int(self._clock())
             await self._db.write(replace_library, profile, library, now)
-            await self._follow(library.user_books, now)
         except _REFRESH_ERRORS as exc:
             self._last[profile] = await self._failed(profile, exc)
             raise
@@ -166,6 +165,7 @@ class Mirror:
             },
         )
         self._last[profile] = Freshness(now)
+        await self._follow(library.user_books, now)
         return library
 
     async def _follow(self, user_books: Iterable[Mapping[str, Any]], now: int) -> None:
@@ -176,7 +176,15 @@ class Mirror:
             for ub in user_books
             if (canonical := (ub.get("book") or {}).get("canonical_id"))
         }
-        if merged and (moved := await self._db.write(follow_merges, merged, now)):
+        if not merged:
+            return
+        try:
+            moved = await self._db.write(follow_merges, merged, now)
+        except sqlite3.Error:
+            # The copy is current all the same; the next fetch tries the merges again.
+            log.exception("following Hardcover merges failed", extra={"event": "merges_failed"})
+            return
+        if moved:
             log.info(
                 "followed Hardcover merges onto the books they became",
                 extra={"event": "merges_followed", "count": moved},

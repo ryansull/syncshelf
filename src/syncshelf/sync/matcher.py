@@ -270,6 +270,8 @@ class IdHit:
     method: Method
     reading_format_id: int | None = None
     """The edition's format: 1 physical, 2 audio, 3 both, 4 ebook, or unknown."""
+    merged_from: int | None = None
+    """The book Hardcover named before ``canonical_id`` was followed, when they differ."""
 
 
 async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dict[str, list[IdHit]]:
@@ -287,13 +289,15 @@ async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dic
                 continue
             book = row.get("book") or {}
             edition = row.get("edition") or {}
+            canonical = book.get("canonical_id")
             hit = IdHit(
                 # A merged book counts as the book it was merged into.
-                book_id=book.get("canonical_id") or book_id,
+                book_id=canonical or book_id,
                 edition_id=row.get("edition_id"),
                 title=book.get("title") or "",
                 method="gr_mapping",
                 reading_format_id=edition.get("reading_format_id"),
+                merged_from=book_id if canonical and canonical != book_id else None,
             )
             _add_distinct(hits.setdefault(str(external_id), []), hit)
     return hits
@@ -314,12 +318,14 @@ async def isbn_editions(
             if isbn is None or book_id is None:
                 continue
             book = row.get("book") or {}
+            canonical = book.get("canonical_id")
             hit = IdHit(
-                book_id=book.get("canonical_id") or book_id,
+                book_id=canonical or book_id,
                 edition_id=row.get("id"),
                 title=book.get("title") or "",
                 method=method,
                 reading_format_id=row.get("reading_format_id"),
+                merged_from=book_id if canonical and canonical != book_id else None,
             )
             _add_distinct(hits.setdefault(str(isbn), []), hit)
     return hits
@@ -371,6 +377,8 @@ async def match(
     *,
     accept_fuzzy: bool,
     vanished: set[int] | None = None,
+    merges: dict[int, int] | None = None,
+    exact_only: bool = False,
 ) -> dict[str, Outcome]:
     """Run the chain over ``rows`` (§3.4a.5): the Goodreads mapping, then ISBN-13, then
     ISBN-10, then fuzzy. The first step yielding an **accepted** hit wins:
@@ -388,7 +396,9 @@ async def match(
 
     The id steps are batched across rows; fuzzy costs at most 2 searches and 1 hydrate per
     row that reaches it. Books a hydrate asked for and Hardcover didn't return are added to
-    ``vanished`` (§3.4a.4 rule 7: a by-id lookup that finds no row).
+    ``vanished``, and every merge a lookup shows (old book → canonical) to ``merges``, for the
+    caller to follow (§3.4a.4 rule 7). ``exact_only`` stops before fuzzy: a row no id step
+    settles is ``no_hit``.
     """
     outcomes: dict[str, Outcome] = {}
     refused: dict[str, Outcome] = {}
@@ -409,8 +419,15 @@ async def match(
     for row in rest:
         if row.source_id in refused:
             outcomes[row.source_id] = refused[row.source_id]
+        elif exact_only:
+            outcomes[row.source_id] = Outcome(None, "no_hit")
         else:
-            outcomes[row.source_id] = await _fuzzy(client, row, accept_fuzzy, vanished)
+            outcomes[row.source_id] = await _fuzzy(client, row, accept_fuzzy, vanished, merges)
+    if merges is not None:
+        for outcome in outcomes.values():
+            for hit in [outcome.hit] if outcome.hit is not None else []:
+                if hit.merged_from is not None:
+                    merges[hit.merged_from] = hit.book_id
     return outcomes
 
 
@@ -447,7 +464,11 @@ def _decide(
 
 
 async def _fuzzy(
-    client: HardcoverClient, row: MatchInput, accept: bool, vanished: set[int] | None
+    client: HardcoverClient,
+    row: MatchInput,
+    accept: bool,
+    vanished: set[int] | None,
+    merges: dict[int, int] | None,
 ) -> Outcome:
     hits = await search_candidates(client, row.title, row.author)
     kept = [h for h in hits if h.scored.title >= TITLE_FLOOR]
@@ -459,6 +480,8 @@ async def _fuzzy(
     canonical = {b["id"]: b.get("canonical_id") for b in result.data.get("books") or []}
     if vanished is not None:
         vanished.update(h.book_id for h in kept if h.book_id not in canonical)
+    if merges is not None:
+        merges.update({old: new for old, new in canonical.items() if new and new != old})
     kept = [h for h in kept if h.book_id in canonical]
     if not kept:
         return Outcome(None, "no_hit")
