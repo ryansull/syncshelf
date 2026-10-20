@@ -231,21 +231,23 @@ class GoodreadsSync:
         assert batch.observed_at is not None
         observations = {obs.source_id: obs for obs in batch.rows}
 
+        if observed.new or observed.rematch:
+            # Matching only reads Hardcover, so it doesn't hold the apply lock.
+            try:
+                added = await self._add(profile, batch, observed.new, observed.rematch, rows)
+            except (HardcoverError, FetchFailed) as exc:
+                # The books stay as they were, so the next run matches them; the rest goes on.
+                counts.error(str(exc) if isinstance(exc, FetchFailed) else scrub(str(exc)))
+                log.warning(
+                    "couldn't match books on Goodreads; the next run tries again",
+                    extra={"event": "match_failed", "profile": profile},
+                )
+            else:
+                rows = await self._db.read(identity.load_rows, profile, SOURCE)
+                work = _ready_to_push([*observed.pending, *added], rows)
+
         # Stages 3 and 4, under the profile's apply lock.
         async with self._applier.lock(profile):
-            if observed.new or observed.rematch:
-                try:
-                    added = await self._add(profile, batch, observed.new, observed.rematch)
-                except HardcoverError as exc:
-                    # The books stay new, so the next run matches them; the rest goes on.
-                    counts.error(scrub(str(exc)))
-                    log.warning(
-                        "couldn't match books first seen on Goodreads; next run tries again",
-                        extra={"event": "match_failed", "profile": profile},
-                    )
-                else:
-                    rows = await self._db.read(identity.load_rows, profile, SOURCE)
-                    work = _ready_to_push([*observed.pending, *added], rows)
             plans = _plans(work, observations, rows, goodreads.shelf_map, zone)
             # What needs no Hardcover write settles first, never costing the fetch.
             for plan in plans:
@@ -274,12 +276,22 @@ class GoodreadsSync:
         batch: Batch,
         new: list[Observation],
         rematch: list[Observation],
+        rows: Mapping[str, SourceRow],
     ) -> list[Pending]:
         """Match the books first seen now and add them from an empty baseline (§3.4a.6,
         rule 3), and re-match the queued rows whose match input changed, returning the
         pending changes on the rows now linked. Unlike the backfill, a match links whether or
-        not the book is on the profile's shelves, and a clear fuzzy match links too."""
-        placements = await self._placements(profile, [*new, *rematch], shelved=None)
+        not the book is on the profile's shelves, and a clear fuzzy match links too; but a
+        row the backfill queued is re-matched by the backfill's rules (§3.4a.12)."""
+        later = [
+            obs for obs in [*new, *rematch] if not rows.get(obs.source_id, _NEW).backfill_queued
+        ]
+        backfilled = [obs for obs in rematch if rows[obs.source_id].backfill_queued]
+        placements = await self._placements(profile, later, shelved=None)
+        if backfilled:
+            library = await self._mirror.fetch(profile)
+            shelved = _shelved(library.user_books)
+            placements += await self._placements(profile, backfilled, shelved=shelved)
         changed = {obs.source_id for obs in rematch}
         now = int(self._clock.time())
         added = await self._db.write(
@@ -411,18 +423,18 @@ class GoodreadsSync:
         self, profile: str, batch: Batch, run_id: int, counts: RunCounts
     ) -> RunState:
         """The map-only backfill (§3.4a.12): reads Hardcover, never writes it."""
-        async with self._applier.lock(profile):
-            try:
-                library = await self._mirror.fetch(profile)
-                placements = await self._placements(
-                    profile, list(batch.rows), shelved=_shelved(library.user_books)
-                )
-            except FetchFailed as exc:
-                counts.error(str(exc))
-                return "deferred"
-            except HardcoverError as exc:
-                counts.error(scrub(str(exc)))
-                return "deferred"
+        # Matching only reads Hardcover, so it doesn't hold the apply lock.
+        try:
+            library = await self._mirror.fetch(profile)
+            placements = await self._placements(
+                profile, list(batch.rows), shelved=_shelved(library.user_books)
+            )
+        except FetchFailed as exc:
+            counts.error(str(exc))
+            return "deferred"
+        except HardcoverError as exc:
+            counts.error(scrub(str(exc)))
+            return "deferred"
         now = int(self._clock.time())
         linked, queued = await self._db.write(
             identity.record_backfill, profile, SOURCE, batch, placements, run_id, now
@@ -528,6 +540,10 @@ class GoodreadsSync:
                 "run_id": run_id,
             },
         )
+
+
+_NEW = SourceRow("", "queued", None, None)
+"""What a row not yet in the database looks like to :meth:`GoodreadsSync._add`."""
 
 
 def _place(obs: Observation, outcome: Outcome, shelved: Mapping[int, int] | None) -> Placement:

@@ -218,3 +218,48 @@ chain:
     row: {id: "100", title: Dune, author: Frank Herbert}
     accept_fuzzy: true
     expect: {reason: no_hit, candidates: []}
+
+  - name: a refused mapping lets an exact ISBN settle the row (#190)
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}]}
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {method: isbn13, book: 7}
+
+  - name: an ambiguous mapping lets an exact ISBN settle the row (#190)
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}, {book: 9, title: Dune}]}
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {method: isbn13, book: 7}
+
+  - name: a title search never overrides an exact id that disagreed (#190)
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}]}
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: id_title_mismatch, candidates: [9]}
+
+  - name: an ISBN naming several books is ambiguous too (#190)
+    hardcover:
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}, {id: 72, book: 8, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}, 8: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {reason: ambiguous_mapping, candidates: [7, 8]}
+
+  - name: an ambiguous mapping lists its best-titled book first
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}, {book: 7, title: Dune}]}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {reason: ambiguous_mapping, candidates: [7, 9]}
+
+  - name: two search records of one merged book are one candidate, so it links
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}, {book: 11, title: Dune, authors: [Frank Herbert]}]
+      books: {11: {title: Dune, canonical: 7}}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {method: fuzzy, book: 7}

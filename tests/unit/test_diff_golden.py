@@ -147,6 +147,11 @@ async def _check(
             log_before,
         )
         assert [list(r) for r in found] == expect["log"]
+    for source_id, (state, reason) in (expect.get("rows") or {}).items():
+        found = await w.rows(
+            "SELECT state, queue_reason FROM source_rows WHERE source_id = ?", str(source_id)
+        )
+        assert found == [(state, reason)], f"row {source_id}"
     if "gone" in expect:
         found = await w.rows(
             "SELECT source_id FROM source_rows WHERE gone_at IS NOT NULL ORDER BY source_id"

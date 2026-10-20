@@ -100,3 +100,19 @@ async def test_an_ignored_row_is_never_matched_or_pushed(w: World) -> None:
     assert await w.rows("SELECT state, hc_book_id FROM source_rows WHERE source_id = '300'") == [
         ("ignored", None)
     ]
+
+
+async def test_a_conflict_waits_for_a_person_even_when_its_details_change(w: World) -> None:
+    await w.db.write(
+        lambda conn: conn.execute(
+            "UPDATE source_rows SET queue_reason = 'profile_conflict' WHERE source_id = '300'"
+        )
+    )
+    w.hardcover.add_mapping(300, 5, title="Orphan (Revised)")
+    w.clock.advance(3600)
+    item = next(i for i in w.goodreads.users[GR_USER].items if i["book_id"] == "300")
+    item["title"] = "Orphan (Revised)"
+    await w.sync.run_rss("alice")
+    assert await w.rows("SELECT state, queue_reason FROM source_rows WHERE source_id = '300'") == [
+        ("queued", "profile_conflict")
+    ]
