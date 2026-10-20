@@ -53,6 +53,7 @@ from syncshelf.clients.hardcover import (
     HardcoverCapacityError,
     HardcoverClient,
     HardcoverError,
+    HardcoverRateLimited,
     HardcoverUnavailable,
 )
 from syncshelf.config import ProfileConfig
@@ -76,7 +77,7 @@ from syncshelf.sync.apply import (
     Target,
 )
 from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, SourceRow
-from syncshelf.sync.limiter import Deferred
+from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
@@ -275,9 +276,13 @@ class GoodreadsSync:
                 for plan in _shelf_first(writes, rows):
                     await self._apply(profile, plan, batch.observed_at, run_id, counts)
             except Deferred as exc:
-                # The daily reserve: what's left waits for the reset, uncounted (§3.3.3).
+                # The daily reserve: what's left waits for the reset, uncounted (§3.3.3). The
+                # run is deferred only if nothing was done before it.
                 counts.error(scrub(str(exc)))
-                return "deferred"
+                return "deferred" if not (counts.applied or counts.failed) else "partial"
+            except _Unavailable as exc:
+                counts.error(str(exc))
+                return "partial"
         if counts.failed or not batch.complete:
             return "partial"
         return "ok"
@@ -478,10 +483,14 @@ class GoodreadsSync:
                 applied = await self._applier.apply(
                     profile, plan.hc_book_id, plan.target, trigger=TRIGGER, locked=True
                 )
-            except Deferred:
-                raise
             except (HardcoverError, *REFUSALS) as exc:
-                kind = _error_class(exc)
+                # A change left partly done says why in its cause (the procedure wraps it).
+                cause = exc.__cause__ if isinstance(exc, Incomplete) else exc
+                if isinstance(cause, Deferred):
+                    raise cause from None
+                if isinstance(cause, HardcoverRateLimited):
+                    raise _Unavailable(scrub(str(cause))) from None  # a 429 isn't a failure
+                kind = _error_class(cause if isinstance(cause, Exception) else exc)
                 reason = _failure(exc, plan.hc_book_id)
                 if kind == "transient" and delay is not None:
                     log.warning(
@@ -498,6 +507,10 @@ class GoodreadsSync:
                     await self._clock.sleep(delay)
                     continue
                 await self._failed(profile, plan, kind, reason, counts)
+                if kind == "transient":
+                    # Hardcover is down for now: the rest wait for the next run, rather than
+                    # each holding the apply lock through its own retries.
+                    raise _Unavailable(reason) from None
                 return
             await self._settle(profile, plan, observed_at, applied, run_id)
             counts.applied += 1
@@ -515,7 +528,7 @@ class GoodreadsSync:
         if quarantined:
             counts.quarantined += 1
         for change in plan.settles:
-            if quarantined:
+            if change.baseline_id in quarantined:
                 log.error(
                     "a Goodreads change is quarantined: %s",
                     reason,
@@ -650,12 +663,18 @@ RETRY_DELAYS = (2.0, 8.0)
 """Seconds before each in-run retry of a transient failure (§3.4a.7)."""
 
 
+class _Unavailable(Exception):
+    """Hardcover can't take writes for now (a transient failure out of retries, or a 429
+    the limiter gave up on): the run's remaining changes wait, uncounted, for the next run."""
+
+
 def _error_class(exc: Exception) -> ErrorClass:
     """A failure's class (§3.4a.7): ``transient`` (5xx, timeout, network; a change left
     partly done, which a replay completes), ``bug`` (``403 request_exceeds_capacity``), or
     ``permanent`` (a 200 with ``error``, any other 4xx, a change the write procedure
-    refuses). A 429 never gets here: the limiter waits it out."""
-    if isinstance(exc, HardcoverCapacityError):
+    refuses). A 429 isn't a failure: the limiter waits it out, and one it gives up on
+    leaves the run's changes for the next run."""
+    if isinstance(exc, HardcoverCapacityError | TooCostly):
         return "bug"
     if isinstance(exc, HardcoverUnavailable | Incomplete):
         return "transient"

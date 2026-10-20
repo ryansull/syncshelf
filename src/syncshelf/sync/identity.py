@@ -422,11 +422,11 @@ def record_failure(
     error_class: ErrorClass,
     error: str,
     now: int,
-) -> bool:
+) -> set[int]:
     """Count one failed attempt on a change's baselines, which stay pending (§3.4a.7). A
     ``bug`` is quarantined at once; any other class once it has failed for
     :data:`QUARANTINE_AFTER` and :data:`QUARANTINE_ATTEMPTS` times. ``error`` must already be
-    scrubbed. Returns whether the change is now quarantined."""
+    scrubbed. Returns the baselines now quarantined (each keeps its own history)."""
     ids = list(baseline_ids)
     conn.executemany(
         "UPDATE baseline_fields SET attempts = attempts + 1, "
@@ -441,11 +441,11 @@ def record_failure(
     )  # fmt: skip
     marks = ",".join("?" * len(ids))
     found = conn.execute(
-        f"SELECT count(*) FROM baseline_fields WHERE quarantined_at IS NOT NULL "  # noqa: S608
+        f"SELECT id FROM baseline_fields WHERE quarantined_at IS NOT NULL "  # noqa: S608
         f"AND id IN ({marks})",
         ids,
-    ).fetchone()
-    return bool(found[0])
+    )
+    return {row[0] for row in found}
 
 
 def release_quarantine(conn: sqlite3.Connection, profile: str | None = None) -> int:

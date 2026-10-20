@@ -50,6 +50,7 @@ __all__ = [
     "Priority",
     "ServeStale",
     "SystemClock",
+    "TooCostly",
     "interactive",
 ]
 
@@ -112,6 +113,10 @@ class SystemClock:
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+
+class TooCostly(HardcoverError):
+    """A call costing more than the bucket can ever hold: a bug in SyncShelf, never sent."""
 
 
 class ServeStale(HardcoverError):
@@ -201,7 +206,7 @@ class HardcoverLimiter:
                 "a Hardcover query costs more than the limiter's bucket holds; this is a bug",
                 extra={"event": "hardcover_capacity_bug", "profile": self.profile, "cost": cost},
             )
-            raise HardcoverError(
+            raise TooCostly(
                 f"a Hardcover call costing {cost} can never fit a bucket of {self._burst}"
             )
         waiter = _Waiter(_PRIORITY.get(), next(self._seq), cost)

@@ -154,9 +154,9 @@ def test_quarantine_needs_24_hours_and_3_attempts(
 ) -> None:
     with schema:
         baseline = failing(schema, attempts_before, T0 if attempts_before else None)
-        assert identity.record_failure(schema, [baseline], "permanent", "no", T0 + elapsed) is (
-            quarantined
-        )
+        now = T0 + elapsed
+        found = identity.record_failure(schema, [baseline], "permanent", "no", now)
+        assert (baseline in found) is quarantined
 
 
 async def test_24_hours_alone_is_not_enough(w: World) -> None:
@@ -219,3 +219,47 @@ async def test_the_daily_reserve_defers_the_run_without_counting_a_failure(
         assert error is not None and "reserve" in error
         assert updates(w) == 0
         assert (await rating(w))[1:3] == ("5", 0)
+
+
+# --- review follow-ups ----------------------------------------------------------------------
+
+
+async def two_changes(w: World) -> None:
+    """Dune and a second linked book, both with a rating change pending."""
+    w.hardcover.add_user_book(HC_USER, 8, status_id=3, rating=2.0)
+    w.hardcover.add_mapping(200, 8, title="Dune Messiah")
+    w.goodreads.add_item(GR_USER, 200, "Dune Messiah", user_rating="2")
+    await w.sync.run_rss("alice")  # Messiah's first sighting is pushed: it's already 2
+    w.clock.advance(HOUR)
+    for item in w.goodreads.users[GR_USER].items:
+        item["user_rating"] = "5"
+
+
+async def test_hardcover_down_leaves_the_runs_other_changes_for_the_next_run(w: World) -> None:
+    await two_changes(w)
+    for _ in range(3):
+        w.hardcover.fail_next("UpdateUserBook", "unavailable")
+    state, applied, failed, *_ = await run(w)
+    # The first change used up its retries; the second wasn't tried, nor counted.
+    assert (state, applied, failed) == ("partial", 0, 1)
+    assert updates(w) == 3
+    assert await w.rows("SELECT count(*) FROM baseline_fields WHERE attempts > 0") == [(1,)]
+
+
+async def test_a_429_the_limiter_gives_up_on_is_no_failure(w: World) -> None:
+    rate(w, "5")
+    for _ in range(10):  # more than the limiter retries
+        w.hardcover.fail_next("UpdateUserBook", "rate_limited", retry_after=1)
+    state, applied, failed, *_ = await run(w)
+    assert (state, applied, failed) == ("partial", 0, 0)
+    assert (await rating(w))[1:3] == ("5", 0)
+
+
+async def test_a_reserve_hit_after_a_write_makes_the_run_partial(tmp_path: Path) -> None:
+    async with world(tmp_path, reserve=1000) as w:
+        await linked(w)
+        await two_changes(w)
+        # Budget for the fetch and one change, then the reserve.
+        w.hardcover.daily_remaining = 1003
+        state, applied, failed, *_ = await run(w)
+        assert (state, applied, failed) == ("partial", 1, 0)

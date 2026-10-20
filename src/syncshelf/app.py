@@ -204,15 +204,14 @@ def create_app(
                     "marked runs left running by the last process as aborted",
                     extra={"event": "runs_aborted", "count": aborted},
                 )
-            await _purge(db, clock)
             # A new version releases every quarantined change once (§2.2 step 4, #50).
-            released = await db.write(release_on_new_version, __version__)
-            if released is not None:
+            if released := await db.write(release_on_new_version, __version__):
                 log.info(
                     "a new SyncShelf version released quarantined changes",
                     extra={"event": "quarantine_released", "count": released},
                 )
             _log_startup(config, db)
+            await _purge(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
