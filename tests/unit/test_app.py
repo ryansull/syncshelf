@@ -183,7 +183,8 @@ class TestLifespan:
         with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn, conn:
             conn.execute(
                 "INSERT INTO runs (profile, source, trigger, started_at, state) "
-                "VALUES ('alice', 'gr_rss', 'schedule', 1, 'running')"
+                "VALUES ('alice', 'gr_rss', 'schedule', ?, 'running')",
+                (int(clock.time()),),  # recent: runs over 90 days old are purged at startup
             )
         async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
             pass
