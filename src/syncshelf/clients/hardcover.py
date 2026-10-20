@@ -480,6 +480,11 @@ class HardcoverClient:
         """Close the underlying connection pool."""
         await self._http.aclose()
 
+    @property
+    def gate(self) -> Gate | None:
+        """The profile's limiter, which ``sync_status`` reports on."""
+        return self._gate
+
     async def execute(self, query: str, variables: Mapping[str, Any] | None = None) -> Result:
         """Send one GraphQL operation through the gate and return its ``data``.
 
