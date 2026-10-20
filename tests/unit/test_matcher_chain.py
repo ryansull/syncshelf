@@ -35,6 +35,8 @@ def fake_for(hardcover: dict[str, Any]) -> FakeHardcover:
         fake.add_search_doc(doc["book"], doc["title"], author_names=doc["authors"])
         if doc["book"] in books:
             fake.catalog[doc["book"]]["canonical_id"] = books[doc["book"]].get("canonical")
+    for book_id in hardcover.get("vanished") or []:
+        del fake.catalog[book_id]  # Typesense still shows it; Hardcover by id doesn't
     return fake
 
 
