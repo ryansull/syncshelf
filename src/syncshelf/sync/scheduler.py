@@ -93,6 +93,7 @@ class Scheduler:
         self._profiles = sorted(p for p in profiles if sync.enabled(p))
         self._loops: dict[str, _Loop] = {}
         self._wake = asyncio.Event()
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def resume(self) -> None:
         """Load each loop's next run from ``schedules`` (§3.4a.9), creating the rows of loops
@@ -117,6 +118,79 @@ class Scheduler:
         now = self._clock.time()
         loop.due, loop.trigger, loop.nudged = now, trigger, now
         self._wake.set()
+
+    def enabled(self, profile: str) -> bool:
+        """Whether the profile has a sync loop."""
+        return profile in self._loops
+
+    def running(self, profile: str) -> tuple[int, int] | None:
+        """The profile's run in progress, as (run id, when it started), if one is."""
+        return self._sync.running(profile)
+
+    async def run_now(self, profile: str, trigger: Trigger) -> tuple[int, int, bool]:
+        """Start a run of the profile's source now, as a task the scheduler holds (not tied
+        to the request that asked), and return (run id, when it started, True) once it has
+        an id (§3.4a.9). If a run is already going, return its (id, start, False) instead:
+        the lock is taken here, at once, so a tick or a second call can't slip in between.
+        The run is recorded on the loop's schedule like any other."""
+        lock = self._sync.lock(profile)
+        if lock.locked():
+            return (*await self._going(profile), False)
+        await lock.acquire()  # free and unwaited, so taken without yielding
+        started: asyncio.Future[tuple[int, int]] = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(self._run_now(profile, trigger, started, lock))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return (*await started, True)
+
+    async def _going(self, profile: str) -> tuple[int, int]:
+        """The run in progress: the engine's, or, in the moment before it has written its
+        row, the latest one that SQLite says is running."""
+        while (going := self._sync.running(profile)) is None:
+            found = await self._db.read(_latest_running, profile)
+            if found is not None:
+                return found
+            await asyncio.sleep(0)
+        return going
+
+    async def _run_now(
+        self,
+        profile: str,
+        trigger: Trigger,
+        started: asyncio.Future[tuple[int, int]],
+        lock: asyncio.Lock,
+    ) -> None:
+        def told(run_id: int, at: int) -> None:
+            if not started.done():
+                started.set_result((run_id, at))
+
+        try:
+            result = await self._sync.run_rss(profile, trigger, told, held=True)
+            next_due = await self._db.write(
+                _record, profile, result, int(self._clock.time()), self._interval
+            )
+            loop = self._loops.get(profile)
+            if loop is not None and loop.nudged is None:  # a run asked for meanwhile stands
+                loop.due = next_due + self._jitter()
+        except Exception as exc:
+            if not started.done():
+                started.set_exception(exc)
+            log.exception(
+                "a Goodreads run asked for now failed",
+                extra={"event": "run_now_failed", "profile": profile},
+            )
+        finally:
+            lock.release()
+            if not started.done():  # cancelled before the run had an id
+                started.cancel()
+
+    async def close(self) -> None:
+        """Cancel the runs asked for now that are still going, and wait for them to unwind,
+        so they close their run rows before the database goes (at shutdown)."""
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def tick(self) -> list[RunResult]:
         """Run every loop that is due now, one at a time, and schedule each one's next run."""
@@ -214,6 +288,15 @@ def _create(conn: sqlite3.Connection, profile: str, due: int) -> None:
         "ON CONFLICT (profile, source) DO NOTHING",
         (profile, SOURCE, due),
     )
+
+
+def _latest_running(conn: sqlite3.Connection, profile: str) -> tuple[int, int] | None:
+    found = conn.execute(
+        "SELECT id, started_at FROM runs WHERE profile = ? AND source = ? AND state = 'running' "
+        "ORDER BY id DESC LIMIT 1",
+        (profile, SOURCE),
+    ).fetchone()
+    return (found[0], found[1]) if found else None
 
 
 def _reschedule(conn: sqlite3.Connection, profile: str, due: int) -> None:

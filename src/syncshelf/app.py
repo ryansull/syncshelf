@@ -199,6 +199,7 @@ def create_app(
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
         hardcover: dict[str, HardcoverClient] = {}
         goodreads: GoodreadsSync | None = None
+        scheduler: Scheduler | None = None
         try:
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
@@ -251,6 +252,7 @@ def create_app(
                     hardcover=hardcover,
                     applier=applier,
                     confirm=ConfirmTokens(clock),
+                    scheduler=scheduler,
                 )
             )
             async with AsyncExitStack() as stack:
@@ -272,6 +274,8 @@ def create_app(
         finally:
             mcp.bind(None)
             verifier.bind(None)
+            if scheduler is not None:
+                await scheduler.close()
             try:
                 if goodreads is not None:
                     await goodreads.aclose()

@@ -1,4 +1,5 @@
-"""``sync_status``: how a profile's syncs are doing (SPEC §3.4a.10).
+"""``sync_status``, ``sync_now`` and ``retry_failed``: how a profile's syncs are doing, and
+starting them (SPEC §3.4a.10, §3.4a.11).
 
 The caller's own profile in full detail: each source's last result, schedule and backoff,
 its backfill, its recent runs; the mirror; the Hardcover limiter; the quarantine, with what
@@ -17,10 +18,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from syncshelf import __version__
+from syncshelf.sync.identity import release_changes
 from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.tools import REGISTRY, current_profile, services
 
-__all__ = ["RECENT_RUNS", "QUARANTINE_SHOWN", "status", "sync_status"]
+__all__ = ["QUARANTINE_SHOWN", "RECENT_RUNS", "retry_failed", "status", "sync_now", "sync_status"]
 
 RECENT_RUNS = 3
 """Runs shown per source, besides every run in the last day that wasn't ``ok``..."""
@@ -285,3 +287,89 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
         hardcover=_limiter(gate),
         **detail,
     )
+
+
+class Started(TypedDict):
+    """A run ``sync_now`` started, or the one it found going."""
+
+    source: str
+    run_id: int
+    started: bool
+    """True when this call started it; false when it was already running."""
+    since: str
+    """When it started."""
+
+
+class SyncNow(TypedDict):
+    """``sync_now``'s answer: each source's run, and a line for Claude to relay."""
+
+    runs: list[Started]
+    note: str
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=False))
+async def sync_now(
+    source: Literal["goodreads", "abs", "all"] = "all", full: bool = False
+) -> SyncNow:
+    """Start a sync of the caller's sources now, rather than waiting for the schedule: use it
+    when the user has just changed something on Goodreads and wants it on Hardcover.
+
+    - source: "goodreads" (the shelf RSS feed), "abs", or "all" (the default, every source the
+      profile has).
+    - full: also run the full Goodreads library export. Not available yet.
+
+    It returns at once, with each run's id; a run already going is reported, not started
+    twice. It doesn't wait for the run: read sync_status a little later for the outcome.
+    """
+    if full:
+        raise ToolError(
+            "A full sync with the Goodreads library export arrives in phase 4b; "
+            "sync_now without full runs the shelf feed."
+        )
+    if source == "abs":
+        raise ToolError("Audiobookshelf syncing arrives in phase 5.")
+    caller = current_profile()
+    scheduler = services().scheduler
+    if not scheduler.enabled(caller):
+        raise ToolError("This profile has no Goodreads sync: its config has no goodreads section.")
+    run_id, since, new = await scheduler.run_now(caller, "sync_now")
+    started = Started(source="gr_rss", run_id=run_id, started=new, since=_iso(since) or "")
+    if not new:
+        note = f"A Goodreads run was already going (since {started['since']}, run {run_id})."
+    else:
+        note = "Started; read sync_status for how it went."
+    return SyncNow(runs=[started], note=note)
+
+
+class Released(TypedDict):
+    """``retry_failed``'s answer: what was released, and whether a run was queued."""
+
+    released: list[int]
+    """The change ids released, pending again."""
+    run: str
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True))
+async def retry_failed(change_id: int | Literal["all"]) -> Released:
+    """Try quarantined changes again: use it once the cause in sync_status's quarantine list
+    has been dealt with (Hardcover back up, a book fixed by hand).
+
+    - change_id: one change's id from sync_status (quarantine.items[].change_id), or "all"
+      for every one of the caller's quarantined changes.
+
+    The changes become pending again with their attempts started over, and a sync of the
+    caller's sources is queued straight away; read sync_status for how it went. Only the
+    caller's own changes can be released.
+    """
+    caller = current_profile()
+    bound = services()
+    wanted = None if change_id == "all" else [change_id]
+    released = await bound.db.write(release_changes, caller, wanted)
+    if change_id != "all" and not released:
+        raise ToolError(f"Change {change_id} isn't one of your quarantined changes.")
+    if released and bound.scheduler.enabled(caller):
+        bound.scheduler.nudge(caller, "sync_now")
+        run = "queued"
+    else:
+        run = "none"
+    return Released(released=released, run=run)

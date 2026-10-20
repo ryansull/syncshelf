@@ -40,7 +40,7 @@ a row with no Hardcover shelf entry known, waits for the row's status to be obse
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Protocol
@@ -136,6 +136,7 @@ class GoodreadsSync:
         self._clock = clock
         self._rss: dict[str, GoodreadsRss] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._running: dict[str, tuple[int, int]] = {}
         for name, profile in profiles.items():
             if profile.goodreads is None:
                 continue
@@ -162,18 +163,41 @@ class GoodreadsSync:
         when it's held."""
         return self._locks[profile]
 
-    async def run_rss(self, profile: str, trigger: Trigger = "schedule") -> RunResult:
-        """Run the profile's RSS source once and say how it ended, waiting for a run in
-        progress to finish first. Every outcome is on the run's row; this raises only for a
-        profile with no Goodreads source."""
-        rss = self._rss[profile]
-        async with self._locks[profile]:
-            return await self._locked_run(profile, rss, trigger)
+    def running(self, profile: str) -> tuple[int, int] | None:
+        """The profile's run in progress, as (run id, when it started), if one is."""
+        return self._running.get(profile)
 
-    async def _locked_run(self, profile: str, rss: GoodreadsRss, trigger: Trigger) -> RunResult:
+    async def run_rss(
+        self,
+        profile: str,
+        trigger: Trigger = "schedule",
+        started: Callable[[int, int], None] | None = None,
+        *,
+        held: bool = False,
+    ) -> RunResult:
+        """Run the profile's RSS source once and say how it ended, waiting for a run in
+        progress to finish first (unless the caller already ``held`` the lock for it).
+        ``started`` hears the run's id and start time as soon as it has them. Every outcome
+        is on the run's row; this raises only for a profile with no Goodreads source."""
+        rss = self._rss[profile]
+        if held:  # the caller took the lock for this run, and releases it
+            return await self._locked_run(profile, rss, trigger, started)
+        async with self._locks[profile]:
+            return await self._locked_run(profile, rss, trigger, started)
+
+    async def _locked_run(
+        self,
+        profile: str,
+        rss: GoodreadsRss,
+        trigger: Trigger,
+        told: Callable[[int, int], None] | None,
+    ) -> RunResult:
         started = int(self._clock.time())
         began = self._clock.monotonic()
         run_id = await self._db.write(runs.start, profile, "gr_rss", trigger, started)
+        self._running[profile] = (run_id, started)
+        if told is not None:
+            told(run_id, started)
         counts = RunCounts()
         state: RunState = "aborted"
         try:
@@ -186,7 +210,11 @@ class GoodreadsSync:
                 extra={"event": "run_crashed", "profile": profile, "run_id": run_id},
             )
         finally:
-            await self._db.write(runs.finish, run_id, state, counts, int(self._clock.time()))
+            try:
+                await self._db.write(runs.finish, run_id, state, counts, int(self._clock.time()))
+            finally:
+                # Only once the row says how it ended is the run no longer in progress.
+                self._running.pop(profile, None)
             log.info(
                 "Goodreads run %s",
                 state,
