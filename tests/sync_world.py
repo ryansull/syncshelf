@@ -16,6 +16,7 @@ from syncshelf.db import Database
 from syncshelf.profiles import sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.goodreads import GoodreadsSync
+from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 
 from clock import FakeClock
@@ -50,10 +51,15 @@ class World:
 
 @asynccontextmanager
 async def world(
-    tmp_path: Path, *, profile: str = "alice", shelf_map: str = SHELF_MAP
+    tmp_path: Path,
+    *,
+    profile: str = "alice",
+    shelf_map: str = SHELF_MAP,
+    reserve: int | None = None,
 ) -> AsyncIterator[World]:
     """A world for one profile with a Goodreads section (``shelf_map`` as flow YAML), a
-    Goodreads user and a Hardcover user, both empty."""
+    Goodreads user and a Hardcover user, both empty. With ``reserve``, Hardcover calls go
+    through a real limiter on the clock, keeping that much of the daily budget back."""
     clock = FakeClock()
     goodreads = FakeGoodreads(clock)
     goodreads.add_user(GR_USER)
@@ -70,9 +76,10 @@ async def world(
 
     transport = httpx2.MockTransport(route)
     db = await Database.open(tmp_path / "syncshelf.db", snapshot_dir=tmp_path)
+    gate = None if reserve is None else HardcoverLimiter(profile, reserve=reserve, clock=clock)
     clients = {
         profile: HardcoverClient(
-            HARDCOVER_URL, hardcover_token(profile), gate=None, transport=transport
+            HARDCOVER_URL, hardcover_token(profile), gate=gate, transport=transport
         )
     }
     sync = None

@@ -34,6 +34,9 @@ __all__ = [
     "match_input",
     "observe",
     "pending_for",
+    "record_failure",
+    "release_on_new_version",
+    "release_quarantine",
     "record_backfill",
     "rematch_rows",
     "settle",
@@ -403,6 +406,77 @@ def rematch_rows(
                 (_reason(place), match_input(obs), profile, source, obs.source_id),
             )
             _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+QUARANTINE_AFTER = 24 * 3600
+"""A change is quarantined once it has failed for this long (seconds)..."""
+QUARANTINE_ATTEMPTS = 3
+"""...and at least this many times (§3.4a.7)."""
+
+ErrorClass = Literal["transient", "permanent", "bug"]
+
+
+def record_failure(
+    conn: sqlite3.Connection,
+    baseline_ids: Iterable[int],
+    error_class: ErrorClass,
+    error: str,
+    now: int,
+) -> bool:
+    """Count one failed attempt on a change's baselines, which stay pending (§3.4a.7). A
+    ``bug`` is quarantined at once; any other class once it has failed for
+    :data:`QUARANTINE_AFTER` and :data:`QUARANTINE_ATTEMPTS` times. ``error`` must already be
+    scrubbed. Returns whether the change is now quarantined."""
+    ids = list(baseline_ids)
+    conn.executemany(
+        "UPDATE baseline_fields SET attempts = attempts + 1, "
+        "first_failed_at = COALESCE(first_failed_at, ?), last_error = ?, last_error_class = ?, "
+        "quarantined_at = CASE WHEN ? = 'bug' OR (attempts + 1 >= ? AND "
+        "? - COALESCE(first_failed_at, ?) >= ?) THEN ? ELSE quarantined_at END WHERE id = ?",
+        [
+            (now, error, error_class, error_class, QUARANTINE_ATTEMPTS, now, now,
+             QUARANTINE_AFTER, now, baseline_id)
+            for baseline_id in ids
+        ],
+    )  # fmt: skip
+    marks = ",".join("?" * len(ids))
+    found = conn.execute(
+        f"SELECT count(*) FROM baseline_fields WHERE quarantined_at IS NOT NULL "  # noqa: S608
+        f"AND id IN ({marks})",
+        ids,
+    ).fetchone()
+    return bool(found[0])
+
+
+def release_quarantine(conn: sqlite3.Connection, profile: str | None = None) -> int:
+    """Release every quarantined change (of one profile, or all): it is pending again with its
+    attempts started over, so the next run tries it afresh (§3.4a.7). Returns how many."""
+    where = "quarantined_at IS NOT NULL" + (" AND profile = ?" if profile else "")
+    return conn.execute(
+        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, "  # noqa: S608
+        f"first_failed_at = NULL WHERE {where}",
+        (profile,) if profile else (),
+    ).rowcount
+
+
+VERSION_KEY = "last_started_version"
+
+
+def release_on_new_version(conn: sqlite3.Connection, version: str) -> int | None:
+    """At startup (§2.2 step 4): when this is a different SyncShelf version from the last to
+    start (a missing row counts as different), release every quarantined change once, then
+    record the version, in the same transaction, so a crash part-way retries next start.
+    Returns how many were released, or ``None`` when the version is unchanged."""
+    found = conn.execute("SELECT value FROM meta WHERE key = ?", (VERSION_KEY,)).fetchone()
+    if found is not None and found[0] == version:
+        return None
+    released = release_quarantine(conn)
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (VERSION_KEY, version),
+    )
+    return released
 
 
 def pending_for(

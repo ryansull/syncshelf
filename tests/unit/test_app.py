@@ -194,6 +194,38 @@ class TestLifespan:
         [aborted] = [r for r in caplog.records if getattr(r, "event", None) == "runs_aborted"]
         assert aborted.__dict__["count"] == 1
 
+    async def test_a_new_version_releases_quarantined_changes_once(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path)
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass  # the first start records the version (a missing row counts as new)
+        db = data_dir / "syncshelf.db"
+        with closing(sqlite3.connect(db)) as conn, conn:
+            assert conn.execute("SELECT value FROM meta").fetchall() == [(__version__,)]
+            conn.execute(
+                "INSERT INTO source_rows (profile, source, source_id, state, first_seen_at, "
+                "last_seen_at) VALUES ('alice', 'goodreads', '1', 'ignored', 0, 0)"
+            )
+            conn.execute(
+                "INSERT INTO baseline_fields (profile, source, source_id, field, attempts, "
+                "quarantined_at) VALUES ('alice', 'goodreads', '1', 'rating', 3, 1)"
+            )
+            conn.execute("UPDATE meta SET value = '0.0.1' WHERE key = 'last_started_version'")
+        caplog.clear()
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(db)) as conn:
+            assert conn.execute(
+                "SELECT attempts, quarantined_at FROM baseline_fields"
+            ).fetchall() == [(0, None)]
+            assert conn.execute("SELECT value FROM meta").fetchall() == [(__version__,)]
+        [released] = [
+            r for r in caplog.records if getattr(r, "event", None) == "quarantine_released"
+        ]
+        assert released.__dict__["count"] == 1
+
     async def test_the_purge_repeats_while_running_and_stops_at_shutdown(
         self, tmp_path: Path, data_dir: Path, clock: FakeClock
     ) -> None:
