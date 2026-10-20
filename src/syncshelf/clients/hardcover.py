@@ -35,6 +35,8 @@ __all__ = [
     "BOOK",
     "BOOKS_BY_ID",
     "BY_GOODREADS",
+    "BY_ISBN10",
+    "BY_ISBN13",
     "EDITION_FORMATS",
     "GOALS",
     "LIBRARY_PAGE",
@@ -59,7 +61,10 @@ __all__ = [
     "SHELF",
     "SIMILAR",
     "check_mutation",
+    "document_id",
     "query_cost",
+    "search_documents",
+    "search_filter",
 ]
 
 log = logging.getLogger(__name__)
@@ -191,9 +196,9 @@ query Search($q: String!, $filter: String, $sort: String, $per: Int!, $page: Int
          sort: $sort) { ids results }
 }
 """
-"""Hardcover's Typesense book search (cost 1; ``per_page`` capped at 25): ``search_books``
-and ``check_books`` (§3.3.1). ``results.hits[].document`` holds each book; its ``id`` is a
-string."""
+"""Hardcover's Typesense book search (cost 1; ``per_page`` capped at 25): ``search_books``,
+``check_books`` and the matcher's fuzzy step (§3.3.1, §3.4a.5). ``results.hits[].document``
+holds each book; its ``id`` is a string."""
 
 SEARCH_PAGE = 25
 """Typesense's largest page."""
@@ -213,6 +218,24 @@ query ByGoodreads($ids: [String!]!) {
 first step (§3.4a.5). Platform 1 is Goodreads. Oldest mapping first, so when one id has
 several the same one wins every time."""
 
+BY_ISBN13 = """
+query ByIsbn13($v: [String!]!) {
+  editions(where: {isbn_13: {_in: $v}}, order_by: {id: asc}) {
+    id book_id isbn_13 reading_format_id book { title canonical_id }
+  }
+}
+"""
+"""Editions with these ISBN-13s, batched (cost 1): the matcher's second step (§3.4a.5)."""
+
+BY_ISBN10 = """
+query ByIsbn10($v: [String!]!) {
+  editions(where: {isbn_10: {_in: $v}}, order_by: {id: asc}) {
+    id book_id isbn_10 reading_format_id book { title canonical_id }
+  }
+}
+"""
+"""Editions with these ISBN-10s, batched (cost 1): the matcher's third step (§3.4a.5)."""
+
 EDITION_FORMATS = """
 query EditionFormats($ids: [Int!]!) {
   editions(where: {id: {_in: $ids}}, order_by: {id: asc}) { id book_id reading_format_id }
@@ -224,14 +247,16 @@ is written with its link's edition only when that edition has a format (§3.3.5)
 BOOKS_BY_ID = """
 query BooksById($ids: [Int!]!) {
   books(where: {id: {_in: $ids}}) {
-    id title subtitle release_year rating pages cached_contributors cached_featured_series
+    id title subtitle release_year rating pages canonical_id cached_contributors
+    cached_featured_series
     genres: cached_tags(path: "Genre")
     default_audio_edition { id }
     default_ebook_edition { id }
   }
 }
 """
-"""Compact rows for books named by id, batched (cost 1): ``check_books``' id candidates."""
+"""Compact rows for books named by id, batched (cost 1): ``check_books``' id candidates, and
+the matcher's fuzzy hits, whose ``canonical_id`` it follows (§3.4a.5)."""
 
 USER_BOOK = f"""
 query UserBook($book_id: Int!, $user_id: Int!) {{
@@ -594,6 +619,35 @@ def check_mutation(data: Mapping[str, Any], mutation: str) -> dict[str, Any]:
     if error:
         raise HardcoverMutationError(mutation, str(error))
     return result
+
+
+# --- search -----------------------------------------------------------------------------
+
+
+def search_filter(author: str | None, genre: str | None) -> str | None:
+    """Typesense ``filter_by`` for exact author and genre (backticks quote, so none inside)."""
+    parts = []
+    if author:
+        parts.append(f"author_names:=[`{author.replace('`', '')}`]")
+    if genre:
+        parts.append(f"genres:=[`{genre.replace('`', '')}`]")
+    return " && ".join(parts) or None
+
+
+def search_documents(result: Result) -> tuple[int, list[dict[str, Any]]]:
+    """A :data:`SEARCH` answer's total and its documents."""
+    results = (result.data.get("search") or {}).get("results") or {}
+    return int(results.get("found") or 0), [
+        h.get("document") or {} for h in results.get("hits") or []
+    ]
+
+
+def document_id(doc: Mapping[str, Any]) -> int | None:
+    """A Typesense document's book id (sent as a string), or ``None`` when unusable."""
+    try:
+        return int(doc["id"])
+    except KeyError, TypeError, ValueError:
+        return None
 
 
 # --- cost -------------------------------------------------------------------------------

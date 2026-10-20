@@ -95,3 +95,171 @@ decide:
   - {candidates: [[100, 100, 100], [100, 100, 100]], auto_accept: false, likely: false}
   # With no exact full title, the before-':' scores decide the margin as before.
   - {candidates: [[100, 100, 80], [100, 100, 70]], auto_accept: false, likely: false}
+
+# The chain (§3.4a.5): the Goodreads mapping, ISBN-13, ISBN-10, then fuzzy; the first step with
+# a hit decides. Each case gives Hardcover's side and one source row, and expects either a
+# link (method, book) or a queue entry (reason, candidate books in order). accept_fuzzy is
+# false in the backfill, which never auto-links on title and author alone.
+#   hardcover.mappings: {goodreads id: [{book, title}]}   (several rows = several books)
+#   hardcover.books:    {book: {title, canonical}}
+#   hardcover.editions: [{id, book, isbn_13?, isbn_10?}]
+#   hardcover.search:   [{book, title, authors}]          (Typesense documents, in rank order)
+chain:
+  - name: the Goodreads mapping wins
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}]}
+      editions: [{id: 71, book: 8, isbn_13: "9780441013593"}]
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {method: gr_mapping, book: 7}
+
+  - name: a merged book counts as the book it was merged into
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}]}
+      books: {7: {title: Dune, canonical: 70}}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {method: gr_mapping, book: 70}
+
+  - name: an id hit whose title is far off is queued, the hit its candidate
+    hardcover:
+      mappings: {"100": [{book: 7, title: "Bertrand Barère 1755-1841"}]}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {reason: id_title_mismatch, candidates: [7]}
+
+  - name: a title scoring exactly the floor (60) is accepted
+    hardcover:
+      mappings: {"100": [{book: 7, title: "Leviathan Falls"}]}
+    row: {id: "100", title: "Leviathan Wakes", author: James S. A. Corey}
+    expect: {method: gr_mapping, book: 7}
+
+  - name: a title just under the floor (58) is queued
+    hardcover:
+      mappings: {"100": [{book: 7, title: "Leviathan Fallen"}]}
+    row: {id: "100", title: "Leviathan Wakes", author: James S. A. Corey}
+    expect: {reason: id_title_mismatch, candidates: [7]}
+
+  - name: a mapping naming two books is ambiguous (#185)
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}, {book: 9, title: Dune}]}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {reason: ambiguous_mapping, candidates: [7, 9]}
+
+  - name: two mapping rows on one book are one hit
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}, {book: 7, title: Dune}]}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {method: gr_mapping, book: 7}
+
+  - name: with no mapping, ISBN-13 comes next, however it is written
+    hardcover:
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}, {id: 81, book: 8, isbn_10: "0441013597"}]
+      books: {7: {title: Dune}, 8: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "978-0-441-01359-3", isbn10: "0441013597"}
+    expect: {method: isbn13, book: 7}
+
+  - name: then ISBN-10, with its X
+    hardcover:
+      editions: [{id: 81, book: 8, isbn_10: "080441234X"}]
+      books: {8: {title: Example Book}}
+    row: {id: "100", title: "Example Book (Example Series, #2)", author: Ann Author, isbn10: "080441234x"}
+    expect: {method: isbn10, book: 8}
+
+  - name: a clear fuzzy match links outside the backfill
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {method: fuzzy, book: 7}
+
+  - name: the backfill never links on title and author alone
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: false
+    expect: {reason: fuzzy_low, candidates: [7]}
+
+  - name: two books with one title are ambiguous
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}, {book: 9, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: fuzzy_ambiguous, candidates: [7, 9]}
+
+  - name: a weak author match is low
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Kevin J. Anderson]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: fuzzy_low, candidates: [7]}
+
+  - name: hits below the title floor are not kept
+    hardcover:
+      search: [{book: 7, title: Children of Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: no_hit, candidates: []}
+
+  - name: a fuzzy hit follows canonical_id too
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+      books: {7: {title: Dune, canonical: 70}}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {method: fuzzy, book: 70}
+
+  - name: with no author a fuzzy hit is never accepted
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: null}
+    accept_fuzzy: true
+    expect: {reason: fuzzy_low, candidates: [7]}
+
+  - name: nothing anywhere is no_hit
+    hardcover: {}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: no_hit, candidates: []}
+
+  - name: a refused mapping lets an exact ISBN settle the row (#190)
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}]}
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {method: isbn13, book: 7}
+
+  - name: an ambiguous mapping lets an exact ISBN settle the row (#190)
+    hardcover:
+      mappings: {"100": [{book: 7, title: Dune}, {book: 9, title: Dune}]}
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {method: isbn13, book: 7}
+
+  - name: a title search never overrides an exact id that disagreed (#190)
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}]}
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}]
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {reason: id_title_mismatch, candidates: [9]}
+
+  - name: an ISBN naming several books is ambiguous too (#190)
+    hardcover:
+      editions: [{id: 71, book: 7, isbn_13: "9780441013593"}, {id: 72, book: 8, isbn_13: "9780441013593"}]
+      books: {7: {title: Dune}, 8: {title: Dune}}
+    row: {id: "100", title: Dune, author: Frank Herbert, isbn13: "9780441013593"}
+    expect: {reason: ambiguous_mapping, candidates: [7, 8]}
+
+  - name: an ambiguous mapping lists its best-titled book first
+    hardcover:
+      mappings: {"100": [{book: 9, title: "Bertrand Barère 1755-1841"}, {book: 7, title: Dune}]}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    expect: {reason: ambiguous_mapping, candidates: [7, 9]}
+
+  - name: two search records of one merged book are one candidate, so it links
+    hardcover:
+      search: [{book: 7, title: Dune, authors: [Frank Herbert]}, {book: 11, title: Dune, authors: [Frank Herbert]}]
+      books: {11: {title: Dune, canonical: 7}}
+    row: {id: "100", title: Dune, author: Frank Herbert}
+    accept_fuzzy: true
+    expect: {method: fuzzy, book: 7}

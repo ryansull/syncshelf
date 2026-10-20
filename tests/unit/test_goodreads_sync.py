@@ -24,8 +24,8 @@ Hardcover knows but the profile never shelved, and Orphan has no Goodreads mappi
 async def w(tmp_path: Path) -> AsyncIterator[World]:
     async with world(tmp_path) as w:
         w.hardcover.add_user_book(HC_USER, 7, status_id=3, rating=4.0)
-        w.hardcover.add_mapping(DUNE, 7, 70, reading_format_id=4)
-        w.hardcover.add_mapping(MESSIAH, 8)
+        w.hardcover.add_mapping(DUNE, 7, 70, title="Dune", reading_format_id=4)
+        w.hardcover.add_mapping(MESSIAH, 8, title="Dune Messiah")
         w.goodreads.add_item(GR_USER, ORPHAN, "Orphan")
         w.goodreads.add_item(GR_USER, MESSIAH, "Dune Messiah", user_rating="5")
         w.goodreads.add_item(GR_USER, DUNE, "Dune", user_rating="4")
@@ -237,7 +237,7 @@ async def test_a_404_user_fails_the_fetch_and_concludes_nothing(w: World) -> Non
 
 async def test_a_change_hardcover_cant_take_fails_alone_and_the_run_goes_on(w: World) -> None:
     w.hardcover.add_user_book(HC_USER, 9, status_id=3, rating=2.0)
-    w.hardcover.add_mapping(400, 9)
+    w.hardcover.add_mapping(400, 9, title="Children of Dune")
     w.goodreads.add_item(GR_USER, 400, "Children of Dune", user_rating="2")
     await w.sync.run_rss("alice")
     w.clock.advance(3600)
@@ -288,7 +288,7 @@ async def test_a_pending_change_waits_for_a_batch_that_lists_its_row(w: World) -
 async def test_a_stale_shared_link_queues_the_row(tmp_path: Path) -> None:
     async with world(tmp_path) as w:
         w.hardcover.add_user_book(HC_USER, 7)
-        w.hardcover.add_mapping(DUNE, 7)
+        w.hardcover.add_mapping(DUNE, 7, title="Dune")
         w.goodreads.add_item(GR_USER, DUNE, "Dune")
         await w.db.write(
             lambda conn: conn.execute(
@@ -306,7 +306,7 @@ async def test_the_backfill_finds_a_shelved_book_hardcover_has_merged(tmp_path: 
     async with world(tmp_path) as w:
         # Shelved as book 100, which Hardcover merged into 200; the mapping names 100 too.
         w.hardcover.add_user_book(HC_USER, 100, book={"canonical_id": 200})
-        w.hardcover.add_mapping(DUNE, 100)
+        w.hardcover.add_mapping(DUNE, 100, title="Dune")
         w.goodreads.add_item(GR_USER, DUNE, "Dune")
         await w.sync.run_rss("alice")
         assert await w.rows("SELECT state, hc_book_id FROM source_rows") == [("linked", 200)]
@@ -365,7 +365,7 @@ async def test_a_failed_edition_lookup_holds_only_the_reads(w: World) -> None:
 async def test_a_link_edition_of_another_book_is_not_written(tmp_path: Path) -> None:
     async with world(tmp_path) as w:
         w.hardcover.add_user_book(HC_USER, 7, status_id=1)
-        w.hardcover.add_mapping(DUNE, 7)
+        w.hardcover.add_mapping(DUNE, 7, title="Dune")
         w.hardcover.editions[90] = {"book_id": 9, "reading_format_id": 4}  # not Dune's
         w.goodreads.add_item(GR_USER, DUNE, "Dune", shelf="to-read")
         await w.sync.run_rss("alice")
@@ -382,8 +382,8 @@ async def test_a_new_book_on_an_unmapped_shelf_holds_its_other_changes(tmp_path:
     # to-read is a built-in exclusive shelf, but this profile's map leaves it out.
     async with world(tmp_path, shelf_map="{read: 3, currently-reading: 2}") as w:
         w.hardcover.add_user_book(HC_USER, 7)
-        w.hardcover.add_mapping(DUNE, 7)
-        w.hardcover.add_mapping(MESSIAH, 8)
+        w.hardcover.add_mapping(DUNE, 7, title="Dune")
+        w.hardcover.add_mapping(MESSIAH, 8, title="Dune Messiah")
         w.goodreads.add_item(GR_USER, DUNE, "Dune")
         await w.sync.run_rss("alice")
         w.clock.advance(3600)

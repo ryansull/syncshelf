@@ -1,8 +1,8 @@
 """The matcher's normalisation and scoring helpers (SPEC §3.4a.5).
 
-Phase 3 brings only these: ``check_books`` scores search hits with them. Phase 4a adds the
-chain's id steps, starting with the Goodreads mapping (:func:`goodreads_mappings`); the ISBN
-steps, fuzzy matching and the unmatched queue build on them.
+Phase 3 brings these and the fuzzy step's search (:func:`search_candidates`), which
+``check_books`` uses. Phase 4a adds the chain (:func:`match`): the Goodreads mapping, then
+ISBN-13, then ISBN-10, then fuzzy, the first accepted hit winning.
 
 The thresholds are starting values, not measured ones (§3.4a.5). They're pinned by
 ``tests/golden/matcher.yaml`` and calibrated in 4a, so they live here as named constants.
@@ -10,31 +10,49 @@ The thresholds are starting values, not measured ones (§3.4a.5). They're pinned
 
 import re
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from rapidfuzz.fuzz import token_sort_ratio
 
-from syncshelf.clients.hardcover import BY_GOODREADS, HardcoverClient
+from syncshelf.clients.hardcover import (
+    BOOKS_BY_ID,
+    BY_GOODREADS,
+    BY_ISBN10,
+    BY_ISBN13,
+    SEARCH,
+    HardcoverClient,
+    document_id,
+    search_documents,
+    search_filter,
+)
 
 __all__ = [
     "AUTO_ACCEPT_AUTHOR",
     "AUTO_ACCEPT_TITLE",
+    "CANDIDATE_HITS",
     "ID_BATCH",
     "LIKELY_AUTHOR",
     "LIKELY_TITLE",
     "MARGIN",
     "TITLE_FLOOR",
+    "Candidate",
+    "Hit",
     "IdHit",
+    "MatchInput",
     "Method",
+    "Outcome",
+    "QueueReason",
     "Scored",
     "author_score",
     "auto_accepts",
     "full_title_score",
     "goodreads_mappings",
     "is_likely",
+    "match",
     "normalise",
+    "search_candidates",
     "title_score",
 ]
 
@@ -64,6 +82,33 @@ when an id maps to several rows."""
 Method = Literal["human", "gr_mapping", "isbn13", "isbn10", "asin", "fuzzy"]
 """A link's ``method``: the chain step (or person) that made it."""
 
+METHOD_RANK: dict[str, int] = {
+    "fuzzy": 0,
+    "isbn13": 1,
+    "isbn10": 1,
+    "asin": 1,
+    "gr_mapping": 2,
+    "human": 3,
+}
+"""Authority (§3.4a.4 rule 5): a re-match replaces a link only with a strictly stronger
+method, and nothing replaces ``human``."""
+
+QueueReason = Literal[
+    "no_hit",
+    "id_title_mismatch",
+    "fuzzy_low",
+    "fuzzy_ambiguous",
+    "not_in_library",
+    "profile_conflict",
+    "stale",
+    "ambiguous_mapping",
+]
+
+MAX_CANDIDATES = 5
+"""Candidates kept on a queue entry."""
+CANDIDATE_HITS = 5
+"""Search hits scored per source title in the fuzzy step."""
+
 _SERIES = re.compile(r"\s*\([^()]*#\s*\d+(?:\.\d+)?\s*\)\s*$")
 _LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+")
 
@@ -80,6 +125,53 @@ class Scored:
     @property
     def full_title(self) -> float:
         return self.title if self.full is None else self.full
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One search hit for a source title, with its scores and its Typesense document."""
+
+    book_id: int
+    scored: Scored
+    document: dict[str, Any]
+
+
+async def search_candidates(client: HardcoverClient, title: str, author: str | None) -> list[Hit]:
+    """The fuzzy step's search (§3.4a.5): search by the normalised title, filtered to the
+    primary author, and once more without the filter if that finds nothing; then score each
+    hit, best first. Up to :data:`CANDIDATE_HITS` hits, costing at most 2 searches.
+
+    With no ``author`` the author score is set aside (scored 100), so only a caller that
+    requires one can treat a hit as certain (#142). Hits aren't hydrated here: callers batch
+    one ``books`` lookup over every hit they keep.
+    """
+    variables: dict[str, Any] = {
+        "q": normalise(title) or title,
+        "filter": search_filter(author or None, None),
+        "sort": None,
+        "per": CANDIDATE_HITS,
+        "page": 1,
+    }
+    _, docs = search_documents(await client.execute(SEARCH, variables))
+    if not docs and variables["filter"]:
+        variables["filter"] = None
+        _, docs = search_documents(await client.execute(SEARCH, variables))
+    hits = [
+        Hit(
+            book_id,
+            Scored(
+                title_score(title, d.get("title") or ""),
+                author_score(author, d.get("author_names") or []) if author else 100.0,
+                full_title_score(title, d.get("title") or ""),
+            ),
+            d,
+        )
+        for d in docs
+        if (book_id := document_id(d)) is not None
+    ]
+    # Ties on the title break on the full title (#138), then the author.
+    hits.sort(key=lambda h: (h.scored.title, h.scored.full_title, h.scored.author), reverse=True)
+    return hits
 
 
 def normalise(text: str, *, author: bool = False) -> str:
@@ -180,21 +272,22 @@ class IdHit:
     """The edition's format: 1 physical, 2 audio, 3 both, 4 ebook, or unknown."""
 
 
-async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dict[str, IdHit]:
-    """The chain's first step (§3.4a.5): each Goodreads edition id Hardcover's
-    ``book_mappings`` (platform 1) knows, as an :class:`IdHit`. Batched, at one request per
-    :data:`ID_BATCH` ids. An id with no mapping is left out."""
+async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dict[str, list[IdHit]]:
+    """The chain's first step (§3.4a.5): each Goodreads edition id's ``book_mappings``
+    (platform 1), as the distinct books it names after following ``canonical_id``, oldest
+    mapping first. Batched, at one request per :data:`ID_BATCH` ids. An id with no mapping is
+    left out; one naming several books is ambiguous (#185)."""
     wanted = sorted(set(ids))
-    hits: dict[str, IdHit] = {}
+    hits: dict[str, list[IdHit]] = {}
     for start in range(0, len(wanted), ID_BATCH):
         result = await client.execute(BY_GOODREADS, {"ids": wanted[start : start + ID_BATCH]})
         for row in result.data.get("book_mappings") or []:
             external_id, book_id = row.get("external_id"), row.get("book_id")
-            if external_id is None or book_id is None or str(external_id) in hits:
+            if external_id is None or book_id is None:
                 continue
             book = row.get("book") or {}
             edition = row.get("edition") or {}
-            hits[str(external_id)] = IdHit(
+            hit = IdHit(
                 # A merged book counts as the book it was merged into.
                 book_id=book.get("canonical_id") or book_id,
                 edition_id=row.get("edition_id"),
@@ -202,4 +295,184 @@ async def goodreads_mappings(client: HardcoverClient, ids: Iterable[str]) -> dic
                 method="gr_mapping",
                 reading_format_id=edition.get("reading_format_id"),
             )
+            _add_distinct(hits.setdefault(str(external_id), []), hit)
     return hits
+
+
+async def isbn_editions(
+    client: HardcoverClient, method: Literal["isbn13", "isbn10"], isbns: Iterable[str]
+) -> dict[str, list[IdHit]]:
+    """The ISBN steps (§3.4a.5): each ISBN's editions, as the distinct books they belong to
+    after ``canonical_id``, oldest edition first. Batched like the mapping step."""
+    query, key = (BY_ISBN13, "isbn_13") if method == "isbn13" else (BY_ISBN10, "isbn_10")
+    wanted = sorted(set(isbns))
+    hits: dict[str, list[IdHit]] = {}
+    for start in range(0, len(wanted), ID_BATCH):
+        result = await client.execute(query, {"v": wanted[start : start + ID_BATCH]})
+        for row in result.data.get("editions") or []:
+            isbn, book_id = row.get(key), row.get("book_id")
+            if isbn is None or book_id is None:
+                continue
+            book = row.get("book") or {}
+            hit = IdHit(
+                book_id=book.get("canonical_id") or book_id,
+                edition_id=row.get("id"),
+                title=book.get("title") or "",
+                method=method,
+                reading_format_id=row.get("reading_format_id"),
+            )
+            _add_distinct(hits.setdefault(str(isbn), []), hit)
+    return hits
+
+
+def _add_distinct(hits: list[IdHit], hit: IdHit) -> None:
+    if all(h.book_id != hit.book_id for h in hits):
+        hits.append(hit)
+
+
+# --- the chain -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MatchInput:
+    """A source row as the matcher sees it."""
+
+    source_id: str
+    """The Goodreads ``Book Id``, for the mapping step."""
+    title: str
+    author: str | None
+    isbn13: str | None = None
+    isbn10: str | None = None
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One book a queued row might be, as ``match_candidates`` keeps it."""
+
+    book_id: int
+    edition_id: int | None
+    method: Method
+    title_score: float | None
+    author_score: float | None = None
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What the chain found for one row: an accepted hit to link, or why it's queued."""
+
+    hit: IdHit | None
+    reason: QueueReason | None = None
+    candidates: tuple[Candidate, ...] = ()
+
+
+async def match(
+    client: HardcoverClient, rows: Sequence[MatchInput], *, accept_fuzzy: bool
+) -> dict[str, Outcome]:
+    """Run the chain over ``rows`` (§3.4a.5): the Goodreads mapping, then ISBN-13, then
+    ISBN-10, then fuzzy. The first step yielding an **accepted** hit wins:
+
+    - **an id hit** (mapping, ISBN) is accepted if its title scores at least
+      :data:`TITLE_FLOOR`. One that doesn't, or an id naming several books (#185), lets the
+      next id step try; if none accepts, the row is queued with the first such reason
+      (``id_title_mismatch`` or ``ambiguous_mapping``) and its books as candidates. Fuzzy
+      matching never overrides an exact id that disagreed (#190);
+    - **fuzzy** search links only with ``accept_fuzzy`` (never in the backfill) and when the
+      top hit passes the auto-accept rule; otherwise the row is queued ``fuzzy_ambiguous``
+      (it would pass but for the margin) or ``fuzzy_low``, keeping up to 5 hits scoring at
+      least the floor, or ``no_hit`` when none does. Hits on one book (after
+      ``canonical_id``) count once.
+
+    The id steps are batched across rows; fuzzy costs at most 2 searches and 1 hydrate per
+    row that reaches it.
+    """
+    outcomes: dict[str, Outcome] = {}
+    refused: dict[str, Outcome] = {}
+    rest = list(rows)
+    mapped = await goodreads_mappings(client, [r.source_id for r in rest])
+    rest = _decide(rest, mapped, outcomes, refused)
+    steps: tuple[tuple[Literal["isbn13", "isbn10"], Callable[[MatchInput], str | None]], ...] = (
+        ("isbn13", lambda r: r.isbn13),
+        ("isbn10", lambda r: r.isbn10),
+    )
+    for method, isbn_of in steps:
+        keys = {r.source_id: key for r in rest if (key := _isbn(isbn_of(r)))}
+        if not keys:
+            continue
+        found = await isbn_editions(client, method, keys.values())
+        by_row = {sid: found[key] for sid, key in keys.items() if key in found}
+        rest = _decide(rest, by_row, outcomes, refused)
+    for row in rest:
+        if row.source_id in refused:
+            outcomes[row.source_id] = refused[row.source_id]
+        else:
+            outcomes[row.source_id] = await _fuzzy(client, row, accept_fuzzy)
+    return outcomes
+
+
+def _decide(
+    rows: list[MatchInput],
+    found: Mapping[str, list[IdHit]],
+    outcomes: dict[str, Outcome],
+    refused: dict[str, Outcome],
+) -> list[MatchInput]:
+    """Decide each row an id step ``found`` (by source id): an accepted hit settles it;
+    otherwise the first refusal is kept and the row goes on. Returns the rows still open."""
+    rest: list[MatchInput] = []
+    for row in rows:
+        hits = found.get(row.source_id)
+        if not hits:
+            rest.append(row)
+            continue
+        scored = sorted(
+            ((hit, title_score(row.title, hit.title)) for hit in hits),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        if len(hits) == 1 and scored[0][1] >= TITLE_FLOOR:
+            outcomes[row.source_id] = Outcome(hits[0])
+            refused.pop(row.source_id, None)
+            continue
+        candidates = tuple(
+            Candidate(h.book_id, h.edition_id, h.method, score) for h, score in scored
+        )[:MAX_CANDIDATES]
+        reason: QueueReason = "ambiguous_mapping" if len(hits) > 1 else "id_title_mismatch"
+        refused.setdefault(row.source_id, Outcome(None, reason, candidates))
+        rest.append(row)
+    return rest
+
+
+async def _fuzzy(client: HardcoverClient, row: MatchInput, accept: bool) -> Outcome:
+    hits = await search_candidates(client, row.title, row.author)
+    kept = [h for h in hits if h.scored.title >= TITLE_FLOOR]
+    if not kept:
+        return Outcome(None, "no_hit")
+    # Every hit follows canonical_id before it counts: one hydrate of the ones kept, and two
+    # records of one book (a merge Typesense still shows) are one candidate, not a rival.
+    result = await client.execute(BOOKS_BY_ID, {"ids": [h.book_id for h in kept]})
+    canonical = {b["id"]: b.get("canonical_id") for b in result.data.get("books") or []}
+    books: dict[int, Hit] = {}
+    for hit in kept:
+        books.setdefault(canonical.get(hit.book_id) or hit.book_id, hit)
+    merged = list(books.items())[:MAX_CANDIDATES]
+    candidates = tuple(
+        Candidate(book, None, "fuzzy", h.scored.title, h.scored.author if row.author else None)
+        for book, h in merged
+    )
+    ranked = [h.scored for _, h in merged] + [h.scored for h in hits if h not in kept]
+    if accept and row.author and auto_accepts(ranked):
+        book, top = merged[0]
+        return Outcome(IdHit(book, None, str(top.document.get("title") or ""), "fuzzy"))
+    # Ambiguous: it would be accepted but for the runner-up's margin. Anything else, the
+    # backfill's refusal to auto-link included, is low.
+    best = ranked[0]
+    clears = best.title >= AUTO_ACCEPT_TITLE and best.author >= AUTO_ACCEPT_AUTHOR
+    ambiguous = bool(row.author) and clears and not auto_accepts(ranked)
+    return Outcome(None, "fuzzy_ambiguous" if ambiguous else "fuzzy_low", candidates)
+
+
+def _isbn(value: str | None) -> str | None:
+    """An ISBN as Hardcover stores it: digits, with a final ``X`` kept upper case."""
+    if not value:
+        return None
+    cleaned = "".join(c for c in value if c.isalnum()).upper()
+    return cleaned or None

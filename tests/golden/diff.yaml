@@ -13,12 +13,14 @@
 #   log         [kind, field, trigger, date_source] rows written by this run
 #   reads       {book_id: [[started, finished, edition], ...]} on Hardcover afterwards
 #   gone        the source ids marked gone, after this run
+#   rows        {source_id: [state, queue_reason]} afterwards
 #   backfill    [rows_linked, rows_queued]
 #
 # Hardcover: a shelf entry may list `reads: [[started, finished, edition?], ...]`; a mapping is
-# a book id, or {book, edition, format} for the edition it names and its reading_format_id.
+# a book id, or {book, edition, format} for the edition it names and its reading_format_id;
+# `editions: [{id, book, title, isbn_10?, isbn_13?}]` are found by the ISBN steps.
 # Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review,
-# added (RSS user_date_added; "" for none). The fake's default added date is 2026-10-15, its
+# isbn (ISBN-10), added (RSS user_date_added; "" for none). The fake's default added date is 2026-10-15, its
 # "today" (what Hardcover stamps on reads it invents) 2100-01-01, and the profile is in UTC.
 # A run may add `filler: N` unmatched books after its feed (to make a second page) and
 # `fail: {page: N, fault: …}` to make a page unusable.
@@ -488,4 +490,63 @@ cases:
         expect:
           state: ok
           shelf: {8: {status: 1, rating: 5.0}}
+          pending: {}
+
+  # --- matching (§3.4a.5) ------------------------------------------------------------------
+
+  - name: the backfill links by ISBN-10 when Goodreads has no mapping
+    hardcover:
+      shelf: {7: {status: 3}}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, isbn: "0441013597"}]
+        expect:
+          backfill: [1, 0]
+
+  - name: a new book re-matched when its details change pushes its first sighting
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 900, title: Book 900}]
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 900, title: Book 900}]
+        expect:
+          writes: []
+          pending: {"100": {status: read, rating: "4"}}
+      - feed: [{id: 100, title: Dune, rating: "4", isbn: "0441013597"}, {id: 900, title: Book 900}]
+        expect:
+          state: ok
+          shelf: {7: {status: 3, rating: 4.0}}
+          pending: {}
+
+  - name: a backfill-queued row is re-matched by the backfill's rules, so off the shelves it stays queued
+    hardcover:
+      shelf: {}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+          rows: {"100": [queued, no_hit]}
+      - feed: [{id: 100, title: Dune, rating: "5", isbn: "0441013597"}]
+        expect:
+          state: ok
+          writes: []
+          rows: {"100": [queued, not_in_library]}
+          pending: {"100": {rating: "5"}}
+
+  - name: a backfill-queued row re-matched onto a shelved book is linked, its baseline kept
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+      - feed: [{id: 100, title: Dune, rating: "4", isbn: "0441013597"}]
+        expect:
+          state: ok
+          writes: []
+          rows: {"100": [linked, null]}
           pending: {}

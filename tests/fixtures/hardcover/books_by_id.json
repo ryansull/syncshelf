@@ -1,6 +1,6 @@
 {
   "meta": {
-    "recorded_at": "2026-10-18",
+    "recorded_at": "2026-10-19",
     "server_version": "api.hardcover.app/v1 (sends no version header)",
     "provenance": "live"
   },
@@ -14,6 +14,7 @@
           "release_year": 0,
           "rating": 0.0,
           "pages": 0,
+          "canonical_id": null,
           "cached_contributors": [
             {
               "author": {

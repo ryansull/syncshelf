@@ -38,17 +38,16 @@ from syncshelf.clients.hardcover import (
     SIMILAR,
     HardcoverClient,
     HardcoverError,
-    Result,
+    document_id,
+    search_documents,
+    search_filter,
 )
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.matcher import (
     TITLE_FLOOR,
-    Scored,
-    author_score,
     auto_accepts,
-    full_title_score,
     is_likely,
-    normalise,
+    search_candidates,
     title_score,
 )
 from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
@@ -1477,7 +1476,7 @@ async def search_books(
     freshness = await _refresh(bound.mirror, names, caller)
     variables: dict[str, Any] = {
         "q": query or "*",
-        "filter": _search_filter(author, genre),
+        "filter": search_filter(author, genre),
         "sort": SEARCH_SORTS[sort],
         # Only a search that leaves books out may need more than the hits asked for.
         "per": SEARCH_PAGE if exclude_shelved else limit,
@@ -1496,11 +1495,11 @@ async def search_books(
                 raise
             incomplete = True  # keep what earlier pages found
             break
-        found, docs = _search_results(result)
-        page_ids = tuple(i for d in docs if (i := _doc_id(d)) is not None)
+        found, docs = search_documents(result)
+        page_ids = tuple(i for d in docs if (i := document_id(d)) is not None)
         shelves = {name: await bound.db.read(_statuses, name, page_ids) for name in names}
         for doc in docs:
-            book_id = _doc_id(doc)
+            book_id = document_id(doc)
             if book_id is None:
                 continue
             if exclude_shelved and any(book_id in shelves[n] for n in names):
@@ -1523,24 +1522,6 @@ def _text(value: str | None) -> str | None:
     """A text argument, trimmed, or ``None`` when absent or blank."""
     trimmed = value.strip() if value is not None else ""
     return trimmed or None
-
-
-def _search_filter(author: str | None, genre: str | None) -> str | None:
-    """Typesense ``filter_by`` for exact author and genre (backticks quote, so none inside)."""
-    parts = []
-    if author:
-        parts.append(f"author_names:=[`{author.replace('`', '')}`]")
-    if genre:
-        parts.append(f"genres:=[`{genre.replace('`', '')}`]")
-    return " && ".join(parts) or None
-
-
-def _doc_id(doc: dict[str, Any]) -> int | None:
-    """A Typesense document's book id (sent as a string), or ``None`` when unusable."""
-    try:
-        return int(doc["id"])
-    except KeyError, TypeError, ValueError:
-        return None
 
 
 def _search_hit(
@@ -1580,8 +1561,6 @@ def _search_hit(
 # --- check_books --------------------------------------------------------------------------
 
 MAX_CANDIDATES = 20
-CANDIDATE_HITS = 5
-"""Search hits scored per candidate, as the matcher's fuzzy step takes (§3.4a.5)."""
 
 Match = Literal["exact", "likely", "not_found"]
 _AUTHOR_SEPARATORS = re.compile(r"\s*(?:&|;|\band\b|\bwith\b)\s*", re.IGNORECASE)
@@ -1723,51 +1702,15 @@ def _id_pick(candidate: Candidate, books: dict[int, dict[str, Any]]) -> _Pick:
 
 
 async def _resolve(client: HardcoverClient, title: str, author: str) -> _Pick:
-    """Search as the matcher's fuzzy step does (§3.4a.5): by normalised title, filtered to the
-    primary author, once more without the filter if that finds nothing; then score the hits.
-    With no author, the author score is set aside: a clear title can be likely, never exact
-    (#142). An exact full title wins ties with its adaptations (#138)."""
-    variables: dict[str, Any] = {
-        "q": normalise(title) or title,
-        "filter": _search_filter(author or None, None),
-        "sort": None,
-        "per": CANDIDATE_HITS,
-        "page": 1,
-    }
-    _, docs = _search_results(await client.execute(SEARCH, variables))
-    if not docs and variables["filter"]:
-        variables["filter"] = None
-        _, docs = _search_results(await client.execute(SEARCH, variables))
-    scored = sorted(
-        (
-            (
-                Scored(
-                    title_score(title, d.get("title") or ""),
-                    author_score(author, d.get("author_names") or []) if author else 100.0,
-                    full_title_score(title, d.get("title") or ""),
-                ),
-                book_id,
-            )
-            for d in docs
-            if (book_id := _doc_id(d)) is not None
-        ),
-        key=lambda pair: (pair[0].title, pair[0].full_title, pair[0].author),
-        reverse=True,
-    )
-    ranked = [s for s, _ in scored]
+    """Search and score as the matcher's fuzzy step does (§3.4a.5). With no author, a clear
+    title can be likely, never exact (#142)."""
+    hits = await search_candidates(client, title, author)
+    ranked = [h.scored for h in hits]
     if author and auto_accepts(ranked):
-        return _Pick("exact", scored[0][1])
+        return _Pick("exact", hits[0].book_id)
     if is_likely(ranked):
-        return _Pick("likely", scored[0][1])
+        return _Pick("likely", hits[0].book_id)
     return _Pick()
-
-
-def _search_results(result: Result) -> tuple[int, list[dict[str, Any]]]:
-    """A Search answer's total and its documents."""
-    results = (result.data.get("search") or {}).get("results") or {}
-    return int(results.get("found") or 0), [
-        h.get("document") or {} for h in results.get("hits") or []
-    ]
 
 
 def _doc_from_book(book: dict[str, Any]) -> dict[str, Any]:

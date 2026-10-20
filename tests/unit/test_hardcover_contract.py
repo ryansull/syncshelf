@@ -19,6 +19,8 @@ from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
     BY_GOODREADS,
+    BY_ISBN10,
+    BY_ISBN13,
     EDITION_FORMATS,
     GOALS,
     INSERT_USER_BOOK,
@@ -207,3 +209,17 @@ async def test_edition_formats_match_the_recording(fake: FakeHardcover) -> None:
     result = await client.execute(EDITION_FORMATS, {"ids": [70, 404]})
     assert_same_shape(shape({"data": result.data}), recorded("edition_formats"))
     assert result.data["editions"] == [{"id": 70, "book_id": 7, "reading_format_id": 4}]
+
+
+@pytest.mark.parametrize(
+    ("query", "key", "name"),
+    [(BY_ISBN13, "isbn_13", "by_isbn13"), (BY_ISBN10, "isbn_10", "by_isbn10")],
+)
+async def test_isbn_lookups_match_the_recording(
+    fake: FakeHardcover, query: str, key: str, name: str
+) -> None:
+    fake.add_edition(70, 7, **{key: "9780345539793"}, reading_format_id=4)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(query, {"v": ["9780345539793", "0"]})
+    assert_same_shape(shape({"data": result.data}), recorded(name))
+    assert [e["id"] for e in result.data["editions"]] == [70]
