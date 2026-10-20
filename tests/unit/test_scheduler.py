@@ -171,7 +171,6 @@ def test_the_backoff_curve() -> None:
         ([("fetch_failed", False)] * 5, 5, 6 * HOUR),
         ([("partial", False)], 1, HOUR),  # an incomplete fetch backs off too
         ([("fetch_failed", False)] * 2 + [("ok", True)], 0, None),  # success resets
-        ([("fetch_failed", False), ("deferred", True)], 1, None),  # deferred: no backoff
         ([("partial", True)], 0, None),  # failed changes are not a failed fetch
     ],
 )
@@ -226,3 +225,78 @@ async def test_runs_older_than_90_days_are_purged(db: Database, clock: FakeClock
         )
         == []
     )
+
+
+async def test_a_deferred_or_aborted_run_keeps_the_backoff_in_force(
+    db: Database, clock: FakeClock
+) -> None:
+    sync = FakeSync(clock, ["alice"])
+    sync.outcomes = [("fetch_failed", False), ("deferred", True), ("aborted", False)]
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    clock.advance(JITTER)
+    await s.tick()
+    (*_, failures, backoff_until) = await schedule(db)
+    assert (failures, backoff_until) == (1, int(clock.time()) + HOUR)
+    for _ in range(2):  # a sync_now run, deferred and then aborted, inside the backoff
+        s.nudge("alice", "sync_now")
+        await s.tick()
+        assert (await schedule(db))[4:] == (1, backoff_until)
+
+
+async def test_a_run_that_raises_moves_the_loop_on(db: Database, clock: FakeClock) -> None:
+    sync = FakeSync(clock, ["alice"])
+
+    async def broken(profile: str, trigger: Trigger = "schedule") -> RunResult:
+        raise RuntimeError("boom")
+
+    sync.run_rss = broken  # type: ignore[method-assign]
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    clock.advance(JITTER)
+    assert await s.tick() == []
+    assert s.due("alice") == clock.time() + HOUR + JITTER  # not due again at once
+
+
+async def test_a_run_asked_for_during_a_run_still_happens(db: Database, clock: FakeClock) -> None:
+    sync = FakeSync(clock, ["alice"])
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    clock.advance(JITTER)
+    original = sync.run_rss
+
+    async def nudged_meanwhile(profile: str, trigger: Trigger = "schedule") -> RunResult:
+        s.nudge(profile, "ingest")
+        return await original(profile, trigger)
+
+    sync.run_rss = nudged_meanwhile  # type: ignore[method-assign]
+    await s.tick()
+    sync.run_rss = original  # type: ignore[method-assign]
+    assert s.due("alice") == clock.time()
+    await s.tick()
+    assert [c[1] for c in sync.calls] == ["schedule", "ingest"]
+
+
+async def test_a_run_asked_for_while_one_goes_waits_only_for_it(
+    db: Database, clock: FakeClock
+) -> None:
+    sync = FakeSync(clock, ["alice"])
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    s.nudge("alice", "ingest")
+    async with sync.lock("alice"):
+        await s.tick()
+    assert s.due("alice") == clock.time() + 5.0
+    clock.advance(5.0)
+    await s.tick()
+    assert [c[1] for c in sync.calls] == ["ingest"]
+
+
+async def test_a_skipped_tick_is_stored(db: Database, clock: FakeClock) -> None:
+    sync = FakeSync(clock, ["alice"])
+    s = scheduler(db, sync, clock)
+    await s.resume()
+    clock.advance(JITTER)
+    async with sync.lock("alice"):
+        await s.tick()
+    assert (await schedule(db))[2] == int(clock.time()) + HOUR

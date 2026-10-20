@@ -50,6 +50,8 @@ BACKOFF_FIRST = 3600
 """The first wait after a failed Goodreads fetch (seconds), doubling each time..."""
 BACKOFF_CAP = 6 * 3600
 """...up to this (§3.4a.7)."""
+NUDGE_RETRY = 5.0
+"""Seconds before a run asked for tries again, when a run was already going."""
 RUNS_KEPT = 90 * 86400
 """Runs older than this are purged; their change log rows are kept (§2.4)."""
 
@@ -65,15 +67,13 @@ class _Loop:
     due: float
     """When it next runs (epoch seconds), jitter included."""
     trigger: Trigger = "schedule"
+    nudged: float | None = None
+    """When a run was last asked for and not yet started: it outlives a run in progress."""
 
 
 class Scheduler:
-    """Every profile's sync loops, and the daily housekeeping.
-
-    ``jitter`` returns the seconds added to each next run; tests pass a fixed one.
-    ``housekeeping`` runs every ``housekeeping_interval`` seconds in its own task (the OAuth
-    and run purges, which the scheduler took over from the lifespan in phase 4a).
-    """
+    """Every profile's sync loops. ``jitter`` returns the seconds added to each next run;
+    tests pass a fixed one. The daily housekeeping runs beside it, through :func:`every`."""
 
     def __init__(
         self,
@@ -114,7 +114,8 @@ class Scheduler:
         loop = self._loops.get(profile)
         if loop is None:
             return
-        loop.due, loop.trigger = self._clock.time(), trigger
+        now = self._clock.time()
+        loop.due, loop.trigger, loop.nudged = now, trigger, now
         self._wake.set()
 
     async def tick(self) -> list[RunResult]:
@@ -123,21 +124,43 @@ class Scheduler:
         for loop in sorted(self._loops.values(), key=lambda lp: lp.due):
             if loop.due > self._clock.time():
                 continue
-            trigger, loop.trigger = loop.trigger, "schedule"
             if self._sync.lock(loop.profile).locked():
-                log.info(
-                    "a scheduled Goodreads run was skipped: one is already running",
-                    extra={"event": "tick_skipped", "profile": loop.profile, "source": SOURCE},
-                )
-                loop.due = self._clock.time() + self._interval + self._jitter()
+                await self._skip(loop)
                 continue
-            result = await self._sync.run_rss(loop.profile, trigger)
-            next_due = await self._db.write(
-                _record, loop.profile, result, int(self._clock.time()), self._interval
-            )
-            loop.due = next_due + self._jitter()
+            started = self._clock.time()
+            trigger, loop.trigger, loop.nudged = loop.trigger, "schedule", None
+            # Moved on before the run, so a run or record that fails can't leave the loop
+            # due, fetching again every second.
+            loop.due = started + self._interval + self._jitter()
+            try:
+                result = await self._sync.run_rss(loop.profile, trigger)
+                next_due = await self._db.write(
+                    _record, loop.profile, result, int(self._clock.time()), self._interval
+                )
+            except Exception:
+                log.exception(
+                    "a scheduled Goodreads run failed",
+                    extra={"event": "tick_failed", "profile": loop.profile, "source": SOURCE},
+                )
+                continue
+            if loop.nudged is None:  # a run asked for meanwhile still runs now
+                loop.due = next_due + self._jitter()
             done.append(result)
         return done
+
+    async def _skip(self, loop: _Loop) -> None:
+        """A tick that finds a run already going (§3.4a.9). A scheduled run waits an interval,
+        stored so a restart agrees; one asked for waits only for the run going to end."""
+        log.info(
+            "a scheduled Goodreads run was skipped: one is already running",
+            extra={"event": "tick_skipped", "profile": loop.profile, "source": SOURCE},
+        )
+        now = self._clock.time()
+        if loop.nudged is not None:
+            loop.due = now + NUDGE_RETRY
+            return
+        loop.due = now + self._interval + self._jitter()
+        await self._db.write(_reschedule, loop.profile, int(now + self._interval))
 
     async def run_forever(self) -> None:
         """Run the loops until cancelled: each tick, then sleep until the next is due or a
@@ -193,25 +216,33 @@ def _create(conn: sqlite3.Connection, profile: str, due: int) -> None:
     )
 
 
+def _reschedule(conn: sqlite3.Connection, profile: str, due: int) -> None:
+    conn.execute(
+        "UPDATE schedules SET next_due_at = ? WHERE profile = ? AND source = ?",
+        (due, profile, SOURCE),
+    )
+
+
 def _record(
     conn: sqlite3.Connection, profile: str, result: RunResult, now: int, interval: int
 ) -> int:
     """Record a run on the loop's schedule and return its next run (§3.4a.7, §3.4a.9). A
-    fetch that failed or came back incomplete backs off; a deferred run doesn't; any other
-    run resets the backoff."""
+    fetch that failed or came back incomplete backs off. A deferred run, or one that died
+    (``aborted``), says nothing about Goodreads: the backoff stands as it was. Any other run
+    resets it."""
     found = conn.execute(
-        "SELECT consecutive_failures FROM schedules WHERE profile = ? AND source = ?",
+        "SELECT consecutive_failures, backoff_until FROM schedules "
+        "WHERE profile = ? AND source = ?",
         (profile, SOURCE),
     ).fetchone()
-    failures = found[0] if found else 0
-    backoff_until = None
-    if result.state == "deferred":
-        pass  # no backoff: the next scheduled run tries again
+    failures, backoff_until = found if found else (0, None)
+    if result.state in ("deferred", "aborted"):
+        pass  # the next scheduled run tries again, any backoff still in force
     elif result.state == "fetch_failed" or not result.fetched:
         failures += 1
         backoff_until = now + backoff(failures)
     else:
-        failures = 0
+        failures, backoff_until = 0, None
     next_due = max(now + interval, backoff_until or 0)
     succeeded = result.state in ("ok", "partial") and result.fetched
     conn.execute(

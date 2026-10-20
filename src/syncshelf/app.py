@@ -215,7 +215,7 @@ def create_app(
                     extra={"event": "quarantine_released", "count": released},
                 )
             _log_startup(config, db)
-            await _purge(db, clock)
+            await _housekeeping(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
