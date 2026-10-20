@@ -16,7 +16,16 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
-__all__ = ["RunCounts", "RunSource", "RunState", "Trigger", "abort_running", "finish", "start"]
+__all__ = [
+    "RunCounts",
+    "RunResult",
+    "RunSource",
+    "RunState",
+    "Trigger",
+    "abort_running",
+    "finish",
+    "start",
+]
 
 RunSource = Literal["gr_rss", "gr_csv", "abs"]
 """The sources that write runs. ``mirror`` and ``chaptarr_watch`` are reserved (§3.4a.7)."""
@@ -33,11 +42,26 @@ class RunCounts:
     quarantined: int = 0
     first_error: str | None = None
     """The first error seen, already host-aliased and secret-scrubbed (§2.7)."""
+    fetched: bool = False
+    """The source fetch was complete: every page usable (§3.4a.3)."""
+    observed_at: int | None = None
+    """When what was fetched was observed, when anything usable was."""
 
     def error(self, message: str) -> None:
         """Keep ``message`` unless an earlier error was already kept."""
         if self.first_error is None:
             self.first_error = message
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """How a run ended, for whoever started it (the scheduler, ``sync_now``)."""
+
+    run_id: int
+    state: RunState
+    fetched: bool
+    """The source fetch was complete; a fetch that wasn't is what backoff answers (§3.4a.7)."""
+    observed_at: int | None
 
 
 def start(

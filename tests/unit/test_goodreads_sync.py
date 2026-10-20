@@ -40,7 +40,7 @@ async def state(w: World, run_id: int) -> tuple[str, int, int, str | None]:
 
 
 async def test_the_first_complete_run_is_the_backfill_and_pushes_nothing(w: World) -> None:
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == ("ok", 0, 0, None)
     assert w.hardcover.writes == []
     assert await w.rows("SELECT rows_linked, rows_queued, run_id FROM backfills") == [
@@ -86,7 +86,7 @@ async def test_a_rating_changed_after_the_backfill_reaches_hardcover(w: World) -
     w.clock.advance(3600)
     w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
     observed = int(w.clock.time())
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == ("ok", 1, 0, None)
     assert [(name, fields) for name, _, fields in w.hardcover.writes] == [
         ("update_user_book", {"rating": 5.0})
@@ -116,7 +116,7 @@ async def test_an_idle_run_makes_no_hardcover_calls(w: World) -> None:
     before = len(w.hardcover.requests)
     w.clock.advance(3600)
     observed = int(w.clock.time())
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == ("ok", 0, 0, None)
     assert len(w.hardcover.requests) == before
     # It still recorded what it saw: the baselines' observations moved on.
@@ -130,7 +130,7 @@ async def test_a_change_on_a_queued_row_waits_and_costs_nothing(w: World) -> Non
     before = len(w.hardcover.requests)
     w.clock.advance(3600)
     w.goodreads.users[GR_USER].items[1]["user_rating"] = "3"  # Messiah, queued
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == ("ok", 0, 0, None)
     assert len(w.hardcover.requests) == before
     # Recorded on its baseline all the same, so resolving the row later applies it.
@@ -145,7 +145,7 @@ async def test_a_failed_write_leaves_the_baseline_for_the_next_run(w: World) -> 
     w.clock.advance(3600)
     w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
     w.hardcover.fail_next("UpdateUserBook", "validation", message="Rating refused")
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == (
         "partial",
         0,
@@ -159,7 +159,7 @@ async def test_a_failed_write_leaves_the_baseline_for_the_next_run(w: World) -> 
     assert await w.rows("SELECT count(*) FROM change_log") == [(0,)]
     # The next run converges.
     w.clock.advance(3600)
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == ("ok", 1, 0, None)
     assert w.hardcover.user_books[HC_USER][0]["rating"] == 5.0
 
@@ -169,14 +169,14 @@ async def test_a_failed_hardcover_fetch_defers_the_run(w: World) -> None:
     w.clock.advance(3600)
     w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
     w.hardcover.fail_next("Library", "unavailable")
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert (await state(w, run_id))[:3] == ("deferred", 0, 0)
     assert w.hardcover.writes == []
 
 
 async def test_an_unusable_feed_fails_the_fetch_and_does_nothing(w: World) -> None:
     w.goodreads.fail_next("challenge")
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == (
         "fetch_failed",
         0,
@@ -191,7 +191,7 @@ async def test_an_incomplete_first_run_waits_for_a_complete_one(w: World) -> Non
     for n in range(250):  # two pages, so the second can fail
         w.goodreads.add_item(GR_USER, 1000 + n, f"Book {n}")
     w.goodreads.fail_next("server_error", page=2)
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert (await state(w, run_id))[0] == "partial"
     assert w.hardcover.requests == []
     assert await w.rows("SELECT count(*) FROM backfills") == [(0,)]
@@ -225,7 +225,7 @@ async def test_a_404_user_fails_the_fetch_and_concludes_nothing(w: World) -> Non
     await w.sync.run_rss("alice")
     w.clock.advance(3600)
     del w.goodreads.users[GR_USER]
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == (
         "fetch_failed",
         0,
@@ -248,7 +248,7 @@ async def test_a_change_hardcover_cant_take_fails_alone_and_the_run_goes_on(w: W
     items = {i["book_id"]: i for i in w.goodreads.users[GR_USER].items}
     items[str(DUNE)]["user_rating"] = "5"
     items["400"]["user_rating"] = "3"
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     (run_state, applied, failed, error) = await state(w, run_id)
     assert (run_state, applied, failed) == ("partial", 1, 1)
     assert error is not None and "not on the profile's Hardcover shelves" in error
@@ -278,7 +278,7 @@ async def test_a_pending_change_waits_for_a_batch_that_lists_its_row(w: World) -
     await w.sync.run_rss("alice")  # sees the change; the write fails
     w.clock.advance(3600)
     w.goodreads.fail_next("server_error", page=2)  # Dune's page is missing this time
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert (await state(w, run_id))[:3] == ("partial", 0, 0)
     assert await w.rows(
         "SELECT pending_value FROM baseline_fields WHERE source_id = ? AND field = 'rating'",
@@ -318,7 +318,7 @@ async def test_a_library_syncshelf_cant_store_defers_the_run(w: World) -> None:
     w.clock.advance(3600)
     w.goodreads.users[GR_USER].items[0]["user_rating"] = "5"
     w.hardcover.add_user_book(HC_USER, 9, status_id=9)  # a status the mirror refuses
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     assert await state(w, run_id) == (
         "deferred",
         0,
@@ -354,7 +354,7 @@ async def test_a_failed_edition_lookup_holds_only_the_reads(w: World) -> None:
     items[str(DUNE)]["user_read_at"] = "Fri, 2 Oct 2026 00:00:00 +0000"  # a correction read
     w.hardcover.user_books[HC_USER][0]["user_book_reads"] = [read_row(1, None, "2026-01-01", 70)]
     w.hardcover.fail_next("EditionFormats", "unavailable")
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     (run_state, applied, failed, _) = await state(w, run_id)
     assert (run_state, applied, failed) == ("partial", 1, 1)
     assert w.hardcover.user_books[HC_USER][0]["rating"] == 5.0
@@ -389,7 +389,7 @@ async def test_a_new_book_on_an_unmapped_shelf_holds_its_other_changes(tmp_path:
         await w.sync.run_rss("alice")
         w.clock.advance(3600)
         w.goodreads.add_item(GR_USER, MESSIAH, "Dune Messiah", shelf="to-read", user_rating="4")
-        run_id = await w.sync.run_rss("alice")
+        run_id = (await w.sync.run_rss("alice")).run_id
         assert await state(w, run_id) == ("ok", 0, 0, None)
         assert w.hardcover.writes == []
         assert await w.rows(
@@ -411,7 +411,7 @@ async def test_matching_new_books_can_fail_without_holding_the_rest(w: World) ->
     dune["user_rating"] = "5"  # already linked
     w.goodreads.add_item(GR_USER, 500, "God Emperor of Dune")
     w.hardcover.fail_next("ByGoodreads", "unavailable")
-    run_id = await w.sync.run_rss("alice")
+    run_id = (await w.sync.run_rss("alice")).run_id
     (run_state, applied, _, error) = await state(w, run_id)
     assert (run_state, applied) == ("ok", 1)
     assert error is not None

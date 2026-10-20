@@ -81,7 +81,7 @@ from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
-from syncshelf.sync.runs import RunCounts, RunState, Trigger
+from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
 
 __all__ = ["Clock", "GoodreadsSync"]
 
@@ -161,15 +161,15 @@ class GoodreadsSync:
         when it's held."""
         return self._locks[profile]
 
-    async def run_rss(self, profile: str, trigger: Trigger = "schedule") -> int:
-        """Run the profile's RSS source once and return the run's id, waiting for a run in
+    async def run_rss(self, profile: str, trigger: Trigger = "schedule") -> RunResult:
+        """Run the profile's RSS source once and say how it ended, waiting for a run in
         progress to finish first. Every outcome is on the run's row; this raises only for a
         profile with no Goodreads source."""
         rss = self._rss[profile]
         async with self._locks[profile]:
             return await self._locked_run(profile, rss, trigger)
 
-    async def _locked_run(self, profile: str, rss: GoodreadsRss, trigger: Trigger) -> int:
+    async def _locked_run(self, profile: str, rss: GoodreadsRss, trigger: Trigger) -> RunResult:
         started = int(self._clock.time())
         began = self._clock.monotonic()
         run_id = await self._db.write(runs.start, profile, "gr_rss", trigger, started)
@@ -201,7 +201,7 @@ class GoodreadsSync:
                     "duration_s": round(self._clock.monotonic() - began, 3),
                 },
             )
-        return run_id
+        return RunResult(run_id, state, counts.fetched, counts.observed_at)
 
     async def _run(
         self, profile: str, rss: GoodreadsRss, run_id: int, started: int, counts: RunCounts
@@ -214,6 +214,7 @@ class GoodreadsSync:
             counts.error(scrub(fetched.problem))
         if not fetched.usable:
             return "fetch_failed"
+        counts.fetched, counts.observed_at = fetched.complete, started
         zone = self._profiles[profile].tzinfo()
         batch = observe_rss(fetched, goodreads.shelf_map, started, zone)
 

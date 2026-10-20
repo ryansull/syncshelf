@@ -69,7 +69,9 @@ From phase 4a, a profile with a `goodreads` section is read from its Goodreads s
 `goodreads.user_id` (the number in `goodreads.com/user/show/<id>`, quoted) and
 `goodreads.shelf_map` (each exclusive shelf's Hardcover status, 1 to 5) are both required in
 it, and `rss_key` is needed only if the profile isn't public. A profile without the section has
-no Goodreads sync. The file is the only source of profiles: at each start, a profile removed from it is marked
+no Goodreads sync. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
+the profiles half an interval apart; a failed read backs off from 1 hour to at most 6, and a
+restart picks the schedule up where it left off. The file is the only source of profiles: at each start, a profile removed from it is marked
 removed and its Claude connections are revoked, and a name added back is restored.
 
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says

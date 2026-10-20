@@ -13,11 +13,12 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
    (:func:`syncshelf.auth.tokens.purge_expired`, #77);
 4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret,
    and dev mode logs a warning at every start (§3.2.5);
-5. the MCP session manager runs for as long as the app does, and so does a background task
-   that purges expired OAuth rows again every :data:`PURGE_INTERVAL` (#77), until the Phase 4a
-   scheduler takes the job over.
+5. the MCP session manager runs for as long as the app does;
+6. the sync loops resume from their schedules (:class:`syncshelf.sync.scheduler.Scheduler`),
+   and the scheduler's housekeeping purges expired OAuth rows (#77) and old runs again every
+   :data:`PURGE_INTERVAL`.
 
-On shutdown the purge task is cancelled and the database is closed.
+On shutdown the loops and the housekeeping are cancelled and the database is closed.
 
 The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
@@ -73,10 +74,12 @@ from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
+from syncshelf.sync.goodreads import GoodreadsSync
 from syncshelf.sync.identity import release_on_new_version
-from syncshelf.sync.limiter import Clock, HardcoverLimiter
+from syncshelf.sync.limiter import Clock, HardcoverLimiter, SystemClock
 from syncshelf.sync.mirror import Mirror
 from syncshelf.sync.runs import abort_running
+from syncshelf.sync.scheduler import Scheduler, every, purge_runs
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 from syncshelf.tools.confirm import ConfirmTokens
 
@@ -194,6 +197,7 @@ def create_app(
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
         hardcover: dict[str, HardcoverClient] = {}
+        goodreads: GoodreadsSync | None = None
         try:
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
@@ -211,13 +215,31 @@ def create_app(
                     extra={"event": "quarantine_released", "count": released},
                 )
             _log_startup(config, db)
-            await _purge(db, clock)
+            await _housekeeping(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             app.state.grace = grace
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
+            applier = Applier(hardcover, mirror, config.profiles)
+            sync_clock = limiter_clock or SystemClock()
+            goodreads = GoodreadsSync(
+                db=db,
+                profiles=config.profiles,
+                hardcover=hardcover,
+                mirror=mirror,
+                applier=applier,
+                clock=sync_clock,
+                transport=http_transport,
+            )
+            scheduler = Scheduler(
+                db=db,
+                sync=goodreads,
+                profiles=config.profiles,
+                interval=config.cadence.rss_interval,
+                clock=sync_clock,
+            )
             mcp.bind(
                 Services(
                     db=db,
@@ -226,24 +248,32 @@ def create_app(
                     mirror=mirror,
                     profiles=config.profiles,
                     hardcover=hardcover,
-                    applier=Applier(hardcover, mirror, config.profiles),
+                    applier=applier,
                     confirm=ConfirmTokens(clock),
                 )
             )
             async with AsyncExitStack() as stack:
-                purges = await stack.enter_async_context(anyio.create_task_group())
-                purges.start_soon(_purge_every, purge_interval, db, clock, name=PURGE_TASK)
-                # Unwound first, so the purge task is cancelled before the group waits for it.
-                stack.callback(purges.cancel_scope.cancel)
+                tasks = await stack.enter_async_context(anyio.create_task_group())
+                # The scheduler's housekeeping: expired OAuth rows and old runs (§2.4).
+                tasks.start_soon(
+                    every, purge_interval, lambda: _housekeeping(db, clock), name=PURGE_TASK
+                )
+                # Unwound first, so the tasks are cancelled before the group waits for them.
+                stack.callback(tasks.cancel_scope.cancel)
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
                     await stack.enter_async_context(access.running())
                 await stack.enter_async_context(mcp.session_manager.run())
+                # Step 6: the sync loops, resumed from their schedules (§3.4a.9).
+                await scheduler.resume()
+                tasks.start_soon(scheduler.run_forever, name=SYNC_TASK)
                 yield
         finally:
             mcp.bind(None)
             verifier.bind(None)
             try:
+                if goodreads is not None:
+                    await goodreads.aclose()
                 for client in hardcover.values():
                     await client.aclose()
             finally:
@@ -318,7 +348,9 @@ def _check_writable(path: Path, *, create: bool = False) -> None:
 
 
 PURGE_TASK = "oauth_purge"
-"""The name of the lifespan's purge task, so a test can find it."""
+"""The name of the scheduler's housekeeping task, so a test can find it."""
+SYNC_TASK = "sync_loops"
+"""The name of the task running the sync loops."""
 
 
 async def _purge(db: Database, clock: Callable[[], float]) -> None:
@@ -344,11 +376,15 @@ async def _purge(db: Database, clock: Callable[[], float]) -> None:
         )
 
 
-async def _purge_every(interval: float, db: Database, clock: Callable[[], float]) -> None:
-    """Purge every ``interval`` seconds until cancelled."""
-    while True:
-        await anyio.sleep(interval)
-        await _purge(db, clock)
+async def _housekeeping(db: Database, clock: Callable[[], float]) -> None:
+    """The daily purges: expired OAuth rows, and runs older than 90 days (§2.4). A failure is
+    logged and swallowed, like the OAuth purge's."""
+    await _purge(db, clock)
+    try:
+        if purged := await db.write(purge_runs, int(clock())):
+            log.info("purged old runs", extra={"event": "runs_purged", "count": purged})
+    except Exception:
+        log.exception("purging old runs failed", extra={"event": "runs_purge_failed"})
 
 
 def _log_profile_sync(synced: ProfileSync) -> None:
