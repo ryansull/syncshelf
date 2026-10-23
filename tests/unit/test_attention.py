@@ -5,6 +5,7 @@ household health view and on ``/healthz``, none of them naming a book or a value
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ CASES = yaml.safe_load(
     (Path(__file__).parents[1] / "golden" / "attention.yaml").read_text(encoding="utf-8")
 )["cases"]
 NOW = 4_102_444_800
+GOODREADS = SimpleNamespace(user_id="1")
 HOUR = 3600
 
 
@@ -49,6 +51,11 @@ def seed(conn: sqlite3.Connection, profile: str, state: dict[str, Any]) -> None:
             "VALUES (?, 'gr_rss', 0, ?, 'ok')",
             (profile, NOW - ago * HOUR),
         )
+    if (ago := state.get("due_ago")) is not None:
+        conn.execute(
+            "INSERT INTO schedules (profile, source, next_due_at) VALUES (?, 'gr_rss', ?)",
+            (profile, NOW - ago * HOUR),
+        )
     if (ago := state.get("first_run_ago")) is not None:
         conn.execute(
             "INSERT INTO runs (profile, source, trigger, started_at, state) "
@@ -69,7 +76,8 @@ def test_case(schema: sqlite3.Connection, case: dict[str, Any]) -> None:
     state = case["state"]
     with schema:
         seed(schema, "alice", state)
-    items = attention(schema, "alice", NOW, state.get("enabled", True))
+    config = SimpleNamespace(goodreads=GOODREADS if state.get("enabled", True) else None)
+    items = attention(schema, "alice", NOW, config)  # type: ignore[arg-type]
     assert [i["code"] for i in items] == case["expect"]
     for item in items:
         assert item["message"] and item["action"]
@@ -85,16 +93,19 @@ def test_the_household_view_is_codes_and_results_only(schema: sqlite3.Connection
     assert [(r["profile"], r["attention"]) for r in rows] == [
         ("alice", ["quarantined", "hardcover_bug"]),
         ("bob", ["source_stale"]),
+        ("carol", []),
     ]
     assert rows[0]["sources"]["gr_rss"]["last_result"] == "ok"
+    assert rows[2]["sources"] == {}  # no Goodreads section: no source shown
     assert "Secret" not in repr(rows)
 
 
 def make_config_profiles() -> Any:
-    from types import SimpleNamespace
-
-    gr = SimpleNamespace(user_id="1")
-    return {"alice": SimpleNamespace(goodreads=gr), "bob": SimpleNamespace(goodreads=gr)}
+    return {
+        "alice": SimpleNamespace(goodreads=GOODREADS),
+        "bob": SimpleNamespace(goodreads=GOODREADS),
+        "carol": SimpleNamespace(goodreads=None),
+    }
 
 
 # --- through the app ----------------------------------------------------------------------------
@@ -169,3 +180,17 @@ async def test_healthz_reports_attention_without_naming_anything(app: Any, data_
         assert body["status"] == "attention"
         assert body["profiles"] == {"alice": [], "bob": ["quarantined"]}
         assert "Secret" not in response.text
+
+
+async def test_an_attention_failure_never_costs_the_answer(
+    app: Any, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import syncshelf.tools as tools
+
+    async def broken() -> list[Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tools, "caller_attention", broken)
+    async with running(app) as http, mcp_client(http) as mcp:
+        page = await call(mcp, "get_my_library")
+        assert "attention" not in page and "books" in page

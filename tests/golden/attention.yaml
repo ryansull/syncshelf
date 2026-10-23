@@ -5,6 +5,7 @@
 #   quarantined:      the error class of each quarantined change ([] for none)
 #   last_success_ago: hours since the RSS source last succeeded (absent: never)
 #   first_run_ago:    hours since its first run (absent: never ran)
+#   due_ago:          hours since its first run was due (absent: never scheduled)
 #   enabled:          whether the profile has a goodreads section (default true)
 #   queued:           books in the unmatched queue
 # When a case and the spec disagree, fix the case first.
@@ -38,8 +39,16 @@ cases:
     state: {first_run_ago: 25}
     expect: [source_stale]
 
-  - name: a source that never ran is not stale
+  - name: a source just configured, never scheduled or run, is not stale
     state: {}
+    expect: []
+
+  - name: a source due over a day ago that never ran is stale (its loop is broken)
+    state: {due_ago: 25}
+    expect: [source_stale]
+
+  - name: a source due within the day that hasn't run yet is not stale
+    state: {due_ago: 2}
     expect: []
 
   - name: a source not configured is never stale

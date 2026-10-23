@@ -20,6 +20,7 @@ the SDK carries the caller.
 """
 
 import functools
+import logging
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -60,6 +61,9 @@ __all__ = [
 ]
 
 ToolFn = Callable[..., Awaitable[Any]]
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -248,8 +252,7 @@ async def caller_attention() -> list[AttentionItem]:
     about."""
     caller = current_profile()
     bound = services()
-    enabled = bound.profiles[caller].goodreads is not None
-    return await bound.db.read(attention, caller, int(bound.clock()), enabled)
+    return await bound.db.read(attention, caller, int(bound.clock()), bound.profiles[caller])
 
 
 def with_attention[**P, R: Mapping[str, Any]](
@@ -262,7 +265,13 @@ def with_attention[**P, R: Mapping[str, Any]](
     @functools.wraps(fn)
     async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
         result = await fn(*args, **kwargs)
-        if items := await caller_attention():
+        try:
+            items = await caller_attention()
+        except Exception:
+            # The answer asked for matters more than the field added to it.
+            log.exception("attention items failed", extra={"event": "attention_failed"})
+            return result
+        if items:
             result["attention"] = items  # type: ignore[index]
         return result
 

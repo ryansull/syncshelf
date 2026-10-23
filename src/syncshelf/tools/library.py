@@ -249,6 +249,9 @@ async def get_my_library(
     from SyncShelf's copy of the library, refreshed when older than a few minutes: as_of says
     when it was taken, and stale is true (with stale_reason) when Hardcover couldn't be reached
     and an older copy was used. An edit just made in Hardcover itself may not show yet.
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     caller = current_profile()
     if finished_from and finished_to and finished_from > finished_to:
@@ -624,6 +627,9 @@ async def reading_stats(period: str, group_by: GroupBy | None = None, profile: s
     the numbers are a floor. goals lists the profile's Hardcover reading goals with progress
     (left out for household answers, or when Hardcover can't be reached). as_of and stale are
     as in get_my_library.
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     caller = current_profile()
     bound = services()
@@ -950,6 +956,9 @@ async def get_book(book: int, profile: str = ME) -> BookRecord:
     Many books shelved as read have no reads logged: say so rather than guess a date. When
     Hardcover couldn't give an extra this time, unavailable names it (for example "similar"),
     and the rest of the record still stands.
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     caller = current_profile()
     bound = services()
@@ -1239,6 +1248,9 @@ async def series_progress(series: str | None = None, profile: str = ME) -> Serie
     edition or translation shelved as read counts for its position. Box sets and entries with
     no position are left out. Series lists come from Hardcover live; shelf status from
     SyncShelf's copy (as_of, stale as in get_my_library).
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     caller = current_profile()
     bound = services()
@@ -1486,6 +1498,9 @@ async def search_books(
     (statuses per profile on household answers). found is Hardcover's total match count.
     incomplete is true when Hardcover failed while looking past shelved books; the books
     found so far are still returned.
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     # Backticks quote Typesense filter values, so they can't be part of one.
     author = _text(author.replace("`", "")) if author else None
@@ -1654,6 +1669,9 @@ async def check_books(
     Hardcover has those editions), genres, and status (statuses on household answers; null
     when not shelved). A not_found row with error couldn't be checked this time (try again),
     or names why a given book_id was refused.
+
+    When something about the caller's own syncs needs a person, the answer carries attention:
+    a list of {code, message, action}. Mention it to the user.
     """
     for candidate in candidates:
         if "book_id" not in candidate and not _text(candidate.get("title")):

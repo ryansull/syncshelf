@@ -46,7 +46,7 @@ import logging
 import sqlite3
 import tempfile
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -65,13 +65,12 @@ import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.sync  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.writes  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
-from syncshelf.attention import attention
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import RefreshGrace, TokenVerifier, purge_expired
 from syncshelf.clients.hardcover import HardcoverClient
-from syncshelf.config import Config, ProfileConfig, ServerConfig
+from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
@@ -84,6 +83,7 @@ from syncshelf.sync.runs import abort_running
 from syncshelf.sync.scheduler import Scheduler, every, purge_runs
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 from syncshelf.tools.confirm import ConfirmTokens
+from syncshelf.tools.sync import health
 
 __all__ = [
     "DB_FILENAME",
@@ -331,21 +331,18 @@ async def healthz(request: Request) -> JSONResponse:
     try:
         db: Database = request.app.state.db
         await db.read(_select_one)
-        codes = await db.read(_codes, request.app.state.profiles, int(request.app.state.clock()))
     except Exception:
         log.warning("health check failed", exc_info=True, extra={"event": "healthz_failed"})
         return JSONResponse({"status": "unavailable", "version": __version__}, status_code=503)
+    # Liveness rests on the database alone; attention failing is itself worth a look.
+    try:
+        rows = await db.read(health, request.app.state.profiles, int(request.app.state.clock()))
+    except Exception:
+        log.exception("health attention failed", extra={"event": "healthz_attention_failed"})
+        return JSONResponse({"status": "attention", "version": __version__})
+    codes = {row["profile"]: row["attention"] for row in rows}
     state = "attention" if any(codes.values()) else "ok"
     return JSONResponse({"status": state, "version": __version__, "profiles": codes})
-
-
-def _codes(
-    conn: sqlite3.Connection, profiles: Mapping[str, ProfileConfig], now: int
-) -> dict[str, list[str]]:
-    return {
-        name: [i["code"] for i in attention(conn, name, now, profile.goodreads is not None)]
-        for name, profile in sorted(profiles.items())
-    }
 
 
 def _select_one(conn: sqlite3.Connection) -> None:

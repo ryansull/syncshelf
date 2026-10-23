@@ -312,7 +312,7 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
         hardcover=_limiter(gate),
         **detail,
     )
-    if items := await bound.db.read(attention, caller, now, enabled):
+    if items := await bound.db.read(attention, caller, now, bound.profiles[caller]):
         answer["attention"] = items
     return answer
 
@@ -324,16 +324,22 @@ def health(
     success. Nothing that names a book, a value or an error (§3.4a.10)."""
     rows: list[Health] = []
     for name in sorted(profiles):
-        enabled = profiles[name].goodreads is not None
-        codes = [item["code"] for item in attention(conn, name, now, enabled)]
-        found = conn.execute(
-            "SELECT last_result, last_success_at FROM schedules WHERE profile = ? AND "
-            "source = 'gr_rss'",
-            (name,),
-        ).fetchone() or (None, None)
-        sources = {"gr_rss": {"last_result": found[0], "last_success_at": _iso(found[1])}}
+        codes = [item["code"] for item in attention(conn, name, now, profiles[name])]
+        sources: dict[str, dict[str, str | None]] = {}
+        for run_source in _enabled(profiles[name]):
+            found = conn.execute(
+                "SELECT last_result, last_success_at FROM schedules WHERE profile = ? AND "
+                "source = ?",
+                (name, run_source),
+            ).fetchone() or (None, None)
+            sources[run_source] = {"last_result": found[0], "last_success_at": _iso(found[1])}
         rows.append(Health(profile=name, attention=codes, sources=sources))
     return rows
+
+
+def _enabled(profile: ProfileConfig) -> list[str]:
+    """The run sources a profile has, of those shipped so far."""
+    return [s for s, identity in SOURCES.items() if identity == "goodreads" and profile.goodreads]
 
 
 class Started(TypedDict):

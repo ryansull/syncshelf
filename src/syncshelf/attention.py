@@ -19,6 +19,8 @@ Messages name counts and sources, never titles or values (§2.7): the household 
 import sqlite3
 from typing import NotRequired, TypedDict
 
+from syncshelf.config import ProfileConfig
+
 __all__ = ["STALE_AFTER", "AttentionItem", "attention"]
 
 STALE_AFTER = 24 * 3600
@@ -36,9 +38,10 @@ class AttentionItem(TypedDict):
 
 
 def attention(
-    conn: sqlite3.Connection, profile: str, now: int, enabled: bool
+    conn: sqlite3.Connection, profile: str, now: int, config: ProfileConfig
 ) -> list[AttentionItem]:
-    """The profile's attention items, from state, in a fixed order."""
+    """The profile's attention items, from state, in a fixed order. ``config`` says which of
+    its sources are enabled."""
     items: list[AttentionItem] = []
     quarantined, bugs = conn.execute(
         "SELECT count(*), coalesce(sum(last_error_class = 'bug'), 0) FROM baseline_fields "
@@ -62,7 +65,7 @@ def attention(
                 action="See sync_status, and report it as a bug.",
             )
         )
-    if enabled and _stale(conn, profile, now):
+    if config.goodreads is not None and _stale(conn, profile, now):
         items.append(
             AttentionItem(
                 code="source_stale",
@@ -74,12 +77,19 @@ def attention(
 
 
 def _stale(conn: sqlite3.Connection, profile: str, now: int) -> bool:
-    """No success for over a day: since the last success, or, never having had one, since
-    the first run."""
+    """No success for over a day: since the last success; never having had one, since the
+    first run, or, never having run at all, since it was first due (a loop that never runs
+    is broken too)."""
     since = conn.execute(
-        "SELECT coalesce((SELECT last_success_at FROM schedules WHERE profile = ? AND "
-        "source = 'gr_rss'), (SELECT min(started_at) FROM runs WHERE profile = ? AND "
-        "source = 'gr_rss'))",
+        "SELECT coalesce(s.last_success_at, (SELECT min(started_at) FROM runs WHERE "
+        "profile = ? AND source = 'gr_rss'), s.next_due_at) FROM schedules s "
+        "WHERE s.profile = ? AND s.source = 'gr_rss'",
         (profile, profile),
-    ).fetchone()[0]
-    return since is not None and now - since > STALE_AFTER
+    ).fetchone()
+    if since is None:  # never scheduled: a source just configured
+        found = conn.execute(
+            "SELECT min(started_at) FROM runs WHERE profile = ? AND source = 'gr_rss'",
+            (profile,),
+        ).fetchone()
+        since = found
+    return since[0] is not None and now - since[0] > STALE_AFTER
