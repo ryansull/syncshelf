@@ -11,6 +11,7 @@ and a review is shown only as its length and first 40 characters.
 """
 
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -18,6 +19,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from syncshelf import __version__
+from syncshelf.attention import AttentionItem, attention
+from syncshelf.config import ProfileConfig
 from syncshelf.sync.identity import release_changes
 from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.tools import REGISTRY, current_profile, services
@@ -83,16 +86,29 @@ class Stuck(TypedDict):
     attempts: int
 
 
-class Status(TypedDict):
+class Health(TypedDict):
+    """One profile in the household health view: codes and results, no titles or values."""
+
     profile: str
+    attention: list[str]
+    sources: dict[str, dict[str, str | None]]
+
+
+class Status(TypedDict):
+    """``sync_status``'s answer: the caller's full detail, or the household health view."""
+
     now: str
     version: str
-    sources: dict[str, Source]
-    mirror: dict[str, Any]
-    hardcover: dict[str, Any]
-    quarantine: dict[str, Any]
-    unmatched: dict[str, Any]
-    gone: dict[str, int]
+    profile: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    sources: NotRequired[dict[str, Source]]
+    mirror: NotRequired[dict[str, Any]]
+    hardcover: NotRequired[dict[str, Any]]
+    quarantine: NotRequired[dict[str, Any]]
+    unmatched: NotRequired[dict[str, Any]]
+    gone: NotRequired[dict[str, int]]
+    household: NotRequired[list[Health]]
+    """With ``profile="household"``: every profile's health, in name order."""
 
 
 def _iso(epoch: float | None) -> str | None:
@@ -262,6 +278,9 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     """How the caller's syncs are doing: use it when the user asks whether their Goodreads
     sync is working, why a book hasn't reached Hardcover, or what's stuck.
 
+    attention lists what needs a person (quarantined changes, a Hardcover bug, a feed not
+    read for a day), each with a message and the action that fixes it.
+
     For the caller's own profile ("me", the default) it shows each source's last result, when
     it last ran and succeeded, when it next runs, any backoff after failed fetches, whether
     its first sync (the backfill) is done with how many books were linked and queued, and its
@@ -271,22 +290,56 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     with retry_failed once the cause is fixed); the unmatched queue in counts by reason (see
     unmatched_books for the books themselves); and how many books Goodreads no longer lists.
     Times are ISO 8601 UTC. A review is shown only as its length and first 40 characters.
+
+    With profile="household" it is the health view of every profile in the household: each
+    one's attention codes and each source's last result and last success, with no books,
+    values or errors.
     """
-    if profile == "household":
-        raise ToolError("The household health view arrives with attention items (#171).")
     caller = current_profile()
     bound = services()
     now = int(bound.clock())
+    if profile == "household":
+        # Operational data, shown for everyone whatever household_visible says (§3.4a.10).
+        rows = await bound.db.read(health, bound.profiles, now)
+        return Status(now=_iso(now) or "", version=__version__, household=rows)
     enabled = bound.profiles[caller].goodreads is not None
     detail = await bound.db.read(status, caller, now, enabled)
     gate = bound.hardcover[caller].gate if caller in bound.hardcover else None
-    return Status(
+    answer = Status(
         profile=caller,
         now=_iso(now) or "",
         version=__version__,
         hardcover=_limiter(gate),
         **detail,
     )
+    if items := await bound.db.read(attention, caller, now, bound.profiles[caller]):
+        answer["attention"] = items
+    return answer
+
+
+def health(
+    conn: sqlite3.Connection, profiles: Mapping[str, ProfileConfig], now: int
+) -> list[Health]:
+    """Every profile's health: its attention codes and each source's last result and last
+    success. Nothing that names a book, a value or an error (§3.4a.10)."""
+    rows: list[Health] = []
+    for name in sorted(profiles):
+        codes = [item["code"] for item in attention(conn, name, now, profiles[name])]
+        sources: dict[str, dict[str, str | None]] = {}
+        for run_source in _enabled(profiles[name]):
+            found = conn.execute(
+                "SELECT last_result, last_success_at FROM schedules WHERE profile = ? AND "
+                "source = ?",
+                (name, run_source),
+            ).fetchone() or (None, None)
+            sources[run_source] = {"last_result": found[0], "last_success_at": _iso(found[1])}
+        rows.append(Health(profile=name, attention=codes, sources=sources))
+    return rows
+
+
+def _enabled(profile: ProfileConfig) -> list[str]:
+    """The run sources a profile has, of those shipped so far."""
+    return [s for s, identity in SOURCES.items() if identity == "goodreads" and profile.goodreads]
 
 
 class Started(TypedDict):

@@ -1,0 +1,64 @@
+# Attention items, raised and cleared (SPEC §3.4a.10; §2.9 golden sets).
+#
+# Each case gives the profile's state an hour-granular clock away from "now", and the codes
+# that must come back, in order:
+#   quarantined:      the error class of each quarantined change ([] for none)
+#   last_success_ago: hours since the RSS source last succeeded (absent: never)
+#   first_run_ago:    hours since its first run (absent: never ran)
+#   due_ago:          hours since its first run was due (absent: never scheduled)
+#   enabled:          whether the profile has a goodreads section (default true)
+#   queued:           books in the unmatched queue
+# When a case and the spec disagree, fix the case first.
+
+cases:
+  - name: a healthy profile raises nothing
+    state: {last_success_ago: 1}
+    expect: []
+
+  - name: a quarantined change raises quarantined
+    state: {quarantined: [permanent], last_success_ago: 1}
+    expect: [quarantined]
+
+  - name: a quarantined bug raises hardcover_bug too
+    state: {quarantined: [transient, bug], last_success_ago: 1}
+    expect: [quarantined, hardcover_bug]
+
+  - name: once released, nothing is raised
+    state: {quarantined: [], last_success_ago: 1}
+    expect: []
+
+  - name: no success for over a day is stale
+    state: {last_success_ago: 25}
+    expect: [source_stale]
+
+  - name: exactly a day is not yet stale
+    state: {last_success_ago: 24}
+    expect: []
+
+  - name: never a success, and the first run over a day ago, is stale
+    state: {first_run_ago: 25}
+    expect: [source_stale]
+
+  - name: a source just configured, never scheduled or run, is not stale
+    state: {}
+    expect: []
+
+  - name: a source due over a day ago that never ran is stale (its loop is broken)
+    state: {due_ago: 25}
+    expect: [source_stale]
+
+  - name: a source due within the day that hasn't run yet is not stale
+    state: {due_ago: 2}
+    expect: []
+
+  - name: a source not configured is never stale
+    state: {enabled: false, last_success_ago: 100}
+    expect: []
+
+  - name: the unmatched queue is never attention
+    state: {queued: 5, last_success_ago: 1}
+    expect: []
+
+  - name: everything at once, in a fixed order
+    state: {quarantined: [bug], last_success_ago: 48}
+    expect: [quarantined, hardcover_bug, source_stale]

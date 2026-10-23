@@ -53,7 +53,11 @@ class TestHealthz:
         async with running(create_app(make_config(tmp_path), data_dir=data_dir)) as client:
             response = await client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "version": __version__}
+        assert response.json() == {
+            "status": "ok",
+            "version": __version__,
+            "profiles": {"alice": []},
+        }
 
     async def test_503_when_the_database_does_not_answer(
         self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture

@@ -83,6 +83,7 @@ from syncshelf.sync.runs import abort_running
 from syncshelf.sync.scheduler import Scheduler, every, purge_runs
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 from syncshelf.tools.confirm import ConfirmTokens
+from syncshelf.tools.sync import health
 
 __all__ = [
     "DB_FILENAME",
@@ -222,6 +223,8 @@ def create_app(
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             app.state.grace = grace
+            app.state.profiles = config.profiles
+            app.state.clock = clock
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             applier = Applier(hardcover, mirror, config.profiles)
@@ -321,17 +324,25 @@ def hardcover_clients(
 
 
 async def healthz(request: Request) -> JSONResponse:
-    """Liveness: 200 when ``SELECT 1`` succeeds on a read connection, 503 otherwise.
-
-    The 503 body is provisional until #51 confirms it.
-    """
+    """Liveness and health (§3.4a.10): 200 whenever the database answers, with each
+    profile's attention codes and ``status`` ``attention`` when any profile has one, so
+    Uptime Kuma or Home Assistant can alert on it; 503 only when the database doesn't. No
+    titles or values, and a CAPTCHA never fails liveness."""
     try:
         db: Database = request.app.state.db
         await db.read(_select_one)
     except Exception:
         log.warning("health check failed", exc_info=True, extra={"event": "healthz_failed"})
         return JSONResponse({"status": "unavailable", "version": __version__}, status_code=503)
-    return JSONResponse({"status": "ok", "version": __version__})
+    # Liveness rests on the database alone; attention failing is itself worth a look.
+    try:
+        rows = await db.read(health, request.app.state.profiles, int(request.app.state.clock()))
+    except Exception:
+        log.exception("health attention failed", extra={"event": "healthz_attention_failed"})
+        return JSONResponse({"status": "attention", "version": __version__})
+    codes = {row["profile"]: row["attention"] for row in rows}
+    state = "attention" if any(codes.values()) else "ok"
+    return JSONResponse({"status": state, "version": __version__, "profiles": codes})
 
 
 def _select_one(conn: sqlite3.Connection) -> None:
