@@ -12,7 +12,6 @@ and a review is shown only as its length and first 40 characters.
 
 import sqlite3
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any, Literal, NotRequired, TypedDict
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -23,7 +22,7 @@ from syncshelf.attention import AttentionItem, attention
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.identity import release_changes
 from syncshelf.sync.limiter import HardcoverLimiter
-from syncshelf.tools import REGISTRY, current_profile, services
+from syncshelf.tools import REGISTRY, current_profile, iso, services
 
 __all__ = ["QUARANTINE_SHOWN", "RECENT_RUNS", "retry_failed", "status", "sync_now", "sync_status"]
 
@@ -111,10 +110,6 @@ class Status(TypedDict):
     """With ``profile="household"``: every profile's health, in name order."""
 
 
-def _iso(epoch: float | None) -> str | None:
-    return None if epoch is None else datetime.fromtimestamp(epoch, UTC).isoformat()
-
-
 def _shown(field: str, value: str | None) -> Any:
     """A baseline value as the status shows it: a review only as its length and start."""
     if field == "review" and value is not None:
@@ -160,22 +155,20 @@ def _source(
         (profile, identity_source),
     ).fetchone()
     backfill: Backfill = (
-        Backfill(
-            state="done", done_at=_iso(done[0]) or "", rows_linked=done[1], rows_queued=done[2]
-        )
+        Backfill(state="done", done_at=iso(done[0]) or "", rows_linked=done[1], rows_queued=done[2])
         if done
         else Backfill(state="pending")
     )
     return Source(
         enabled=enabled,
         last_result=result,
-        last_run_at=_iso(run_at),
-        last_success_at=_iso(success_at),
-        last_observed_at=_iso(observed_at),
+        last_run_at=iso(run_at),
+        last_success_at=iso(success_at),
+        last_observed_at=iso(observed_at),
         # A source taken out of the config keeps its history but runs no more.
-        next_due_at=_iso(due_at) if enabled else None,
+        next_due_at=iso(due_at) if enabled else None,
         consecutive_failures=failures,
-        backoff_until=_iso(backoff_until),
+        backoff_until=iso(backoff_until),
         backfill=backfill,
         recent_runs=_runs(conn, profile, run_source, now),
     )
@@ -195,7 +188,7 @@ def _runs(conn: sqlite3.Connection, profile: str, source: str, now: int) -> list
             id=run_id,
             trigger=trigger,
             state=state,
-            started_at=_iso(started) or "",
+            started_at=iso(started) or "",
             duration_s=None if ended is None else ended - started,
             applied=applied,
             failed=failed,
@@ -211,7 +204,7 @@ def _mirror(conn: sqlite3.Connection, profile: str) -> dict[str, Any]:
         "SELECT as_of, last_attempt_at, last_error FROM mirror_state WHERE profile = ?",
         (profile,),
     ).fetchone() or (None, None, None)
-    return {"as_of": _iso(row[0]), "last_attempt_at": _iso(row[1]), "last_error": row[2]}
+    return {"as_of": iso(row[0]), "last_attempt_at": iso(row[1]), "last_error": row[2]}
 
 
 def _quarantine(conn: sqlite3.Connection, profile: str) -> dict[str, Any]:
@@ -239,7 +232,7 @@ def _quarantine(conn: sqlite3.Connection, profile: str) -> dict[str, Any]:
             new=_shown(field, new),
             last_error=error,
             error_class=kind,
-            first_failed_at=_iso(first),
+            first_failed_at=iso(first),
             attempts=attempts,
         )
         for change_id, book, title, field, old, new, error, kind, first, attempts in rows
@@ -259,7 +252,7 @@ def _unmatched(conn: sqlite3.Connection, profile: str) -> dict[str, Any]:
         "SELECT min(queued_at) FROM source_rows WHERE profile = ? AND state = 'queued'",
         (profile,),
     ).fetchone()[0]
-    return {"total": sum(reasons.values()), "by_reason": reasons, "oldest_queued_at": _iso(oldest)}
+    return {"total": sum(reasons.values()), "by_reason": reasons, "oldest_queued_at": iso(oldest)}
 
 
 def _limiter(gate: Any) -> dict[str, Any]:
@@ -268,7 +261,7 @@ def _limiter(gate: Any) -> dict[str, Any]:
     state = gate.state()
     return {
         "limiter": state.limiter,
-        "paused_until": _iso(state.paused_until),
+        "paused_until": iso(state.paused_until),
         "daily_remaining": state.daily_remaining,
     }
 
@@ -301,13 +294,13 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     if profile == "household":
         # Operational data, shown for everyone whatever household_visible says (§3.4a.10).
         rows = await bound.db.read(health, bound.profiles, now)
-        return Status(now=_iso(now) or "", version=__version__, household=rows)
+        return Status(now=iso(now) or "", version=__version__, household=rows)
     enabled = bound.profiles[caller].goodreads is not None
     detail = await bound.db.read(status, caller, now, enabled)
     gate = bound.hardcover[caller].gate if caller in bound.hardcover else None
     answer = Status(
         profile=caller,
-        now=_iso(now) or "",
+        now=iso(now) or "",
         version=__version__,
         hardcover=_limiter(gate),
         **detail,
@@ -332,7 +325,7 @@ def health(
                 "source = ?",
                 (name, run_source),
             ).fetchone() or (None, None)
-            sources[run_source] = {"last_result": found[0], "last_success_at": _iso(found[1])}
+            sources[run_source] = {"last_result": found[0], "last_success_at": iso(found[1])}
         rows.append(Health(profile=name, attention=codes, sources=sources))
     return rows
 
@@ -386,7 +379,7 @@ async def sync_now(
     if not scheduler.enabled(caller):
         raise ToolError("This profile has no Goodreads sync: its config has no goodreads section.")
     run_id, since, new = await scheduler.run_now(caller, "sync_now")
-    started = Started(source="gr_rss", run_id=run_id, started=new, since=_iso(since) or "")
+    started = Started(source="gr_rss", run_id=run_id, started=new, since=iso(since) or "")
     if not new:
         note = f"A Goodreads run was already going (since {started['since']}, run {run_id})."
     else:
