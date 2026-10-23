@@ -142,3 +142,37 @@ async def test_through_the_app(tmp_path: Path, data_dir: Path, clock: FakeClock)
         assert result.structured_content == {"total": 0, "entries": []}
         refused = await mcp.call_tool("unmatched_books", {"source": "abs"})
         assert refused.is_error and "phase 5" in refused.content[0].text
+
+
+async def test_a_refresh_queues_a_run_for_what_it_linked(w: World) -> None:
+    w.hardcover.add_user_book(HC_USER, 30, status_id=3)
+    w.hardcover.add_mapping(300, 30, title="Orphan")
+    scheduler = matching.services().scheduler
+    await scheduler.resume()
+    await matching.unmatched_books(refresh=True)
+    assert scheduler.due("alice") == w.clock.time()
+
+
+async def test_a_refresh_leaves_a_conflict_for_a_person(w: World) -> None:
+    await w.db.write(
+        lambda conn: conn.execute(
+            "UPDATE source_rows SET queue_reason = 'profile_conflict' WHERE source_id = '300'"
+        )
+    )
+    w.hardcover.add_mapping(300, 30, title="Orphan")
+    (entry,) = (await matching.unmatched_books(refresh=True))["entries"]
+    assert entry["reason"] == "profile_conflict"
+
+
+async def test_a_refresh_never_waits_for_a_run(w: World) -> None:
+    async with w.sync.lock("alice"):
+        answer = await matching.unmatched_books(refresh=True)
+    assert "a sync is running" in answer["error"]
+    assert answer["total"] == 1
+
+
+async def test_a_refresh_that_fails_still_lists_the_entries(w: World) -> None:
+    w.hardcover.fail_next("Library", "unavailable")
+    w.hardcover.fail_next("ByGoodreads", "unavailable")
+    answer = await matching.unmatched_books(refresh=True)
+    assert answer["total"] == 1 and len(answer["entries"]) == 1

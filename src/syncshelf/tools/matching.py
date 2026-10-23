@@ -7,7 +7,6 @@ words), and the candidates the matcher kept, with enough to tell them apart. Cla
 entry with ``resolve_match``, with a candidate or any book found through ``search_books``.
 """
 
-import json
 import sqlite3
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -17,7 +16,9 @@ from mcp.types import ToolAnnotations
 from syncshelf.clients.hardcover import BOOKS_BY_ID, HardcoverError
 from syncshelf.config import ProfileConfig
 from syncshelf.logging import scrub
-from syncshelf.sync.mirror import AUTHOR_ROLES
+from syncshelf.sync import identity
+from syncshelf.sync.identity import SourceRow
+from syncshelf.sync.mirror import AUTHOR_ROLES, FetchFailed
 from syncshelf.tools import REGISTRY, current_profile, iso, services, with_attention
 
 __all__ = ["SHOWN", "Entry", "unmatched_books"]
@@ -73,12 +74,14 @@ class Unmatched(TypedDict):
     total: int
     entries: list[Entry]
     error: NotRequired[str]
-    """Why the candidates' details couldn't be read this time (they're listed by id)."""
+    """What went wrong this time: a refresh that couldn't run, or candidates whose details
+    couldn't be read (they're listed by id)."""
 
 
 def _rows(
     conn: sqlite3.Connection, profile: str, include_ignored: bool
 ) -> tuple[int, list[dict[str, Any]]]:
+    """The entries listed, with their baselines and candidates: three queries in all."""
     states = ("queued", "ignored") if include_ignored else ("queued",)
     marks = ",".join("?" * len(states))
     total = conn.execute(
@@ -92,34 +95,49 @@ def _rows(
         "ORDER BY queued_at IS NULL, queued_at, source_id LIMIT ?",
         (profile, *states, SHOWN),
     ).fetchall()
-    found = []
-    for source_id, state, reason, queued_at, given, backfill in rows:
-        baselines = {
-            field: (value, pending, since)
-            for field, value, pending, since in conn.execute(
-                "SELECT field, value, pending_value, pending_since FROM baseline_fields WHERE "
-                "profile = ? AND source = 'goodreads' AND source_id = ?",
-                (profile, source_id),
-            )
+    ids = [row[0] for row in rows]
+    listed = ",".join("?" * len(ids))
+    baselines: dict[str, dict[str, tuple[Any, Any, Any]]] = {}
+    candidates: dict[str, list[tuple[Any, ...]]] = {}
+    if ids:
+        for source_id, field, value, pending, since in conn.execute(
+            "SELECT source_id, field, value, pending_value, pending_since FROM baseline_fields "  # noqa: S608
+            f"WHERE profile = ? AND source = 'goodreads' AND source_id IN ({listed})",
+            (profile, *ids),
+        ):
+            baselines.setdefault(source_id, {})[field] = (value, pending, since)
+        for source_id, *candidate in conn.execute(
+            "SELECT source_id, hc_book_id, method, title_score, author_score "  # noqa: S608
+            f"FROM match_candidates WHERE profile = ? AND source = 'goodreads' AND source_id IN "
+            f"({listed}) ORDER BY rank",
+            (profile, *ids),
+        ):
+            candidates.setdefault(source_id, []).append(tuple(candidate))
+    return total, [
+        {
+            "source_id": source_id,
+            "state": state,
+            "reason": reason,
+            "queued_at": queued_at,
+            "match_input": given,
+            "backfill": bool(backfill),
+            "baselines": baselines.get(source_id, {}),
+            "candidates": candidates.get(source_id, []),
         }
-        candidates = conn.execute(
-            "SELECT hc_book_id, method, title_score, author_score FROM match_candidates WHERE "
-            "profile = ? AND source = 'goodreads' AND source_id = ? ORDER BY rank",
-            (profile, source_id),
-        ).fetchall()
-        found.append(
-            {
-                "source_id": source_id,
-                "state": state,
-                "reason": reason,
-                "queued_at": queued_at,
-                "input": json.loads(given) if given else {},
-                "backfill": bool(backfill),
-                "baselines": baselines,
-                "candidates": candidates,
-            }
+        for source_id, state, reason, queued_at, given, backfill in rows
+    ]
+
+
+def _queued(conn: sqlite3.Connection, profile: str) -> list[str]:
+    """The queued entries a refresh tries, oldest first, as many as are listed."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT source_id FROM source_rows WHERE profile = ? AND source = 'goodreads' "
+            "AND state = 'queued' ORDER BY queued_at, source_id LIMIT ?",
+            (profile, SHOWN),
         )
-    return total, found
+    ]
 
 
 def _words(row: dict[str, Any], profile: ProfileConfig) -> str:
@@ -155,13 +173,15 @@ def _parts(fields: dict[str, Any], shelf_map: Any) -> list[str]:
     return parts
 
 
-def _seen(given: dict[str, Any], source_id: str) -> Seen:
-    isbns = given.get("isbns") or []
+def _seen(row: dict[str, Any]) -> Seen:
+    seen = identity.seen(
+        SourceRow(row["source_id"], "queued", None, None, match_input=row["match_input"])
+    )
     return Seen(
-        title=given.get("title") or f"Goodreads book {source_id}",
-        author=(given.get("authors") or [None])[0],
-        isbn=isbns[0] if isbns else None,
-        format=given.get("format"),
+        title=seen.title or f"Goodreads book {row['source_id']}",
+        author=seen.author,
+        isbn=seen.isbn13 or seen.isbn10,
+        format=seen.format,
     )
 
 
@@ -194,19 +214,28 @@ async def unmatched_books(
         raise ToolError("Audiobookshelf syncing arrives in phase 5.")
     caller = current_profile()
     bound = services()
+    error = None
     if refresh:
-        _, listed = await bound.db.read(_rows, caller, False)
-        await bound.scheduler.sync.refresh(caller, [r["source_id"] for r in listed])
+        try:
+            linked = await bound.scheduler.sync.refresh(
+                caller, await bound.db.read(_queued, caller)
+            )
+        except (HardcoverError, FetchFailed) as exc:
+            linked = []
+            error = f"matching again failed: {scrub(str(exc))}"
+        if linked is None:
+            error = "a sync is running, so nothing was matched again; try again shortly"
+        elif linked:
+            bound.scheduler.nudge(caller, "sync_now")  # their changes go out now
     total, rows = await bound.db.read(_rows, caller, include_ignored)
     ids = sorted({c[0] for r in rows for c in r["candidates"]})
     books: dict[int, dict[str, Any]] = {}
-    error = None
     if ids:
         try:
             result = await bound.hardcover[caller].execute(BOOKS_BY_ID, {"ids": ids})
             books = {b["id"]: b for b in result.data.get("books") or []}
         except HardcoverError as exc:
-            error = scrub(str(exc))
+            error = f"the candidates' details couldn't be read: {scrub(str(exc))}"
     entries = [
         Entry(
             entry_id=f"goodreads:{r['source_id']}",
@@ -214,7 +243,7 @@ async def unmatched_books(
             state=r["state"],
             reason=r["reason"],
             queued_at=iso(r["queued_at"]),
-            input=_seen(r["input"], r["source_id"]),
+            input=_seen(r),
             pending=_words(r, bound.profiles[caller]),
             candidates=[_candidate(c, books.get(c[0])) for c in r["candidates"]],
         )

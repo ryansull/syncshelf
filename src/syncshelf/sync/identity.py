@@ -34,6 +34,7 @@ __all__ = [
     "load_rows",
     "mark_stale",
     "match_input",
+    "seen",
     "observe",
     "pending_for",
     "record_failure",
@@ -227,6 +228,22 @@ def match_input(observation: Observation) -> str:
             "year": None,
         },
         ensure_ascii=False,
+    )
+
+
+def seen(row: SourceRow) -> Observation:
+    """A row as the matcher last saw it, read back from its stored match input: the one
+    reader of what :func:`match_input` writes."""
+    given = json.loads(row.match_input or "{}")
+    isbns = given.get("isbns") or []
+    return Observation(
+        source_id=row.source_id,
+        fields={},
+        title=given.get("title") or "",
+        author=(given.get("authors") or [None])[0],
+        isbn10=next((i for i in isbns if len(i) == 10), None),
+        isbn13=next((i for i in isbns if len(i) == 13), None),
+        format=given.get("format"),
     )
 
 
