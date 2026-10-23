@@ -113,6 +113,11 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   (`chown 10001:10001 <dir>`), or startup stops naming the unwritable path. A named volume
   gets the right owner from the image. Startup also stops if the database is newer than the
   image (an older release started on it).
+- **`/healthz`** (keep it on the LAN) answers 200 whenever the database does, with
+  `"status": "ok"` or `"attention"` and each profile's attention codes (`quarantined`,
+  `hardcover_bug`, `source_stale`), for Uptime Kuma or Home Assistant to alert on. It's 503
+  only when the database fails, so use it for the container's liveness: a Goodreads CAPTCHA
+  never restarts the service. SyncShelf sends no notifications itself.
 - **`/config/profiles.yaml`** is the config. Mount it read-only (`:ro`); SyncShelf never
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
 - **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or

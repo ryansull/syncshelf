@@ -26,6 +26,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from syncshelf.attention import AttentionItem
 from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
@@ -51,7 +52,14 @@ from syncshelf.sync.matcher import (
     title_score,
 )
 from syncshelf.sync.mirror import AUTHOR_ROLES, Freshness, Mirror, NoMirror, tag_names
-from syncshelf.tools import ME, REGISTRY, current_profile, resolve_profiles, services
+from syncshelf.tools import (
+    ME,
+    REGISTRY,
+    current_profile,
+    resolve_profiles,
+    services,
+    with_attention,
+)
 
 __all__ = [
     "FORMATS",
@@ -131,6 +139,8 @@ class LibraryPage(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @dataclass(frozen=True)
@@ -178,6 +188,7 @@ SORTS: dict[str, tuple[Callable[[_Book], _Key], bool]] = {
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def get_my_library(
     status: Status | None = None,
     query: str | None = None,
@@ -567,6 +578,8 @@ class Stats(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @dataclass(frozen=True)
@@ -582,6 +595,7 @@ class _StatRead:
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def reading_stats(period: str, group_by: GroupBy | None = None, profile: str = ME) -> Stats:
     """Count books, pages and hours read in a period, optionally grouped, with goal progress.
 
@@ -903,9 +917,12 @@ class BookRecord(TypedDict):
     similar: list[SimilarBook]
     unavailable: NotRequired[list[str]]
     """Extras Hardcover couldn't give this time ("similar", "bob's shelf")."""
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def get_book(book: int, profile: str = ME) -> BookRecord:
     """Get one book's full record from Hardcover, live, with the caller's shelf for it.
 
@@ -1186,6 +1203,8 @@ class SeriesPage(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @dataclass(frozen=True)
@@ -1196,6 +1215,7 @@ class _Position:
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def series_progress(series: str | None = None, profile: str = ME) -> SeriesPage:
     """Show where the user is in their book series, and what to read next.
 
@@ -1425,9 +1445,12 @@ class SearchPage(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def search_books(
     query: str | None = None,
     author: str | None = None,
@@ -1592,6 +1615,8 @@ class CheckPage(TypedDict):
     as_of: str
     stale: bool
     stale_reason: NotRequired[str]
+    attention: NotRequired[list[AttentionItem]]
+    """The caller's own attention items, when there are any (§2.8)."""
 
 
 @dataclass
@@ -1602,6 +1627,7 @@ class _Pick:
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=True))
+@with_attention
 async def check_books(
     candidates: Annotated[list[Candidate], Field(min_length=1, max_length=MAX_CANDIDATES)],
     profile: str = ME,

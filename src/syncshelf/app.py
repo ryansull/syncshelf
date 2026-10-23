@@ -46,7 +46,7 @@ import logging
 import sqlite3
 import tempfile
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -65,12 +65,13 @@ import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.sync  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.writes  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
+from syncshelf.attention import attention
 from syncshelf.auth.access import AccessVerifier
 from syncshelf.auth.cimd import ClientDocuments
 from syncshelf.auth.oauth import oauth_routes, protected_resource_route
 from syncshelf.auth.tokens import RefreshGrace, TokenVerifier, purge_expired
 from syncshelf.clients.hardcover import HardcoverClient
-from syncshelf.config import Config, ServerConfig
+from syncshelf.config import Config, ProfileConfig, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
 from syncshelf.profiles import ProfileSync, sync_profiles
@@ -222,6 +223,8 @@ def create_app(
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             app.state.grace = grace
+            app.state.profiles = config.profiles
+            app.state.clock = clock
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             applier = Applier(hardcover, mirror, config.profiles)
@@ -321,17 +324,28 @@ def hardcover_clients(
 
 
 async def healthz(request: Request) -> JSONResponse:
-    """Liveness: 200 when ``SELECT 1`` succeeds on a read connection, 503 otherwise.
-
-    The 503 body is provisional until #51 confirms it.
-    """
+    """Liveness and health (§3.4a.10): 200 whenever the database answers, with each
+    profile's attention codes and ``status`` ``attention`` when any profile has one, so
+    Uptime Kuma or Home Assistant can alert on it; 503 only when the database doesn't. No
+    titles or values, and a CAPTCHA never fails liveness."""
     try:
         db: Database = request.app.state.db
         await db.read(_select_one)
+        codes = await db.read(_codes, request.app.state.profiles, int(request.app.state.clock()))
     except Exception:
         log.warning("health check failed", exc_info=True, extra={"event": "healthz_failed"})
         return JSONResponse({"status": "unavailable", "version": __version__}, status_code=503)
-    return JSONResponse({"status": "ok", "version": __version__})
+    state = "attention" if any(codes.values()) else "ok"
+    return JSONResponse({"status": state, "version": __version__, "profiles": codes})
+
+
+def _codes(
+    conn: sqlite3.Connection, profiles: Mapping[str, ProfileConfig], now: int
+) -> dict[str, list[str]]:
+    return {
+        name: [i["code"] for i in attention(conn, name, now, profile.goodreads is not None)]
+        for name, profile in sorted(profiles.items())
+    }
 
 
 def _select_one(conn: sqlite3.Connection) -> None:

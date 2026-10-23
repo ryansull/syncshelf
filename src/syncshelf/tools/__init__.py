@@ -19,6 +19,7 @@ The app binds them to its server once the lifespan has opened the database, and
 the SDK carries the caller.
 """
 
+import functools
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, InputRequiredResult, ToolAnnotations
 from mcp.types import Tool as MCPTool
 
+from syncshelf.attention import AttentionItem, attention
 from syncshelf.auth.tokens import RefreshGrace
 from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import HOUSEHOLD, ME, PERMISSIONS, ProfileConfig
@@ -239,3 +241,29 @@ def resolve_profiles(
             "so its books can't be shown."
         )
     return (requested,)
+
+
+async def caller_attention() -> list[AttentionItem]:
+    """The calling profile's own attention items (§2.8), whatever profile a tool was asked
+    about."""
+    caller = current_profile()
+    bound = services()
+    enabled = bound.profiles[caller].goodreads is not None
+    return await bound.db.read(attention, caller, int(bound.clock()), enabled)
+
+
+def with_attention[**P, R: Mapping[str, Any]](
+    fn: Callable[P, Awaitable[R]],
+) -> Callable[P, Awaitable[R]]:
+    """Give a read tool's result the caller's own ``attention`` items, on ``household``
+    queries too; the field is left out when there are none (§2.8). Goes under
+    ``REGISTRY.tool``, and keeps the tool's signature."""
+
+    @functools.wraps(fn)
+    async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+        result = await fn(*args, **kwargs)
+        if items := await caller_attention():
+            result["attention"] = items  # type: ignore[index]
+        return result
+
+    return wrapped
