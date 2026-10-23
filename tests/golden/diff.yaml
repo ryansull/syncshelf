@@ -25,6 +25,9 @@
 # A run may add `filler: N` unmatched books after its feed (to make a second page) and
 # `fail: {page: N, fault: …}` to make a page unusable, and `hardcover_fail: {op, fault, times?}`
 # to fail Hardcover operations (a transient fault is retried twice within the run).
+# A run may instead be `resolve: {id, book}`: resolve_match's answer for that row, applied at
+# once with no run (§3.4a.11); its `expect` may add `resolved: {shared, pushed, failed,
+# old_book}` for what it reports.
 # When a case and a ticket disagree, fix the case.
 
 cases:
@@ -550,4 +553,95 @@ cases:
           state: ok
           writes: []
           rows: {"100": [linked, null]}
+          pending: {}
+
+  - name: a backfill-queued row resolved onto an unshelved book is added, read on its Date Read
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4", read_at: "Mon, 2 Mar 2026 00:00:00 +0000"}]
+        expect:
+          rows: {"300": [queued, no_hit]}
+          backfill: [0, 1]
+      - resolve: {id: 300, book: 7}
+        expect:
+          rows: {"300": [linked, null]}
+          shelf: {7: {status: 3, rating: 4.0}}
+          reads: {7: [[null, "2026-03-02", 70]]}
+          pending: {}
+          log: [[resolve_match, null, null, null], [push, status, status, goodreads_date_read],
+                [push, rating, null, null], [read_insert, null, status, goodreads_date_read]]
+          resolved: {shared: true, pushed: [date_read, rating, status], failed: null}
+
+  - name: a backfill-queued row with no Date Read is added with no read
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 3, rating: 4.0}}
+          reads: {7: []}
+          pending: {}
+
+  - name: a backfill-queued want-to-read row is added as Want to Read
+    runs:
+      - feed: [{id: 300, title: Orphan, shelf: to-read}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 1}}
+          reads: {7: []}
+
+  - name: a backfill-queued row resolved onto a shelved book writes the link only
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4", read_at: "Mon, 2 Mar 2026 00:00:00 +0000"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          rows: {"300": [linked, null]}
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"300": {rating: "4"}}
+          pending: {}
+          resolved: {shared: true, pushed: [], failed: null}
+
+  - name: a row queued after the backfill pushes its pending diff when resolved
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9}
+    runs:
+      - feed: [{id: 900, title: Shelved}]
+      - feed: [{id: 300, title: Orphan, rating: "5"}, {id: 900, title: Shelved}]
+        expect:
+          rows: {"300": [queued, no_hit]}
+          pending: {"300": {status: read, rating: "5"}}
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 3, rating: 5.0}}
+          pending: {}
+          # Marked Read with no Date Read: a read is invented, as in any run.
+          change_log: [["300", null, null, "7"], ["300", status, null, read],
+                       ["300", rating, null, "5"], ["300", null, null, null]]
+
+  - name: a backfill-queued row changed since, resolved onto a shelved book, writes the link only
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}]
+      - feed: [{id: 300, title: Orphan, rating: "5"}]
+        expect:
+          pending: {"300": {rating: "5"}}
+      - resolve: {id: 300, book: 7}
+        expect:
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"300": {rating: "5"}}
+          pending: {}
+          resolved: {pushed: [], failed: null}
+
+  - name: a backfill-queued row changed since, resolved onto an unshelved book, is added as it is now
+    runs:
+      - feed: [{id: 300, title: Orphan, shelf: to-read}]
+      - feed: [{id: 300, title: Orphan, shelf: currently-reading, rating: "4"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 2, rating: 4.0}}
+          reads: {7: []}
           pending: {}

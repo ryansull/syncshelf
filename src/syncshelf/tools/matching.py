@@ -21,7 +21,7 @@ from syncshelf.sync.identity import SourceRow
 from syncshelf.sync.mirror import AUTHOR_ROLES, FetchFailed
 from syncshelf.tools import REGISTRY, current_profile, iso, services, with_attention
 
-__all__ = ["SHOWN", "Entry", "unmatched_books"]
+__all__ = ["SHOWN", "Entry", "Resolved", "resolve_match", "unmatched_books"]
 
 SHOWN = 50
 """Entries listed, oldest first; ``total`` counts them all."""
@@ -274,4 +274,120 @@ def _candidate(row: tuple[Any, ...], book: dict[str, Any] | None) -> Candidate:
         method=method,
         title_score=title_score,
         author_score=author_score,
+    )
+
+
+class Resolved(TypedDict):
+    """What ``resolve_match`` did."""
+
+    entry_id: str
+    state: Literal["linked", "ignored"]
+    book_id: NotRequired[int]
+    title: NotRequired[str | None]
+    shared: NotRequired[bool]
+    """Whether both profiles now use this book for the Goodreads book, or only the caller."""
+    pushed: NotRequired[list[str]]
+    """The fields that reached Hardcover."""
+    failed: NotRequired[str]
+    note: NotRequired[str]
+
+
+def _entry(entry_id: str) -> str:
+    source, _, source_id = entry_id.partition(":")
+    if source == "abs":
+        raise ToolError("Audiobookshelf syncing arrives in phase 5.")
+    if source != "goodreads" or not source_id.isdigit():
+        raise ToolError(f"{entry_id!r} isn't an entry id from unmatched_books.")
+    return source_id
+
+
+def _state(conn: sqlite3.Connection, profile: str, source_id: str) -> str | None:
+    found = conn.execute(
+        "SELECT state FROM source_rows WHERE profile = ? AND source = 'goodreads' "
+        "AND source_id = ?",
+        (profile, source_id),
+    ).fetchone()
+    return found[0] if found else None
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False))
+async def resolve_match(entry_id: str, hardcover_book_id: int | None) -> Resolved:
+    """Settle which Hardcover book a Goodreads book is, after the user has confirmed it:
+    with an entry from unmatched_books, or for any synced book that was linked wrongly.
+
+    - entry_id: as unmatched_books gives it ("goodreads:<id>").
+    - hardcover_book_id: the book: a candidate's book_id, or one found with search_books.
+      None ignores the entry: it's never matched or synced again until resolved with a book.
+
+    The link is written as the user's own, never replaced by matching. Changes from
+    Goodreads that were waiting on the match then reach Hardcover at once (a book queued by
+    the first sync is added if it isn't on the shelves); the result says what was pushed,
+    and if a change failed, the link stands and the next sync tries again. A book that was
+    on the shelves under the old link keeps its shelf entry: the result names it, and
+    remove_book can take it off, once the user confirms. While a sync is running this
+    refuses; try again shortly.
+    """
+    source_id = _entry(entry_id)
+    caller = current_profile()
+    bound = services()
+    if await bound.db.read(_state, caller, source_id) is None:
+        raise ToolError(f"{entry_id} isn't one of your Goodreads books.")
+    now = int(bound.clock())
+    if hardcover_book_id is None:
+        was = await bound.db.write(identity.ignore_row, caller, "goodreads", source_id, now)
+        ignored = Resolved(entry_id=entry_id, state="ignored")
+        if was is not None:
+            ignored["note"] = _left(was)
+        return ignored
+    book = await _book(bound, caller, hardcover_book_id)
+    if book is None:
+        # A by-id lookup that finds nothing is how a vanished book is noticed (§3.4a.4 rule 7).
+        await bound.db.write(identity.mark_stale, [hardcover_book_id], now)
+        raise ToolError(f"Hardcover has no book {hardcover_book_id}; find it with search_books.")
+    if (canonical := book.get("canonical_id")) and canonical != book["id"]:
+        book = await _book(bound, caller, canonical)  # a merged book: the one it became
+        if book is None:
+            raise ToolError(
+                f"Hardcover's book {hardcover_book_id} was merged into one it no "
+                "longer has; find the book with search_books."
+            )
+    book_id = book["id"]
+    try:
+        done = await bound.scheduler.sync.resolve(caller, source_id, book_id)
+    except (HardcoverError, FetchFailed) as exc:
+        raise ToolError(
+            f"Hardcover couldn't be read, so nothing was changed: {scrub(str(exc))}"
+        ) from None
+    if done is None:
+        raise ToolError("A sync is running, so nothing was changed; try again shortly.")
+    answer = Resolved(
+        entry_id=entry_id,
+        state="linked",
+        book_id=book_id,
+        title=book.get("title"),
+        shared=done.shared,
+        pushed=done.pushed,
+    )
+    if done.failed:
+        answer["failed"] = done.failed
+    if done.old_book is not None:
+        answer["note"] = (
+            f"Book {done.old_book} still has a shelf entry from the old link; remove_book can "
+            "take it off if it shouldn't be there."
+        )
+    return answer
+
+
+async def _book(bound: Any, profile: str, book_id: int) -> dict[str, Any] | None:
+    try:
+        result = await bound.hardcover[profile].execute(BOOKS_BY_ID, {"ids": [book_id]})
+    except HardcoverError as exc:
+        raise ToolError(f"Hardcover couldn't be asked about that book: {scrub(str(exc))}") from None
+    return next(iter(result.data.get("books") or []), None)
+
+
+def _left(book_id: int) -> str:
+    return (
+        f"The entry was linked to book {book_id}; any shelf entry it has stays, and "
+        "remove_book can take it off if it shouldn't be there."
     )

@@ -84,7 +84,7 @@ from syncshelf.sync.mirror import FetchFailed, Mirror
 from syncshelf.sync.observations import Batch, Observation, observe_rss
 from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
 
-__all__ = ["Clock", "GoodreadsSync"]
+__all__ = ["Clock", "GoodreadsSync", "Resolution"]
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +156,72 @@ class GoodreadsSync:
     def enabled(self, profile: str) -> bool:
         """Whether the profile has a Goodreads source."""
         return profile in self._rss
+
+    async def resolve(self, profile: str, source_id: str, book_id: int) -> Resolution | None:
+        """A person's answer for a row (``resolve_match``, §3.4a.11): link it to ``book_id``
+        and apply its pending diff at once, under the source's sync lock and the apply lock,
+        with no ``runs`` row. A row the backfill queued, resolved onto a book not on the
+        shelves, is diffed from an empty baseline, with a read only for a real Date Read;
+        onto a book already shelved, only the link is written (§3.4a.12). A failed write
+        leaves the link, and the baseline where it was. ``None`` when a run holds the sync
+        lock: this never waits for one. Raises
+        :class:`~syncshelf.sync.mirror.FetchFailed` before writing anything when the library
+        can't be read."""
+        goodreads = self._profiles[profile].goodreads
+        assert goodreads is not None
+        zone = self._profiles[profile].tzinfo()
+        lock = self._locks[profile]
+        if lock.locked():
+            return None
+        async with lock:
+            rows = await self._db.read(identity.load_rows, profile, SOURCE)
+            row = rows[source_id]
+            library = await self._mirror.fetch(profile)
+            shelved = _shelved(library.user_books)
+            user_book = shelved.get(book_id)
+            old = row.hc_book_id if row.hc_book_id not in (None, book_id) else None
+            now = int(self._clock.time())
+            shared = await self._db.write(
+                identity.link_human, profile, SOURCE, source_id, book_id, user_book, now
+            )
+            if row.backfill_queued:
+                # §3.4a.12: an unshelved book is added from an empty baseline; a shelved one
+                # gets the link only.
+                fill = identity.empty_baseline if user_book is None else identity.adopt_observation
+                await self._db.write(fill, profile, SOURCE, source_id, now)
+            rows = await self._db.read(identity.load_rows, profile, SOURCE)
+            pending = await self._db.read(identity.pending_for, profile, SOURCE, [source_id])
+            work = _ready_to_push(pending, rows)
+            plans = _plans(
+                work,
+                {source_id: identity.seen(rows[source_id])},
+                rows,
+                goodreads.shelf_map,
+                zone,
+                dated_only=row.backfill_queued,
+            )
+            observed_at = max((c.pending_since or now for c in pending), default=now)
+            counts = RunCounts()
+            for plan in plans:
+                if plan.target is None:
+                    await self._settle(profile, plan, observed_at, None, None)
+            writes = [p for p in plans if p.target is not None]
+            pushed: set[str] = set()
+            async with self._applier.lock(profile):
+                try:
+                    if writes:
+                        writes = await self._ready(profile, writes, library.user_books, counts)
+                    for plan in _shelf_first(writes, rows):
+                        if await self._apply(profile, plan, observed_at, None, counts):
+                            pushed.update(c.field for c in plan.settles)
+                except (_Unavailable, Deferred) as exc:
+                    counts.error(scrub(str(exc)))
+        return Resolution(
+            shared=shared,
+            pushed=sorted(pushed),
+            failed=counts.first_error,
+            old_book=old if old is not None and old in shelved else None,
+        )
 
     async def refresh(self, profile: str, source_ids: list[str]) -> list[str] | None:
         """Match these queued rows again (``unmatched_books(refresh=true)``, §3.4a.5), from the
@@ -600,8 +666,8 @@ class GoodreadsSync:
         return "ok"
 
     async def _apply(
-        self, profile: str, plan: _Plan, observed_at: int, run_id: int, counts: RunCounts
-    ) -> None:
+        self, profile: str, plan: _Plan, observed_at: int, run_id: int | None, counts: RunCounts
+    ) -> bool:
         """Apply one plan (§3.4a.7). A transient failure is retried twice in the run, after
         :data:`RETRY_DELAYS`; a replay is safe, since the write procedure converges. A change
         that still fails keeps its baselines and counts an attempt, and is quarantined once
@@ -641,10 +707,11 @@ class GoodreadsSync:
                     # Hardcover is down for now: the rest wait for the next run, rather than
                     # each holding the apply lock through its own retries.
                     raise _Unavailable(reason) from None
-                return
+                return False
             await self._settle(profile, plan, observed_at, applied, run_id)
             counts.applied += 1
-            return
+            return True
+        return False
 
     async def _failed(
         self, profile: str, plan: _Plan, kind: ErrorClass, reason: str, counts: RunCounts
@@ -691,7 +758,7 @@ class GoodreadsSync:
         plan: _Plan,
         observed_at: int,
         applied: Applied | None,
-        run_id: int,
+        run_id: int | None,
     ) -> None:
         """Advance the plan's baselines, with its change log rows when Hardcover took a
         write (§3.4a.6, rule 9)."""
@@ -829,6 +896,20 @@ def _failure(exc: Exception, book_id: int) -> str:
 
 
 @dataclass(frozen=True)
+class Resolution:
+    """What resolving a row did."""
+
+    shared: bool
+    """Whether the shared link was written, or only this profile's row (a conflict)."""
+    pushed: list[str]
+    """The fields that reached Hardcover."""
+    failed: str | None
+    """Why a change didn't, if one didn't; the link stands, and the next run tries again."""
+    old_book: int | None
+    """The book the row was linked to before, when it still has a shelf entry."""
+
+
+@dataclass(frozen=True)
 class _Plan:
     """One write to Hardcover for one row (or none), and the baselines it settles."""
 
@@ -853,9 +934,12 @@ def _plans(
     rows: Mapping[str, SourceRow],
     shelf_map: Mapping[str, int],
     zone: tzinfo,
+    *,
+    dated_only: bool = False,
 ) -> list[_Plan]:
     """Each row's pending changes as writes: its status (with the read edits it carries and
-    any Date Read change), a Date Read correction, its rating."""
+    any Date Read change), a Date Read correction, its rating. ``dated_only`` writes a read
+    only on a real Goodreads Date Read, never an undated or invented one (§3.4a.12)."""
     by_row: dict[str, dict[str, Pending]] = {}
     for change in changes:
         by_row.setdefault(change.source_id, {})[change.field] = change
@@ -864,7 +948,7 @@ def _plans(
         row, obs = rows[source_id], observations[source_id]
         status, date_read = fields.get("status"), fields.get("date_read")
         if status is not None:
-            plans.extend(_status_plan(status, date_read, obs, row, shelf_map, zone))
+            plans.extend(_status_plan(status, date_read, obs, row, shelf_map, zone, dated_only))
         elif date_read is not None:
             plans.append(_date_plan(date_read, _value(row, "status"), shelf_map))
         if (rating := fields.get("rating")) is not None:
@@ -951,6 +1035,7 @@ def _status_plan(
     row: SourceRow,
     shelf_map: Mapping[str, int],
     zone: tzinfo,
+    dated_only: bool = False,
 ) -> list[_Plan]:
     """A status change and the read edits it carries, as one change (§3.4a.6, rule 6). A
     Date Read change on the same row is the finish date when the change finishes a read;
@@ -977,9 +1062,10 @@ def _status_plan(
         finished = date_read.new if date_read is not None else None
         if finished is None and not reread:
             finished = _value(row, "date_read")
-        on, date_source = _when(finished, obs, status, zone)
-        op = Finish(on)
-    elif new == CURRENTLY_READING and old != CURRENTLY_READING:
+        if finished is not None or not dated_only:
+            on, date_source = _when(finished, obs, status, zone)
+            op = Finish(on)
+    elif new == CURRENTLY_READING and old != CURRENTLY_READING and not dated_only:
         on, date_source = _when(None, obs, status, zone)
         op = Start(on)
     push = LogRow("push", "status", status.old, status.new, trigger, date_source)
