@@ -32,7 +32,7 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
                 HC_USER, int(book_id), user_book_reads=reads, **_shelf_fields(fields)
             )
         # A mapped book carries the title the feed gives it, so the title floor passes.
-        titles = {str(i["id"]): i.get("title") for run in case["runs"] for i in run["feed"]}
+        titles = {str(i["id"]): i.get("title") for run in case["runs"] for i in run.get("feed", [])}
         for goodreads_id, mapping in (hardcover.get("mappings") or {}).items():
             title = titles.get(str(goodreads_id))
             if isinstance(mapping, dict):
@@ -48,6 +48,16 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
         for n, run in enumerate(case["runs"]):
             if n:
                 w.clock.advance(3600)
+            if resolve := run.get("resolve"):
+                # A person's answer (resolve_match), applied at once with no run.
+                writes_before = len(w.hardcover.writes)
+                log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
+                done = await w.sync.resolve("alice", str(resolve["id"]), resolve["book"])
+                expect = run.get("expect") or {}
+                if "resolved" in expect:
+                    assert {k: getattr(done, k) for k in expect["resolved"]} == expect["resolved"]
+                await _check(w, expect, None, writes_before, log_before)
+                continue
             _serve(w, run["feed"], run.get("filler", 0))
             if fail := run.get("fail"):
                 w.goodreads.fail_next(fail["fault"], page=fail.get("page"))
@@ -92,7 +102,7 @@ def _serve(w: World, feed: list[dict[str, Any]], filler: int) -> None:
 
 
 async def _check(
-    w: World, expect: dict[str, Any], run_id: int, writes_before: int, log_before: int
+    w: World, expect: dict[str, Any], run_id: int | None, writes_before: int, log_before: int
 ) -> None:
     if "state" in expect:
         (state,) = (await w.rows("SELECT state FROM runs WHERE id = ?", run_id))[0]

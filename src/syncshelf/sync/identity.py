@@ -29,6 +29,9 @@ __all__ = [
     "add_rows",
     "LogRow",
     "backfilled",
+    "empty_baseline",
+    "ignore_row",
+    "link_human",
     "follow_merges",
     "link_editions",
     "load_rows",
@@ -426,6 +429,94 @@ def rematch_rows(
                 (_reason(place), match_input(obs), profile, source, obs.source_id),
             )
             _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+def link_human(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    source_id: str,
+    book_id: int,
+    user_book_id: int | None,
+    now: int,
+) -> bool:
+    """A person's answer for a row (``resolve_match``, §3.4a.11): the row is linked to
+    ``book_id`` and leaves the queue, and the shared link becomes ``human`` on that book,
+    unless it would contradict another profile, whose rows rely on a different book through
+    it (§3.4a.4 rule 6); then only this profile's row is linked. Returns whether the shared
+    link was written."""
+    found = conn.execute(
+        "SELECT hc_book_id, method FROM links WHERE source = ? AND source_id = ?",
+        (source, source_id),
+    ).fetchone()
+    others = conn.execute(
+        "SELECT count(*) FROM source_rows WHERE source = ? AND source_id = ? AND profile <> ? "
+        "AND state = 'linked' AND hc_book_id <> ?",
+        (source, source_id, profile, book_id),
+    ).fetchone()[0]
+    shared = not others and (found is None or found[0] == book_id or found[1] != "human")
+    if shared and found is None:
+        conn.execute(
+            "INSERT INTO links (source, source_id, hc_book_id, method, linked_at, last_seen_at) "
+            "VALUES (?, ?, ?, 'human', ?, ?)",
+            (source, source_id, book_id, now, now),
+        )
+    elif shared:
+        conn.execute(
+            "UPDATE links SET hc_book_id = ?, method = 'human', state = 'active', linked_at = ? "
+            "WHERE source = ? AND source_id = ?",
+            (book_id, now, source, source_id),
+        )
+    was = conn.execute(
+        "SELECT state FROM source_rows WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE source_rows SET state = 'linked', hc_book_id = ?, hc_user_book_id = ?, "
+        "queue_reason = NULL, queued_at = NULL, backfill_queued = 0 "
+        "WHERE profile = ? AND source = ? AND source_id = ?",
+        (book_id, user_book_id, profile, source, source_id),
+    )
+    _write_candidates(conn, profile, source, source_id, (), now)
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, kind,"
+        " new_value, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (profile, source, source_id, book_id, user_book_id,
+         "unignore" if was == "ignored" else "resolve_match", str(book_id), now),
+    )  # fmt: skip
+    return shared
+
+
+def empty_baseline(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> None:
+    """A backfill-queued row resolved onto a book not on the shelves (§3.4a.12): diffed
+    against an empty baseline, so what Goodreads has becomes pending."""
+    conn.execute(
+        "UPDATE baseline_fields SET pending_value = value, pending_since = ?, value = NULL, "
+        "observed_at = NULL, attempts = 0, first_failed_at = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND source_id = ? AND value IS NOT NULL "
+        "AND pending_since IS NULL",
+        (now, profile, source, source_id),
+    )
+
+
+def ignore_row(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> None:
+    """A person's "none of these" (``resolve_match`` with no book): the row is ignored, never
+    matched, queued or pushed again until resolved with a book. Its baselines are kept."""
+    conn.execute(
+        "UPDATE source_rows SET state = 'ignored', hc_book_id = NULL, queue_reason = NULL, "
+        "queued_at = NULL WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    )
+    _write_candidates(conn, profile, source, source_id, (), now)
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, kind, at) "
+        "VALUES (?, ?, ?, 'ignore', ?)",
+        (profile, source, source_id, now),
+    )
 
 
 def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int) -> int:
