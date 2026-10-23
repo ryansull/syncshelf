@@ -62,6 +62,7 @@ from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.matching  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.sync  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.writes  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__

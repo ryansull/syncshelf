@@ -24,6 +24,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from inspect import iscoroutinefunction
 from typing import Any
 
@@ -276,3 +277,8 @@ def with_attention[**P, R: Mapping[str, Any]](
         return result
 
     return wrapped
+
+
+def iso(epoch: float | None) -> str | None:
+    """Epoch seconds as ISO 8601 UTC, the form every tool gives times in (§2.8)."""
+    return None if epoch is None else datetime.fromtimestamp(epoch, UTC).isoformat()

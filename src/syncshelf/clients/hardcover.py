@@ -247,7 +247,7 @@ is written with its link's edition only when that edition has a format (§3.3.5)
 BOOKS_BY_ID = """
 query BooksById($ids: [Int!]!) {
   books(where: {id: {_in: $ids}}) {
-    id title subtitle release_year rating pages canonical_id cached_contributors
+    id title subtitle slug release_year rating pages canonical_id cached_contributors
     cached_featured_series
     genres: cached_tags(path: "Genre")
     default_audio_edition { id }
@@ -256,7 +256,8 @@ query BooksById($ids: [Int!]!) {
 }
 """
 """Compact rows for books named by id, batched (cost 1): ``check_books``' id candidates, and
-the matcher's fuzzy hits, whose ``canonical_id`` it follows (§3.4a.5)."""
+the matcher's fuzzy hits, whose ``canonical_id`` it follows (§3.4a.5), and the candidates
+``unmatched_books`` shows, with the ``slug`` of each book's Hardcover page."""
 
 USER_BOOK = f"""
 query UserBook($book_id: Int!, $user_id: Int!) {{

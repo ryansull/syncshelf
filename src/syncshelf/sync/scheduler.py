@@ -119,6 +119,11 @@ class Scheduler:
         loop.due, loop.trigger, loop.nudged = now, trigger, now
         self._wake.set()
 
+    @property
+    def sync(self) -> GoodreadsSync:
+        """The engine the loops run."""
+        return self._sync
+
     def enabled(self, profile: str) -> bool:
         """Whether the profile has a sync loop."""
         return profile in self._loops

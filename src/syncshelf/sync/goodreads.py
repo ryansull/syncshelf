@@ -39,6 +39,7 @@ a row with no Hardcover shelf entry known, waits for the row's status to be obse
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -156,6 +157,23 @@ class GoodreadsSync:
     def enabled(self, profile: str) -> bool:
         """Whether the profile has a Goodreads source."""
         return profile in self._rss
+
+    async def refresh(self, profile: str, source_ids: list[str]) -> None:
+        """Match these queued rows again (``unmatched_books(refresh=true)``, §3.4a.5), from the
+        book as each was last seen, under the profile's sync lock. A row now matched is linked,
+        and its pending changes go out with the next run."""
+        if not source_ids:
+            return
+        async with self._locks[profile]:
+            rows = await self._db.read(identity.load_rows, profile, SOURCE)
+            seen = [
+                _observed(row)
+                for source_id in source_ids
+                if (row := rows.get(source_id)) is not None and row.state == "queued"
+            ]
+            if seen:
+                now = int(self._clock.time())
+                await self._add(profile, Batch("gr_rss", now, False, ()), [], seen, rows)
 
     def lock(self, profile: str) -> asyncio.Lock:
         """The profile's Goodreads sync lock (§2.2): one run of its source at a time. A run
@@ -719,6 +737,21 @@ class GoodreadsSync:
                 "run_id": run_id,
             },
         )
+
+
+def _observed(row: SourceRow) -> Observation:
+    """A queued row as the matcher last saw it, rebuilt from its stored match input."""
+    given = json.loads(row.match_input or "{}")
+    isbns = given.get("isbns") or []
+    return Observation(
+        source_id=row.source_id,
+        fields={},
+        title=given.get("title") or "",
+        author=(given.get("authors") or [None])[0],
+        isbn10=next((i for i in isbns if len(i) == 10), None),
+        isbn13=next((i for i in isbns if len(i) == 13), None),
+        format=given.get("format"),
+    )
 
 
 def _input(obs: Observation) -> MatchInput:

@@ -124,6 +124,7 @@ class FakeHardcover:
         if row["book"] is not None:
             self.catalog[book_id] = {
                 **book_extras(),
+                "slug": f"book-{book_id}",
                 **self.catalog.get(book_id, {}),
                 **row["book"],
             }
@@ -193,7 +194,12 @@ class FakeHardcover:
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
         """Put an unshelved book in the catalog, with ``fields`` over the defaults."""
-        book = {**user_book_row(0, book_id)["book"], **book_extras(), **fields}
+        book = {
+            **user_book_row(0, book_id)["book"],
+            **book_extras(),
+            "slug": f"book-{book_id}",
+            **fields,
+        }
         self.catalog[book_id] = book
         return book
 
@@ -560,7 +566,9 @@ class FakeHardcover:
 
     def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         book = self.catalog.get(variables["book_id"])
-        return {"books": [book] if book else [], "user_books": self._shelf(user_id, variables)}
+        # The catalog holds every field any query asks for; Book doesn't ask for the slug.
+        shown = {k: v for k, v in book.items() if k != "slug"} if book else None
+        return {"books": [shown] if shown else [], "user_books": self._shelf(user_id, variables)}
 
     def _search(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         """Typesense, roughly: a word match on title or author unless the query is ``*``,
@@ -591,7 +599,7 @@ class FakeHardcover:
 
     def _books_by_id(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         fields = (
-            "id", "title", "subtitle", "release_year", "rating", "pages", "canonical_id",
+            "id", "title", "subtitle", "slug", "release_year", "rating", "pages", "canonical_id",
             "cached_contributors", "cached_featured_series", "genres", "default_audio_edition",
             "default_ebook_edition",
         )  # fmt: skip
