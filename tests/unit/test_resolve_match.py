@@ -86,8 +86,47 @@ async def test_a_resolved_entry_is_linked_and_pushed_with_no_run(w: World) -> No
 async def test_a_merged_book_is_followed_to_the_one_it_became(w: World) -> None:
     w.hardcover.add_book(8, title="Orphan (old)", canonical_id=7)
     answer = await matching.resolve_match("goodreads:300", 8)
-    assert answer["book_id"] == 7
+    assert (answer["book_id"], answer["title"]) == (7, "Orphan")
     assert await w.rows("SELECT hc_book_id FROM source_rows WHERE source_id = '300'") == [(7,)]
+
+
+async def test_a_book_gone_from_hardcover_queues_the_rows_linked_to_it(w: World) -> None:
+    del w.hardcover.catalog[9]
+    with pytest.raises(ToolError, match="no book 9"):
+        await matching.resolve_match("goodreads:900", 9)
+    assert await w.rows("SELECT state, queue_reason FROM source_rows WHERE source_id = '900'") == [
+        ("queued", "stale")
+    ]
+
+
+async def test_a_person_can_correct_their_own_answer(w: World) -> None:
+    w.hardcover.add_book(8, title="Orphan, the real one")
+    await matching.resolve_match("goodreads:300", 7)
+    assert (await matching.resolve_match("goodreads:300", 8))["shared"] is True
+    assert await w.rows("SELECT hc_book_id, method FROM links WHERE source_id = '300'") == [
+        (8, "human")
+    ]
+
+
+async def test_nothing_changes_while_a_run_holds_the_lock(w: World) -> None:
+    async with w.sync.lock("alice"):
+        with pytest.raises(ToolError, match="A sync is running"):
+            await matching.resolve_match("goodreads:300", 7)
+    assert await w.rows("SELECT state FROM source_rows WHERE source_id = '300'") == [("queued",)]
+
+
+async def test_nothing_changes_when_the_library_cant_be_read(w: World) -> None:
+    w.clock.advance(3600)  # past the mirror's freshness
+    w.hardcover.fail_next("Library", "validation")
+    with pytest.raises(ToolError, match="couldn.t be read, so nothing was changed"):
+        await matching.resolve_match("goodreads:300", 7)
+    assert await w.rows("SELECT state FROM source_rows WHERE source_id = '300'") == [("queued",)]
+
+
+async def test_ignoring_a_linked_entry_names_the_book_it_was_on(w: World) -> None:
+    answer = await matching.resolve_match("goodreads:900", None)
+    assert answer["state"] == "ignored"
+    assert "book 9" in answer["note"]
 
 
 async def test_a_book_hardcover_doesnt_have_is_refused(w: World) -> None:

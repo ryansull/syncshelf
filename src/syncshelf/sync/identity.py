@@ -27,6 +27,7 @@ __all__ = [
     "Placement",
     "SourceRow",
     "add_rows",
+    "adopt_observation",
     "LogRow",
     "backfilled",
     "empty_baseline",
@@ -443,8 +444,9 @@ def link_human(
     """A person's answer for a row (``resolve_match``, §3.4a.11): the row is linked to
     ``book_id`` and leaves the queue, and the shared link becomes ``human`` on that book,
     unless it would contradict another profile, whose rows rely on a different book through
-    it (§3.4a.4 rule 6); then only this profile's row is linked. Returns whether the shared
-    link was written."""
+    it (§3.4a.4 rule 6); then only this profile's row is linked. An earlier ``human`` answer
+    nothing else relies on is corrected like any link. Returns whether the shared link was
+    written."""
     found = conn.execute(
         "SELECT hc_book_id, method FROM links WHERE source = ? AND source_id = ?",
         (source, source_id),
@@ -454,7 +456,7 @@ def link_human(
         "AND state = 'linked' AND hc_book_id <> ?",
         (source, source_id, profile, book_id),
     ).fetchone()[0]
-    shared = not others and (found is None or found[0] == book_id or found[1] != "human")
+    shared = not others
     if shared and found is None:
         conn.execute(
             "INSERT INTO links (source, source_id, hc_book_id, method, linked_at, last_seen_at) "
@@ -491,21 +493,49 @@ def empty_baseline(
     conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
 ) -> None:
     """A backfill-queued row resolved onto a book not on the shelves (§3.4a.12): diffed
-    against an empty baseline, so what Goodreads has becomes pending."""
+    against an empty baseline, so what Goodreads has now (a pending change's value, or the
+    baseline's) becomes pending, quarantined or not."""
     conn.execute(
-        "UPDATE baseline_fields SET pending_value = value, pending_since = ?, value = NULL, "
-        "observed_at = NULL, attempts = 0, first_failed_at = NULL, quarantined_at = NULL "
-        "WHERE profile = ? AND source = ? AND source_id = ? AND value IS NOT NULL "
-        "AND pending_since IS NULL",
+        "UPDATE baseline_fields SET "
+        "pending_value = CASE WHEN pending_since IS NOT NULL THEN pending_value ELSE value END, "
+        "pending_since = COALESCE(pending_since, ?), value = NULL, observed_at = NULL, "
+        "attempts = 0, first_failed_at = NULL, last_error = NULL, last_error_class = NULL, "
+        "quarantined_at = NULL WHERE profile = ? AND source = ? AND source_id = ?",
+        (now, profile, source, source_id),
+    )
+    # Nothing to insert for a field Goodreads has empty.
+    conn.execute(
+        "UPDATE baseline_fields SET pending_since = NULL WHERE profile = ? AND source = ? "
+        "AND source_id = ? AND value IS NULL AND pending_value IS NULL",
+        (profile, source, source_id),
+    )
+
+
+def adopt_observation(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> None:
+    """A backfill-queued row resolved onto a book already on the shelves (§3.4a.12): the link
+    only. Its pending changes become the baseline, pushing nothing, as the backfill would
+    have had it."""
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, observed_at = ?, "
+        "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
+        "last_error = NULL, last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND source_id = ? AND pending_since IS NOT NULL",
         (now, profile, source, source_id),
     )
 
 
 def ignore_row(
     conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
-) -> None:
+) -> int | None:
     """A person's "none of these" (``resolve_match`` with no book): the row is ignored, never
-    matched, queued or pushed again until resolved with a book. Its baselines are kept."""
+    matched, queued or pushed again until resolved with a book. Its baselines are kept.
+    Returns the book it was linked to, if it was."""
+    (was,) = conn.execute(
+        "SELECT hc_book_id FROM source_rows WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    ).fetchone()
     conn.execute(
         "UPDATE source_rows SET state = 'ignored', hc_book_id = NULL, queue_reason = NULL, "
         "queued_at = NULL WHERE profile = ? AND source = ? AND source_id = ?",
@@ -513,10 +543,11 @@ def ignore_row(
     )
     _write_candidates(conn, profile, source, source_id, (), now)
     conn.execute(
-        "INSERT INTO change_log (profile, source, source_id, kind, at) "
-        "VALUES (?, ?, ?, 'ignore', ?)",
-        (profile, source, source_id, now),
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, kind, at) "
+        "VALUES (?, ?, ?, ?, 'ignore', ?)",
+        (profile, source, source_id, was, now),
     )
+    return was
 
 
 def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int) -> int:

@@ -157,17 +157,23 @@ class GoodreadsSync:
         """Whether the profile has a Goodreads source."""
         return profile in self._rss
 
-    async def resolve(self, profile: str, source_id: str, book_id: int) -> Resolution:
+    async def resolve(self, profile: str, source_id: str, book_id: int) -> Resolution | None:
         """A person's answer for a row (``resolve_match``, §3.4a.11): link it to ``book_id``
         and apply its pending diff at once, under the source's sync lock and the apply lock,
         with no ``runs`` row. A row the backfill queued, resolved onto a book not on the
         shelves, is diffed from an empty baseline, with a read only for a real Date Read;
         onto a book already shelved, only the link is written (§3.4a.12). A failed write
-        leaves the link, and the baseline where it was."""
+        leaves the link, and the baseline where it was. ``None`` when a run holds the sync
+        lock: this never waits for one. Raises
+        :class:`~syncshelf.sync.mirror.FetchFailed` before writing anything when the library
+        can't be read."""
         goodreads = self._profiles[profile].goodreads
         assert goodreads is not None
         zone = self._profiles[profile].tzinfo()
-        async with self._locks[profile]:
+        lock = self._locks[profile]
+        if lock.locked():
+            return None
+        async with lock:
             rows = await self._db.read(identity.load_rows, profile, SOURCE)
             row = rows[source_id]
             library = await self._mirror.fetch(profile)
@@ -178,8 +184,11 @@ class GoodreadsSync:
             shared = await self._db.write(
                 identity.link_human, profile, SOURCE, source_id, book_id, user_book, now
             )
-            if row.backfill_queued and user_book is None:
-                await self._db.write(identity.empty_baseline, profile, SOURCE, source_id, now)
+            if row.backfill_queued:
+                # §3.4a.12: an unshelved book is added from an empty baseline; a shelved one
+                # gets the link only.
+                fill = identity.empty_baseline if user_book is None else identity.adopt_observation
+                await self._db.write(fill, profile, SOURCE, source_id, now)
             rows = await self._db.read(identity.load_rows, profile, SOURCE)
             pending = await self._db.read(identity.pending_for, profile, SOURCE, [source_id])
             work = _ready_to_push(pending, rows)

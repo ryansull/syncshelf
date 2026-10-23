@@ -319,31 +319,47 @@ async def resolve_match(entry_id: str, hardcover_book_id: int | None) -> Resolve
     - hardcover_book_id: the book: a candidate's book_id, or one found with search_books.
       None ignores the entry: it's never matched or synced again until resolved with a book.
 
-    The link is written as the user's own, never replaced by matching. What Goodreads has
-    for the book then reaches Hardcover at once; the result says what was pushed, and if a
-    change failed, the link stands and the next sync tries again. A book that was on the
-    shelves under the old link keeps its shelf entry: the result names it, and remove_book
-    can take it off, once the user confirms.
+    The link is written as the user's own, never replaced by matching. Changes from
+    Goodreads that were waiting on the match then reach Hardcover at once (a book queued by
+    the first sync is added if it isn't on the shelves); the result says what was pushed,
+    and if a change failed, the link stands and the next sync tries again. A book that was
+    on the shelves under the old link keeps its shelf entry: the result names it, and
+    remove_book can take it off, once the user confirms. While a sync is running this
+    refuses; try again shortly.
     """
     source_id = _entry(entry_id)
     caller = current_profile()
     bound = services()
     if await bound.db.read(_state, caller, source_id) is None:
         raise ToolError(f"{entry_id} isn't one of your Goodreads books.")
+    now = int(bound.clock())
     if hardcover_book_id is None:
-        await bound.db.write(
-            identity.ignore_row, caller, "goodreads", source_id, int(bound.clock())
-        )
-        return Resolved(entry_id=entry_id, state="ignored")
-    try:
-        result = await bound.hardcover[caller].execute(BOOKS_BY_ID, {"ids": [hardcover_book_id]})
-    except HardcoverError as exc:
-        raise ToolError(f"Hardcover couldn't be asked about that book: {scrub(str(exc))}") from None
-    (book,) = result.data.get("books") or [None]
+        was = await bound.db.write(identity.ignore_row, caller, "goodreads", source_id, now)
+        ignored = Resolved(entry_id=entry_id, state="ignored")
+        if was is not None:
+            ignored["note"] = _left(was)
+        return ignored
+    book = await _book(bound, caller, hardcover_book_id)
     if book is None:
+        # A by-id lookup that finds nothing is how a vanished book is noticed (§3.4a.4 rule 7).
+        await bound.db.write(identity.mark_stale, [hardcover_book_id], now)
         raise ToolError(f"Hardcover has no book {hardcover_book_id}; find it with search_books.")
-    book_id = book.get("canonical_id") or hardcover_book_id  # a merged book: the one it became
-    done = await bound.scheduler.sync.resolve(caller, source_id, book_id)
+    if (canonical := book.get("canonical_id")) and canonical != book["id"]:
+        book = await _book(bound, caller, canonical)  # a merged book: the one it became
+        if book is None:
+            raise ToolError(
+                f"Hardcover's book {hardcover_book_id} was merged into one it no "
+                "longer has; find the book with search_books."
+            )
+    book_id = book["id"]
+    try:
+        done = await bound.scheduler.sync.resolve(caller, source_id, book_id)
+    except (HardcoverError, FetchFailed) as exc:
+        raise ToolError(
+            f"Hardcover couldn't be read, so nothing was changed: {scrub(str(exc))}"
+        ) from None
+    if done is None:
+        raise ToolError("A sync is running, so nothing was changed; try again shortly.")
     answer = Resolved(
         entry_id=entry_id,
         state="linked",
@@ -360,3 +376,18 @@ async def resolve_match(entry_id: str, hardcover_book_id: int | None) -> Resolve
             "take it off if it shouldn't be there."
         )
     return answer
+
+
+async def _book(bound: Any, profile: str, book_id: int) -> dict[str, Any] | None:
+    try:
+        result = await bound.hardcover[profile].execute(BOOKS_BY_ID, {"ids": [book_id]})
+    except HardcoverError as exc:
+        raise ToolError(f"Hardcover couldn't be asked about that book: {scrub(str(exc))}") from None
+    return next(iter(result.data.get("books") or []), None)
+
+
+def _left(book_id: int) -> str:
+    return (
+        f"The entry was linked to book {book_id}; any shelf entry it has stays, and "
+        "remove_book can take it off if it shouldn't be there."
+    )
