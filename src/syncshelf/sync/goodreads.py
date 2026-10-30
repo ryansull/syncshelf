@@ -82,7 +82,13 @@ from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, Sour
 from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, IdHit, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
-from syncshelf.sync.observations import Batch, Observation, observe_csv, observe_rss
+from syncshelf.sync.observations import (
+    Batch,
+    Observation,
+    ShelfVocabulary,
+    observe_csv,
+    observe_rss,
+)
 from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
 
 __all__ = ["Clock", "GoodreadsSync", "Resolution"]
@@ -139,6 +145,7 @@ class GoodreadsSync:
         self._locks: dict[str, asyncio.Lock] = {}
         self._running: dict[str, tuple[int, int]] = {}
         self._announced: dict[str, int] = {}
+        self._shelves: dict[str, tuple[tuple[int, ...], ShelfVocabulary]] = {}
         for name, profile in profiles.items():
             if profile.goodreads is None:
                 continue
@@ -343,25 +350,46 @@ class GoodreadsSync:
             return "fetch_failed"
         counts.fetched, counts.observed_at = fetched.complete, started
         zone = self._profiles[profile].tzinfo()
-        exports = await self._db.read(batches.payloads, profile)
-        vocabulary = await asyncio.to_thread(batches.vocabulary, exports)
-        batch = observe_rss(fetched, goodreads.shelf_map, started, zone, vocabulary)
+        batch = observe_rss(
+            fetched, goodreads.shelf_map, started, zone, await self._vocabulary(profile)
+        )
         return await self._consume(profile, batch, run_id, counts)
+
+    async def _vocabulary(self, profile: str) -> ShelfVocabulary:
+        """The shelves the profile's stored exports show (#182), parsed again only when the
+        stored exports change."""
+        ids = tuple(await self._db.read(batches.stored_ids, profile))
+        known = self._shelves.get(profile)
+        if known is None or known[0] != ids:
+            exports = await self._db.read(batches.payloads, profile)
+            known = self._shelves[profile] = (
+                ids,
+                await asyncio.to_thread(batches.vocabulary, exports),
+            )
+        return known[1]
 
     async def _stored(
         self, profile: str, stored: batches.Stored, run_id: int, counts: RunCounts
     ) -> RunState:
-        """Apply one uploaded export as a batch of its own. It's done once its observations
-        are recorded, even if a change in it failed (that change stays pending); only a pass
-        deferred before then is tried again by the next run."""
+        """Apply one uploaded export as a batch of its own. It's done unless the pass was
+        deferred (Hardcover unreachable), which the next run tries again: applying an export
+        twice changes nothing, since its observations are no newer the second time. A failed
+        change stays pending either way. An export that can't be applied at all is set aside
+        with its error, so it never stops the runs after it."""
+        state: RunState = "ok"
         try:
             rows = await asyncio.to_thread(parse_export, stored.payload)
-        except BadExport as exc:  # checked at upload; only a parser change could refuse it now
-            counts.error(str(exc))
-            state: RunState = "ok"
-        else:
             batch = observe_csv(rows, stored.source, stored.observed_at)
             state = await self._consume(profile, batch, run_id, counts)
+        except BadExport as exc:  # checked at upload; only a parser change could refuse it now
+            counts.error(str(exc))
+        except Exception:
+            # A bug here mustn't hold up every later run, RSS included.
+            log.exception(
+                "an uploaded Goodreads export couldn't be applied; set aside",
+                extra={"event": "ingest_failed", "profile": profile, "batch_id": stored.id},
+            )
+            counts.error("an uploaded export couldn't be applied; see the log")
         if state != "deferred":
             now = int(self._clock.time())
             await self._db.write(batches.processed, stored.id, run_id, now)

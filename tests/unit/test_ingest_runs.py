@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from syncshelf.sync import batches
+from syncshelf.sync import batches, goodreads
 
 from fakes.goodreads_csv import ExportBook, library_export
 from sync_world import GR_USER, HC_USER, World, world
@@ -150,3 +150,61 @@ async def test_stored_exports_teach_rss_which_shelves_are_tags(w: World) -> None
     assert await w.rows(
         "SELECT value FROM baseline_fields WHERE source_id = '100' AND field = 'status'"
     ) == [("read",)]
+
+
+async def test_an_export_that_cant_be_applied_never_holds_up_rss(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backfill_by_rss(w)
+    await upload(w, ExportBook(100, "Dune", rating=5))
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise KeyError("a bug")
+
+    monkeypatch.setattr(goodreads, "observe_csv", broken)
+    w.goodreads.users[GR_USER].items[0]["user_rating"] = "3"
+    result = await w.sync.run_rss("alice")
+    assert result.state == "ok" and await rating(w, 7) == 3.0  # RSS still ran
+    assert await w.rows("SELECT processed_at IS NOT NULL FROM ingest_batches") == [(1,)]
+
+
+async def test_an_export_from_before_a_removal_changes_nothing_on_it(w: World) -> None:
+    await backfill_by_rss(w)
+    w.goodreads.add_item(GR_USER, 200, "Emma")
+    w.hardcover.add_user_book(HC_USER, 8, status_id=3)
+    w.hardcover.add_mapping(200, 8, title="Emma")
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    w.goodreads.users[GR_USER].items.pop(0)  # Emma removed on Goodreads
+    await w.sync.run_rss("alice")
+    writes = len(w.hardcover.writes)
+    # An export made before the removal, with Emma rated: she stays gone, and nothing is
+    # pushed for her.
+    await upload(w, ExportBook(100, "Dune", rating=4), ExportBook(200, "Emma", rating=5), ago=5400)
+    await w.sync.run_rss("alice")
+    assert len(w.hardcover.writes) == writes
+    assert await w.rows("SELECT source_id FROM source_rows WHERE gone_at IS NOT NULL") == [("200",)]
+
+
+async def test_a_book_an_older_export_adds_is_found_gone_by_a_newer_one(w: World) -> None:
+    await backfill_by_rss(w)
+    await upload(w, ExportBook(100, "Dune", rating=4), ExportBook(300, "Orphan"), ago=600)
+    await upload(w, ExportBook(100, "Dune", rating=4), ago=60)  # Orphan removed since
+    w.goodreads.fail_next("server_error")  # only the exports speak
+    await w.sync.run_rss("alice")
+    assert await w.rows("SELECT source_id FROM source_rows WHERE gone_at IS NOT NULL") == [("300",)]
+
+
+async def test_the_shelf_vocabulary_is_parsed_only_when_exports_change(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parsed: list[int] = []
+    real = batches.vocabulary
+    monkeypatch.setattr(batches, "vocabulary", lambda e: parsed.append(len(e)) or real(e))
+    await backfill_by_rss(w)
+    await w.sync.run_rss("alice")
+    await upload(w, ExportBook(100, "Dune", rating=4), ago=None)
+    w.clock.advance(3600)
+    await w.sync.run_rss("alice")
+    await w.sync.run_rss("alice")
+    assert parsed == [0, 1]

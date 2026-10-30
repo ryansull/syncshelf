@@ -80,6 +80,7 @@ class Database:
         """Reads running in worker threads, which close() waits for."""
         self._idle = threading.Condition(self._readers_lock)
         self._closed = False
+        self._closing: asyncio.Future[None] | None = None
 
     @classmethod
     async def open(
@@ -196,8 +197,13 @@ class Database:
         stop its thread, and closing a connection under it would crash the process. Call it
         once nothing new will start (the lifespan does, after cancelling the sync loops).
         """
-        if self._closed:
-            return
+        if self._closing is None:
+            # Shielded, so a cancelled caller (a lifespan torn down) can't leave connections
+            # or the writer open; a second caller waits for the same close.
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self) -> None:
         with self._readers_lock:
             self._closed = True
         readers = await asyncio.to_thread(self._drain)

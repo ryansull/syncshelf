@@ -270,7 +270,8 @@ def record_backfill(
             linked += 1
         else:
             queued += 1
-        _insert_row(conn, profile, source, place, now, backfill=True)
+        seen_at = batch.observed_at if batch.observed_at is not None else now
+        _insert_row(conn, profile, source, place, now, seen_at, backfill=True)
         conn.executemany(
             "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
@@ -325,6 +326,8 @@ def observe(
             if all(n.source_id != obs.source_id for n in new):
                 new.append(obs)
             continue
+        if row.gone_at is not None and row.gone_at >= observed_at:
+            continue  # removed since this was observed: nothing it says applies any more
         # A queued row whose details changed is matched again, unless a person must
         # settle it (a conflict with the shared link) or it was already taken this batch.
         if (
@@ -392,7 +395,7 @@ def add_rows(
     for place in placements:
         obs = place.observation
         added.append(obs.source_id)
-        _insert_row(conn, profile, source, place, now, backfill=False)
+        _insert_row(conn, profile, source, place, now, batch.observed_at, backfill=False)
         # A status this observation couldn't read (#182) starts empty too, so the first
         # status seen later is a change, not a baseline.
         fields = {"status": None, **obs.fields}
@@ -727,10 +730,12 @@ def _insert_row(
     source: IdentitySource,
     place: Placement,
     now: int,
+    seen_at: int,
     *,
     backfill: bool,
 ) -> None:
-    """A new source row, linked (with its shared link) or queued (with its candidates)."""
+    """A new source row, linked (with its shared link) or queued (with its candidates).
+    ``seen_at`` is when its batch was observed, which presence is judged by (rule 8)."""
     obs, hit = place.observation, place.hit
     if place.linked:
         assert hit is not None
@@ -740,14 +745,14 @@ def _insert_row(
             "hc_user_book_id, match_input, first_seen_at, last_seen_at) "
             "VALUES (?, ?, ?, 'linked', ?, ?, ?, ?, ?)",
             (profile, source, obs.source_id, book, place.hc_user_book_id,
-             match_input(obs), now, now),
+             match_input(obs), now, seen_at),
         )  # fmt: skip
         return
     conn.execute(
         "INSERT INTO source_rows (profile, source, source_id, state, queue_reason, queued_at, "
         "match_input, first_seen_at, last_seen_at, backfill_queued) "
         "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
-        (profile, source, obs.source_id, _reason(place), now, match_input(obs), now, now,
+        (profile, source, obs.source_id, _reason(place), now, match_input(obs), now, seen_at,
          int(backfill)),
     )  # fmt: skip
     _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)

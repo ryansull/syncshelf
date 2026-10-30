@@ -174,6 +174,18 @@ class TestDatabase:
             release.set()
         assert closing.is_set()
 
+    async def test_a_cancelled_close_still_closes(self, tmp_path: Path) -> None:
+        db = await Database.open(tmp_path / "cancelled.db", snapshot_dir=tmp_path)
+        release = threading.Event()
+        with anyio.move_on_after(0.05):
+            await db.read(lambda c: release.wait(10))
+        with anyio.move_on_after(0.05):
+            await db.close()  # cancelled while it waits for the read
+        release.set()
+        await db.close()  # waits for the same close, which finished regardless
+        with pytest.raises(RuntimeError, match="closed"):
+            await db.write(lambda c: None)
+
     async def test_a_failed_migration_closes_the_writer_and_raises(self, tmp_path: Path) -> None:
         migrations = tmp_path / "m"
         migrations.mkdir()

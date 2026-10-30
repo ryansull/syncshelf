@@ -15,7 +15,16 @@ from dataclasses import dataclass
 from syncshelf.clients.goodreads_csv import BadExport, parse_export
 from syncshelf.sync.observations import ShelfVocabulary, Source
 
-__all__ = ["KEEP", "Stored", "payloads", "processed", "store", "unprocessed", "vocabulary"]
+__all__ = [
+    "KEEP",
+    "Stored",
+    "payloads",
+    "processed",
+    "store",
+    "stored_ids",
+    "unprocessed",
+    "vocabulary",
+]
 
 KEEP = 3
 """Stored batches kept per profile, newest first."""
@@ -74,6 +83,17 @@ def processed(conn: sqlite3.Connection, batch_id: int, run_id: int, now: int) ->
         "UPDATE ingest_batches SET processed_at = ?, run_id = ? WHERE id = ?",
         (now, run_id, batch_id),
     )
+
+
+def stored_ids(conn: sqlite3.Connection, profile: str) -> list[int]:
+    """The ids of the profile's stored exports, newest first: what :func:`payloads` would
+    return, cheaply."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM ingest_batches WHERE profile = ? ORDER BY id DESC", (profile,)
+        )
+    ]
 
 
 def payloads(conn: sqlite3.Connection, profile: str) -> list[bytes]:
