@@ -47,6 +47,7 @@ from typing import Any, Protocol
 
 import httpx2
 
+from syncshelf.clients.goodreads_csv import BadExport, parse_export
 from syncshelf.clients.goodreads_rss import GoodreadsRss, Pacer
 from syncshelf.clients.hardcover import (
     EDITION_FORMATS,
@@ -60,7 +61,7 @@ from syncshelf.clients.hardcover import (
 from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
 from syncshelf.logging import scrub
-from syncshelf.sync import identity, runs
+from syncshelf.sync import batches, identity, runs
 from syncshelf.sync.apply import (
     UNSET,
     Applied,
@@ -81,7 +82,7 @@ from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, Sour
 from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, IdHit, MatchInput, Outcome, match
 from syncshelf.sync.mirror import FetchFailed, Mirror
-from syncshelf.sync.observations import Batch, Observation, observe_rss
+from syncshelf.sync.observations import Batch, Observation, observe_csv, observe_rss
 from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
 
 __all__ = ["Clock", "GoodreadsSync", "Resolution"]
@@ -137,6 +138,7 @@ class GoodreadsSync:
         self._rss: dict[str, GoodreadsRss] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._running: dict[str, tuple[int, int]] = {}
+        self._announced: dict[str, int] = {}
         for name, profile in profiles.items():
             if profile.goodreads is None:
                 continue
@@ -328,6 +330,11 @@ class GoodreadsSync:
     ) -> RunState:
         goodreads = self._profiles[profile].goodreads
         assert goodreads is not None
+        # Stage 0: uploaded exports not yet applied, oldest first, then RSS (#204).
+        for stored in await self._db.read(batches.unprocessed, profile):
+            state = await self._stored(profile, stored, run_id, counts)
+            if state == "deferred":
+                return state  # Hardcover can't be reached; RSS would fare no better
         # Stage 1: the whole feed.
         fetched = await rss.fetch_all()
         if fetched.problem is not None:
@@ -336,8 +343,38 @@ class GoodreadsSync:
             return "fetch_failed"
         counts.fetched, counts.observed_at = fetched.complete, started
         zone = self._profiles[profile].tzinfo()
-        batch = observe_rss(fetched, goodreads.shelf_map, started, zone)
+        exports = await self._db.read(batches.payloads, profile)
+        vocabulary = await asyncio.to_thread(batches.vocabulary, exports)
+        batch = observe_rss(fetched, goodreads.shelf_map, started, zone, vocabulary)
+        return await self._consume(profile, batch, run_id, counts)
 
+    async def _stored(
+        self, profile: str, stored: batches.Stored, run_id: int, counts: RunCounts
+    ) -> RunState:
+        """Apply one uploaded export as a batch of its own. It's done once its observations
+        are recorded, even if a change in it failed (that change stays pending); only a pass
+        deferred before then is tried again by the next run."""
+        try:
+            rows = await asyncio.to_thread(parse_export, stored.payload)
+        except BadExport as exc:  # checked at upload; only a parser change could refuse it now
+            counts.error(str(exc))
+            state: RunState = "ok"
+        else:
+            batch = observe_csv(rows, stored.source, stored.observed_at)
+            state = await self._consume(profile, batch, run_id, counts)
+        if state != "deferred":
+            now = int(self._clock.time())
+            await self._db.write(batches.processed, stored.id, run_id, now)
+        return state
+
+    async def _consume(
+        self, profile: str, batch: Batch, run_id: int, counts: RunCounts
+    ) -> RunState:
+        """Stages 2 to 4 for one batch: the backfill, if there's been none, or the diff,
+        matching and apply."""
+        goodreads = self._profiles[profile].goodreads
+        assert goodreads is not None
+        zone = self._profiles[profile].tzinfo()
         if not await self._db.read(identity.backfilled, profile, SOURCE):
             if not batch.complete:
                 return "partial"  # the backfill waits for a complete enumeration
@@ -801,7 +838,10 @@ class GoodreadsSync:
             )
 
     def _started(self, profile: str, run_id: int) -> None:
-        # An idle run logs only its end line (§2.7).
+        # An idle run logs only its end line (§2.7); a run applying several batches, one start.
+        if self._announced.get(profile) == run_id:
+            return
+        self._announced[profile] = run_id
         log.info(
             "Goodreads run started",
             extra={

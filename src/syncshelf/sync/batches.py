@@ -3,13 +3,19 @@ run can apply it and later runs can learn the profile's shelves from it (#182).
 
 Only the last :data:`KEEP` per profile are kept. A batch without ``observed_at`` (an upload
 with no ``generated_at``) is **stale**: it only fills, never pushes (#168).
+
+**Batches, then RSS** (#204): every Goodreads run first applies the profile's unprocessed dated
+batches, oldest generation time first, then reads RSS. An upload that lands during a run waits
+for the next one; "the newer observation wins" (§3.4a.6 rule 8) makes the order safe.
 """
 
 import sqlite3
+from dataclasses import dataclass
 
-from syncshelf.sync.observations import Source
+from syncshelf.clients.goodreads_csv import BadExport, parse_export
+from syncshelf.sync.observations import ShelfVocabulary, Source
 
-__all__ = ["KEEP", "store"]
+__all__ = ["KEEP", "Stored", "payloads", "processed", "store", "unprocessed", "vocabulary"]
 
 KEEP = 3
 """Stored batches kept per profile, newest first."""
@@ -38,3 +44,60 @@ def store(
     )
     assert cursor.lastrowid is not None
     return cursor.lastrowid
+
+
+@dataclass(frozen=True)
+class Stored:
+    """A stored batch a run is yet to apply."""
+
+    id: int
+    source: Source
+    observed_at: int
+    payload: bytes
+
+
+def unprocessed(conn: sqlite3.Connection, profile: str) -> list[Stored]:
+    """The profile's dated batches no run has applied, oldest generation time first."""
+    return [
+        Stored(*row)
+        for row in conn.execute(
+            "SELECT id, source, observed_at, payload FROM ingest_batches WHERE profile = ? "
+            "AND NOT stale AND processed_at IS NULL ORDER BY observed_at, id",
+            (profile,),
+        )
+    ]
+
+
+def processed(conn: sqlite3.Connection, batch_id: int, run_id: int, now: int) -> None:
+    """Record that a run applied the batch."""
+    conn.execute(
+        "UPDATE ingest_batches SET processed_at = ?, run_id = ? WHERE id = ?",
+        (now, run_id, batch_id),
+    )
+
+
+def payloads(conn: sqlite3.Connection, profile: str) -> list[bytes]:
+    """Every stored export of the profile, stale ones too, newest first."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT payload FROM ingest_batches WHERE profile = ? ORDER BY id DESC", (profile,)
+        )
+    ]
+
+
+def vocabulary(exports: list[bytes]) -> ShelfVocabulary:
+    """What stored exports say about the profile's shelves (#182): any shelf shown as an
+    ``Exclusive Shelf`` is exclusive, and one shown only in ``Bookshelves`` is a tag. RSS
+    lists both together, so it can tell them apart only through this."""
+    exclusive: set[str] = set()
+    listed: set[str] = set()
+    for export in exports:
+        try:
+            rows = parse_export(export)
+        except BadExport:
+            continue  # checked when it was uploaded; one the parser now refuses teaches nothing
+        for row in rows:
+            exclusive.add(row.exclusive_shelf)
+            listed.update(row.bookshelves)
+    return ShelfVocabulary(frozenset(exclusive), frozenset(listed - exclusive))

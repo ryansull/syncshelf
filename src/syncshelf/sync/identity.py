@@ -307,13 +307,16 @@ def observe(
     **Removals are recorded, never pushed** (rule 4). Only a complete enumeration may conclude
     a row is gone: it gets ``gone_at``, its ``last_seen_at`` freezes, and a ``gone`` row goes
     in ``change_log``. A row seen again isn't gone any more, so its ``gone_at`` clears.
+    Presence follows rule 8 too, by the batch's ``observed_at``: an export made before a row
+    was last seen can't find it gone, and one made before it went can't bring it back.
 
     Rows SyncShelf has never seen are returned as ``new``, for the caller to match and add
     with :func:`add_rows`.
     """
     assert batch.observed_at is not None, "a stale batch only fills"
     rows = load_rows(conn, profile, source)
-    seen: list[tuple[int, str, str, str]] = []
+    seen: list[tuple[int, int, str, str, str]] = []
+    observed_at = batch.observed_at
     new: list[Observation] = []
     rematch: list[Observation] = []
     for obs in batch.rows:
@@ -331,7 +334,7 @@ def observe(
             and all(r.source_id != obs.source_id for r in rematch)
         ):
             rematch.append(obs)
-        seen.append((now, profile, source, obs.source_id))
+        seen.append((observed_at, observed_at, profile, source, obs.source_id))
         for name, value in obs.fields.items():
             baseline = row.baselines.get(name)
             if baseline is None:
@@ -343,20 +346,31 @@ def observe(
             elif baseline.observed_at is None or batch.observed_at > baseline.observed_at:
                 _diff_field(conn, baseline, value, batch.observed_at, now)
     conn.executemany(
-        "UPDATE source_rows SET last_seen_at = ?, gone_at = NULL WHERE profile = ? "
-        "AND source = ? AND source_id = ?",
+        "UPDATE source_rows SET last_seen_at = max(last_seen_at, ?), "
+        "gone_at = CASE WHEN gone_at < ? THEN NULL ELSE gone_at END "
+        "WHERE profile = ? AND source = ? AND source_id = ?",
         seen,
     )
     gone = 0
     if batch.complete:
         listed = {obs.source_id for obs in batch.rows}
+        last_seen = dict(
+            conn.execute(
+                "SELECT source_id, last_seen_at FROM source_rows WHERE profile = ? AND source = ?",
+                (profile, source),
+            ).fetchall()
+        )
         for row in rows.values():
-            if row.source_id not in listed and row.gone_at is None:
+            if (
+                row.source_id not in listed
+                and row.gone_at is None
+                and last_seen[row.source_id] < observed_at
+            ):
                 gone += 1
-                _mark_gone(conn, profile, source, row, now)
+                _mark_gone(conn, profile, source, row, observed_at, now)
     # A row this batch didn't list keeps its pending change for a batch that does, so the
     # baseline is never stamped with a time it wasn't observed at.
-    listed_now = {source_id for _, _, _, source_id in seen}
+    listed_now = {source_id for *_, source_id in seen}
     pending = [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
     return Observed(pending, gone, new, rematch)
 
@@ -800,11 +814,17 @@ def _link(
 
 
 def _mark_gone(
-    conn: sqlite3.Connection, profile: str, source: IdentitySource, row: SourceRow, now: int
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    row: SourceRow,
+    observed_at: int,
+    now: int,
 ) -> None:
+    # Gone as of the observation that found it so, which a later one can overturn.
     conn.execute(
         "UPDATE source_rows SET gone_at = ? WHERE profile = ? AND source = ? AND source_id = ?",
-        (now, profile, source, row.source_id),
+        (observed_at, profile, source, row.source_id),
     )
     conn.execute(
         "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, kind,"

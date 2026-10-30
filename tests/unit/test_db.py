@@ -147,6 +147,33 @@ class TestDatabase:
             Path(f"{path}{suffix}").unlink(missing_ok=True)
         assert not path.exists()
 
+    async def test_close_waits_for_a_read_whose_task_was_cancelled(self, tmp_path: Path) -> None:
+        # A cancelled await doesn't stop the read's thread; closing its connection under it
+        # would crash the process.
+        db = await Database.open(tmp_path / "reading.db", snapshot_dir=tmp_path)
+        started, release = threading.Event(), threading.Event()
+
+        def slow(conn: sqlite3.Connection) -> int:
+            started.set()
+            release.wait(10)
+            return conn.execute("SELECT 1").fetchone()[0]
+
+        with anyio.move_on_after(0.05):
+            await db.read(slow)  # abandoned while its thread still runs
+        assert started.is_set()
+        closing = anyio.Event()
+
+        async def close() -> None:
+            await db.close()
+            closing.set()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(close)
+            await anyio.sleep(0.05)
+            assert not closing.is_set()  # waiting for the read
+            release.set()
+        assert closing.is_set()
+
     async def test_a_failed_migration_closes_the_writer_and_raises(self, tmp_path: Path) -> None:
         migrations = tmp_path / "m"
         migrations.mkdir()
