@@ -134,10 +134,11 @@ async def test_without_generated_at_the_batch_is_stale(http: Any) -> None:
     assert (observed_at, stale) == (None, 1)
 
 
-async def test_a_running_sync_is_named(http: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_running_sync_is_named(http: Any) -> None:
     client, nudged = http
-    monkeypatch.setattr(Scheduler, "running", lambda self, p: (7, 0))
-    answer = (await post(client, ALICE, generated_at="2026-10-15T08:00:00+01:00")).json()
+    scheduler = client._transport.app.state.scheduler  # type: ignore[attr-defined]  # noqa: SLF001
+    async with scheduler.sync.lock("alice"):
+        answer = (await post(client, ALICE, generated_at="2026-10-15T08:00:00+01:00")).json()
     assert answer["run"] == "already_running"
     assert nudged == [("alice", "ingest")]  # the next run picks it up
 
@@ -167,3 +168,22 @@ async def test_a_profile_without_goodreads_is_refused(
     response = await post(client, "carol-secret")
     assert response.status_code == 400
     assert "no goodreads section" in response.json()["error"]
+
+
+async def test_a_run_holding_the_lock_is_named_before_it_has_an_id(http: Any) -> None:
+    client, _ = http
+    scheduler = client._transport.app.state.scheduler  # type: ignore[attr-defined]  # noqa: SLF001
+    async with scheduler.sync.lock("alice"):
+        answer = (await post(client, ALICE)).json()
+    assert answer["run"] == "already_running"
+
+
+async def test_generated_at_sent_as_a_file_is_refused(http: Any) -> None:
+    client, _ = http
+    response = await client.post(
+        URL,
+        headers={"authorization": f"Bearer {ALICE}"},
+        files={"file": ("x.csv", EXPORT), "generated_at": ("t.txt", b"2026-10-15T08:00:00Z")},
+    )
+    assert response.status_code == 400
+    assert "not a valid upload" in response.json()["error"]

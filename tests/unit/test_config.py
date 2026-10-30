@@ -1120,9 +1120,14 @@ def test_an_empty_ingest_secret_is_refused(tmp_path: Path) -> None:
     assert "must not be empty" in load_error(tmp_path, text, {"INGEST": "  "})
 
 
-def test_committed_example_gives_each_profile_its_own_ingest_secret() -> None:
+def test_committed_example_shows_the_ingest_secret_commented_out() -> None:
+    # Optional: an uncommented ${VAR} would stop startup whenever the variable is empty.
+    text = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert "    # ingest_secret: ${INGEST_SECRET_ALICE}" in text
     config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
-    assert {p.ingest_secret for p in config.profiles.values()} == {
-        EXAMPLE_ENV["INGEST_SECRET_ALICE"],
-        EXAMPLE_ENV["INGEST_SECRET_BOB"],
-    }
+    assert {p.ingest_secret for p in config.profiles.values()} == {None}
+
+
+def test_an_ingest_secret_with_surrounding_whitespace_is_refused(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    assert "whitespace" in load_error(tmp_path, text, {"INGEST": SECRET + " "})

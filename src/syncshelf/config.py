@@ -757,6 +757,9 @@ def _ingest_secret(
     key = f"{prefix}.ingest_secret"
     if not secret.strip():
         raise ConfigError(f"{key}: must not be empty")
+    if secret != secret.strip():
+        # A bearer token can't carry it, so the secret could never match.
+        raise ConfigError(f"{key}: must not start or end with whitespace")
     if secret in owners:
         raise ConfigError(f"{key}: the same secret is already used by profiles.{owners[secret]}")
     owners[secret] = name

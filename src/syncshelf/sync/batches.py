@@ -33,7 +33,7 @@ def store(
     )
     conn.execute(
         "DELETE FROM ingest_batches WHERE profile = ? AND id NOT IN (SELECT id FROM "
-        "ingest_batches WHERE profile = ? ORDER BY received_at DESC, id DESC LIMIT ?)",
+        "ingest_batches WHERE profile = ? ORDER BY id DESC LIMIT ?)",  # never the clock
         (profile, profile, KEEP),
     )
     assert cursor.lastrowid is not None

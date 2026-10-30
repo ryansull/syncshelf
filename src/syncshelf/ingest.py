@@ -17,7 +17,9 @@ import hmac
 import logging
 from datetime import UTC, datetime
 
+import anyio
 from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -43,11 +45,10 @@ async def ingest_goodreads_csv(request: Request) -> JSONResponse:
         return _error(401, "unknown ingest secret")
     if profile.goodreads is None:
         return _error(400, f"profile {profile.name} has no goodreads section")
-    async with request.form(max_files=1, max_fields=4) as form:
-        upload, generated = form.get("file"), form.get("generated_at")
-        if not isinstance(upload, UploadFile):
-            return _error(400, "send the export as a file part named 'file'")
-        payload = await upload.read()
+    try:
+        payload, generated = await _parts(request)
+    except _Refused as exc:
+        return _error(400, str(exc))
     observed_at = None
     if isinstance(generated, str) and generated.strip():
         try:
@@ -55,7 +56,8 @@ async def ingest_goodreads_csv(request: Request) -> JSONResponse:
         except ValueError:
             return _error(400, "generated_at must be an ISO-8601 time, with its offset")
     try:
-        rows = parse_export(payload)
+        # A whole library parses in a worker thread, off the event loop MCP is served on.
+        rows = await anyio.to_thread.run_sync(parse_export, payload)
     except BadExport as exc:
         body: dict[str, object] = {"error": str(exc)}
         if exc.missing:
@@ -66,7 +68,8 @@ async def ingest_goodreads_csv(request: Request) -> JSONResponse:
         batches.store, profile.name, "gr_csv_ingest", now, observed_at, payload, len(rows)
     )
     scheduler = request.app.state.scheduler
-    run = "already_running" if scheduler.running(profile.name) else "started"
+    # The lock, not the run record: a run holds it a moment before it has an id.
+    run = "already_running" if scheduler.sync.lock(profile.name).locked() else "started"
     scheduler.nudge(profile.name, "ingest")
     stale = observed_at is None
     log.info(
@@ -85,11 +88,28 @@ async def ingest_goodreads_csv(request: Request) -> JSONResponse:
     return JSONResponse(answer, status_code=202)
 
 
+class _Refused(ValueError):
+    pass
+
+
+async def _parts(request: Request) -> tuple[bytes, str | None]:
+    try:
+        async with request.form(max_files=1, max_fields=4) as form:
+            upload, generated = form.get("file"), form.get("generated_at")
+            if not isinstance(upload, UploadFile):
+                raise _Refused("send the export as a file part named 'file'")
+            if isinstance(generated, UploadFile):
+                raise _Refused("send generated_at as a text field, not a file")
+            return await upload.read(), generated
+    except HTTPException as exc:  # Starlette's: more parts than an upload has, or a bad body
+        raise _Refused(f"not a valid upload: {exc.detail}") from None
+
+
 def _caller(header: str, profiles: dict[str, ProfileConfig]) -> ProfileConfig | None:
     scheme, _, secret = header.partition(" ")
     if scheme.lower() != "bearer" or not secret:
         return None
-    given = secret.strip().encode()
+    given = secret.encode()
     found = None
     # Every secret is compared, so the time taken never says which profile came close.
     for profile in profiles.values():

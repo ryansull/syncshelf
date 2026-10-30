@@ -73,8 +73,9 @@ it, and `rss_key` is needed only if the profile isn't public. A profile without 
 no Goodreads sync. A profile's optional `ingest_secret` lets it upload a Goodreads library
 export by hand (below); each profile needs its own, since the secret says whose export it is. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
 the profiles half an interval apart; a failed read backs off from 1 hour to at most 6, and a
-restart picks the schedule up where it left off. The file is the only source of profiles: at each start, a profile removed from it is marked
-removed and its Claude connections are revoked, and a name added back is restored.
+restart picks the schedule up where it left off. The file is the only source of profiles: at
+each start, a profile removed from it is marked removed and its Claude connections are revoked,
+and a name added back is restored.
 
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says
 where tokens come from:
