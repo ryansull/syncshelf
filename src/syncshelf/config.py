@@ -236,6 +236,9 @@ class ProfileConfig:
     the user says ("last 30 days", "yesterday") are read in it."""
     goodreads: GoodreadsConfig | None = None
     """``None`` when the profile has no ``goodreads`` section: no Goodreads sync for it."""
+    ingest_secret: str | None = field(default=None, repr=False)
+    """The secret that identifies this profile on ``POST /ingest/goodreads-csv`` (§3.4a.8).
+    ``None``: the profile can't upload a CSV."""
 
     def tzinfo(self) -> tzinfo:
         """The profile's time zone: :attr:`timezone`, else the container's. That is its ``TZ``
@@ -699,6 +702,7 @@ def _profiles(
 ) -> dict[str, ProfileConfig]:
     profiles: dict[str, ProfileConfig] = {}
     owners: dict[str, str] = {}
+    ingest_owners: dict[str, str] = {}
     for name, body in raw.items():
         if not isinstance(name, str) or not PROFILE_NAME_PATTERN.fullmatch(name):
             # The name itself is only a profile key, but it may be someone's real name.
@@ -737,8 +741,26 @@ def _profiles(
                 body.get("household_visible"), f"{prefix}.household_visible"
             ),
             goodreads=_goodreads(body.get("goodreads"), f"{prefix}.goodreads", secrets),
+            ingest_secret=_ingest_secret(
+                secrets.get(f"{prefix}.ingest_secret"), prefix, name, ingest_owners
+            ),
         )
     return profiles
+
+
+def _ingest_secret(
+    secret: str | None, prefix: str, name: str, owners: dict[str, str]
+) -> str | None:
+    # The secret is what tells /ingest whose CSV it is, so two profiles can't share one.
+    if secret is None:
+        return None
+    key = f"{prefix}.ingest_secret"
+    if not secret.strip():
+        raise ConfigError(f"{key}: must not be empty")
+    if secret in owners:
+        raise ConfigError(f"{key}: the same secret is already used by profiles.{owners[secret]}")
+    owners[secret] = name
+    return secret
 
 
 def _hardcover_token(token: str | None, prefix: str) -> str:

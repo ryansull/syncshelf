@@ -74,6 +74,7 @@ from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
+from syncshelf.ingest import ingest_goodreads_csv
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.goodreads import GoodreadsSync
@@ -246,6 +247,7 @@ def create_app(
                 interval=config.cadence.rss_interval,
                 clock=sync_clock,
             )
+            app.state.scheduler = scheduler
             mcp.bind(
                 Services(
                     db=db,
@@ -294,6 +296,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            Route("/ingest/goodreads-csv", ingest_goodreads_csv, methods=["POST"]),
             *authorization_server,
             protected_resource_route(config.server),
             Mount("/", app=mcp_app),

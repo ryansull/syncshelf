@@ -70,7 +70,8 @@ From phase 4a, a profile with a `goodreads` section is read from its Goodreads s
 `goodreads.user_id` (the number in `goodreads.com/user/show/<id>`, quoted) and
 `goodreads.shelf_map` (each exclusive shelf's Hardcover status, 1 to 5) are both required in
 it, and `rss_key` is needed only if the profile isn't public. A profile without the section has
-no Goodreads sync. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
+no Goodreads sync. A profile's optional `ingest_secret` lets it upload a Goodreads library
+export by hand (below); each profile needs its own, since the secret says whose export it is. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
 the profiles half an interval apart; a failed read backs off from 1 hour to at most 6, and a
 restart picks the schedule up where it left off. The file is the only source of profiles: at each start, a profile removed from it is marked
 removed and its Claude connections are revoked, and a name added back is restored.
@@ -119,6 +120,16 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   `hardcover_bug`, `source_stale`), for Uptime Kuma or Home Assistant to alert on. It's 503
   only when the database fails, so use it for the container's liveness: a Goodreads CAPTCHA
   never restarts the service. SyncShelf sends no notifications itself.
+- **`/ingest/goodreads-csv`** (keep it on the LAN too) takes a Goodreads library export
+  ("Import and export" on Goodreads) for the profile whose `ingest_secret` it's sent with, and
+  answers 202 at once; the profile's next sync applies it. Send `generated_at`, when the export
+  was made, or the upload only fills in what SyncShelf hasn't seen yet:
+
+  ```sh
+  curl -H "Authorization: Bearer <ingest secret>" \
+    -F file=@goodreads_library_export.csv -F generated_at=2026-10-15T08:00:00Z \
+    http://<lan-host>:8000/ingest/goodreads-csv
+  ```
 - **`/config/profiles.yaml`** is the config. Mount it read-only (`:ro`); SyncShelf never
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
 - **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or

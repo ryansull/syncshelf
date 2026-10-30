@@ -12,6 +12,7 @@ dependencies = [
     "httpx2>=2.13",
     "mcp>=2.3,<3",
     "pyjwt[crypto]>=2.10",
+    "python-multipart>=0.0.32",
     "pyyaml>=6",
     "rapidfuzz>=3,<4",
     "starlette>=1.8,<2",

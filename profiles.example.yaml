@@ -91,7 +91,9 @@ profiles:
     # Who sees books SyncShelf adds to Hardcover: public, followers or private (the default).
     # Only new shelf entries; SyncShelf never changes an existing one's privacy.
     hardcover_privacy: private
-    # ingest_secret: ${INGEST_SECRET_ALICE}
+    # Lets this profile upload a Goodreads library export to POST /ingest/goodreads-csv (on
+    # the LAN). Optional; each profile needs its own (openssl rand -hex 32).
+    ingest_secret: ${INGEST_SECRET_ALICE}
     # Goodreads -> Hardcover (phase 4a). Leave the section out for no Goodreads sync.
     # user_id is the number in goodreads.com/user/show/<id>-name, quoted so leading zeros
     # survive. rss_key is needed only if the Goodreads profile is private: the key= value of
@@ -116,3 +118,4 @@ profiles:
     permissions: [chaptarr]
     household_visible: false
     hardcover_token: ${HARDCOVER_TOKEN_BOB}
+    ingest_secret: ${INGEST_SECRET_BOB}

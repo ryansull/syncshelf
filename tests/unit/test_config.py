@@ -897,6 +897,8 @@ EXAMPLE_ENV = {
     "CONSENT_HMAC_KEY": "hmac-" + SECRET,
     "HARDCOVER_TOKEN_ALICE": "a",
     "HARDCOVER_TOKEN_BOB": "b",
+    "INGEST_SECRET_ALICE": "ingest-a-" + SECRET,
+    "INGEST_SECRET_BOB": "ingest-b-" + SECRET,
 }
 
 
@@ -926,9 +928,9 @@ def test_committed_example_switches_to_dev_mode_as_its_comments_say(tmp_path: Pa
     )
     path = tmp_path / "profiles.yaml"
     path.write_text(local, encoding="utf-8")
-    # The dev token and the Hardcover tokens: a local instance needs none of oauth mode's
-    # secrets.
-    hardcover = {"HARDCOVER_TOKEN_ALICE": "a", "HARDCOVER_TOKEN_BOB": "b"}
+    # The dev token and the profiles' own secrets: a local instance needs none of oauth
+    # mode's.
+    hardcover = {k: v for k, v in EXAMPLE_ENV.items() if k.startswith(("HARDCOVER", "INGEST"))}
     config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET} | hardcover)
     assert config.server.dev_mode is not None
     assert config.server.dev_mode.profile in config.profiles
@@ -1085,3 +1087,42 @@ def test_goodreads_hosts_are_always_aliased(tmp_path: Path) -> None:
     aliases = load(tmp_path, MINIMAL).host_aliases()
     assert aliases["www.goodreads.com"] == "goodreads"
     assert aliases["goodreads.com"] == "goodreads"
+
+
+# --- ingest_secret (§3.4a.8) -----------------------------------------------------------------
+
+
+def test_an_ingest_secret_is_read_from_the_environment(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    alice = load(tmp_path, text, {"INGEST": SECRET}).profiles["alice"]
+    assert alice.ingest_secret == SECRET
+    assert SECRET not in repr(alice)
+
+
+def test_a_profile_without_an_ingest_secret_cant_upload(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).profiles["alice"].ingest_secret is None
+
+
+def test_two_profiles_cant_share_an_ingest_secret(tmp_path: Path) -> None:
+    text = (
+        MINIMAL
+        + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+        + "  bob:\n    ingest_secret: ${INGEST}\n"
+    )
+    message = load_error(tmp_path, text, {"INGEST": SECRET})
+    assert (
+        message == "profiles.bob.ingest_secret: the same secret is already used by profiles.alice"
+    )
+
+
+def test_an_empty_ingest_secret_is_refused(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    assert "must not be empty" in load_error(tmp_path, text, {"INGEST": "  "})
+
+
+def test_committed_example_gives_each_profile_its_own_ingest_secret() -> None:
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
+    assert {p.ingest_secret for p in config.profiles.values()} == {
+        EXAMPLE_ENV["INGEST_SECRET_ALICE"],
+        EXAMPLE_ENV["INGEST_SECRET_BOB"],
+    }
