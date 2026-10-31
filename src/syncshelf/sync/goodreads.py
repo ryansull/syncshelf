@@ -385,8 +385,12 @@ class GoodreadsSync:
         state: RunState = "ok"
         try:
             rows = await asyncio.to_thread(parse_export, stored.payload)
-            batch = observe_csv(rows, stored.source, stored.observed_at)
-            state = await self._consume(profile, batch, run_id, counts)
+            stale = stored.observed_at is None
+            batch = observe_csv(rows, stored.source, stored.observed_at, stale=stale)
+            if stale:
+                await self._fill(profile, batch, counts)
+            else:
+                state = await self._consume(profile, batch, run_id, counts)
         except BadExport as exc:  # checked at upload; only a parser change could refuse it now
             counts.error(str(exc))
         except Exception:
@@ -400,6 +404,28 @@ class GoodreadsSync:
             now = int(self._clock.time())
             await self._db.write(batches.processed, stored.id, run_id, now)
         return state
+
+    async def _fill(self, profile: str, batch: Batch, counts: RunCounts) -> None:
+        """Apply a stale upload, which only fills (§3.4a.8): never-observed fields on rows
+        SyncShelf has take its values as their baselines, and queued rows whose match input
+        it completes are matched again. It never adds a row, pushes, finds one gone, or
+        counts as the backfill, so before the backfill there's nothing for it to do. A row
+        it links goes out with a later run, on what dated observations said."""
+        if not await self._db.read(identity.backfilled, profile, SOURCE):
+            return
+        rematch = await self._db.write(identity.fill, profile, SOURCE, batch)
+        if not rematch:
+            return
+        rows = await self._db.read(identity.load_rows, profile, SOURCE)
+        try:
+            await self._add(profile, batch, [], rematch, rows)
+        except (HardcoverError, FetchFailed) as exc:
+            # The rows keep their old input, so a later change or a refresh matches them.
+            counts.error(str(exc) if isinstance(exc, FetchFailed) else scrub(str(exc)))
+            log.warning(
+                "couldn't match books a stale upload completed",
+                extra={"event": "match_failed", "profile": profile},
+            )
 
     async def _consume(
         self, profile: str, batch: Batch, run_id: int, counts: RunCounts
@@ -516,13 +542,11 @@ class GoodreadsSync:
             placements += await self._placements(profile, backfilled, shelved=shelved)
         changed = {obs.source_id for obs in rematch}
         now = int(self._clock.time())
-        added = await self._db.write(
-            identity.add_rows,
-            profile,
-            SOURCE,
-            batch,
-            [p for p in placements if p.observation.source_id not in changed],
-            now,
+        fresh = [p for p in placements if p.observation.source_id not in changed]
+        added = (
+            await self._db.write(identity.add_rows, profile, SOURCE, batch, fresh, now)
+            if fresh
+            else []
         )
         if rematch:
             await self._db.write(

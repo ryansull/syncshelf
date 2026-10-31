@@ -96,12 +96,77 @@ async def test_exports_are_applied_once_oldest_first(w: World) -> None:
     assert await w.rows("SELECT count(*) FROM ingest_batches WHERE processed_at IS NULL") == [(0,)]
 
 
-async def test_a_stale_upload_is_not_applied(w: World) -> None:
+async def test_a_stale_upload_only_fills(w: World) -> None:
     await backfill_by_rss(w)
-    await upload(w, ExportBook(100, "Dune", rating=1), ago=None)
+    stale = (ExportBook(100, "Dune", rating=1, spoiler=True), ExportBook(200, "Emma"))
+    await upload(w, *stale, ago=None)
+    w.goodreads.fail_next("server_error")  # only the upload speaks
     await w.sync.run_rss("alice")
     assert w.hardcover.writes == []
-    assert await w.rows("SELECT processed_at FROM ingest_batches") == [(None,)]
+    assert await w.rows("SELECT processed_at IS NOT NULL FROM ingest_batches") == [(1,)]
+    assert await w.rows("SELECT source_id FROM source_rows") == [("100",)]  # no new row
+    # The rating was observed, so it stands; the spoiler never was, so the upload fills it.
+    assert await w.rows(
+        "SELECT field, value, observed_at IS NULL, pending_since FROM baseline_fields "
+        "WHERE field IN ('rating', 'spoiler') ORDER BY field"
+    ) == [("rating", "4", 0, None), ("spoiler", "1", 1, None)]
+
+
+async def test_any_dated_observation_beats_a_stale_fill(w: World) -> None:
+    w.hardcover.user_books[HC_USER][0].update(review_markdown="Loved it", has_review=True)
+    w.goodreads.add_item(GR_USER, 100, "Dune", user_rating="4", user_review="Loved it")
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    await only_exports(w, ExportBook(100, "Dune", rating=4, review="Loved it", spoiler=True))
+    await upload(w, ExportBook(100, "Dune", rating=4, review="Loved it", spoiler=False), ago=None)
+    w.goodreads.fail_next("server_error")
+    await w.sync.run_rss("alice")
+    assert w.hardcover.writes == []  # the dated "1" stands
+
+
+async def test_a_stale_upload_before_the_backfill_does_nothing(w: World) -> None:
+    await upload(w, ExportBook(100, "Dune", rating=4), ago=None)
+    w.goodreads.fail_next("server_error")
+    await w.sync.run_rss("alice")
+    assert await w.rows("SELECT count(*) FROM backfills") == [(0,)]
+    assert await w.rows("SELECT count(*) FROM source_rows") == [(0,)]
+    assert await w.rows("SELECT processed_at IS NOT NULL FROM ingest_batches") == [(1,)]
+
+
+async def test_a_stale_upload_completing_a_queued_rows_isbn_rematches_it(w: World) -> None:
+    w.hardcover.add_user_book(HC_USER, 8, status_id=3)
+    w.hardcover.catalog[8]["title"] = "Emma"
+    w.hardcover.add_edition(80, 8, isbn_13="9780000000002")
+    w.goodreads.add_item(GR_USER, 100, "Dune", user_rating="4")
+    w.goodreads.add_item(GR_USER, 200, "Emma")
+    await w.sync.run_rss("alice")
+    assert await w.rows("SELECT state FROM source_rows WHERE source_id = '200'") == [("queued",)]
+    w.clock.advance(3600)
+    await upload(w, ExportBook(200, "Emma", isbn13="9780000000002"), ago=None)
+    await w.sync.run_rss("alice")
+    assert await w.rows("SELECT state, hc_book_id FROM source_rows WHERE source_id = '200'") == [
+        ("linked", 8)
+    ]
+
+
+async def test_rss_keeps_the_isbn_13_and_binding_an_export_gave(w: World) -> None:
+    w.goodreads.add_item(GR_USER, 100, "Dune", user_rating="4")
+    w.goodreads.add_item(GR_USER, 200, "Emma")
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+    await upload(
+        w,
+        ExportBook(100, "Dune", rating=4, isbn13="9780000000001", binding="Kindle Edition"),
+        ExportBook(200, "Emma", isbn13="9780000000002"),
+    )
+    await w.sync.run_rss("alice")  # the export, then RSS without either detail
+    inputs = dict(await w.rows("SELECT source_id, match_input FROM source_rows"))
+    assert '"9780000000001"' in inputs["100"] and '"ebook"' in inputs["100"]  # linked
+    assert '"9780000000002"' in inputs["200"]  # queued, and not matched again on every run
+    before = len(w.hardcover.requests)
+    w.clock.advance(3600)
+    await w.sync.run_rss("alice")
+    assert len(w.hardcover.requests) == before  # an idle run: nothing matched again
 
 
 async def test_an_older_export_cant_find_a_book_rss_has_seen_since_gone(w: World) -> None:

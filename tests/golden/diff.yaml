@@ -737,3 +737,18 @@ cases:
       - export: [{id: 100, title: Dune, date_read: "2026-06-01", binding: Paperback}]
         expect:
           reads: {7: [[null, "2026-06-01", 70]]}
+
+  - name: a stale batch only fills, adding no rows, finding none gone and pushing nothing
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 300, title: Orphan}]
+      - export: [{id: 100, title: Dune, rating: 1, spoiler: true, read_count: 2}, {id: 200, title: Emma}]
+        export_ago: null
+        expect:
+          writes: []
+          gone: []
+          pending: {}
+          baselines: {"100": {rating: "4", spoiler: "1", read_count: "2"}}
+          rows: {"300": [queued, no_hit]}

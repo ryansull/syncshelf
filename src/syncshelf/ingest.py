@@ -8,7 +8,7 @@ is: the public hostname never routes it (§2.2).
 
 The body is ``multipart/form-data``: the export as a file part ``file``, and optionally
 ``generated_at``, the export's generation time (ISO-8601). Without it the batch is **stale**
-and only fills (#168). The export's header is checked (400 names the missing columns), the
+and only fills (§3.4a.8). The export's header is checked (400 names the missing columns), the
 batch stored, the profile's Goodreads loop nudged, and 202 returned at once, without waiting
 on a sync: ``{"batch_id", "run": "started" | "already_running", "stale"}``.
 """

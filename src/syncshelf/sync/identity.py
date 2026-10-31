@@ -13,7 +13,7 @@ the caller's transaction (§2.4).
 import json
 import sqlite3
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from syncshelf.sync.matcher import METHOD_RANK, Candidate, IdHit
@@ -32,6 +32,7 @@ __all__ = [
     "LogRow",
     "backfilled",
     "empty_baseline",
+    "fill",
     "ignore_row",
     "link_human",
     "follow_merges",
@@ -332,15 +333,9 @@ def observe(
             continue
         if row.gone_at is not None and row.gone_at >= observed_at:
             continue  # removed since this was observed: nothing it says applies any more
-        # A queued row whose details changed is matched again, unless a person must
-        # settle it (a conflict with the shared link) or it was already taken this batch.
-        if (
-            row.state == "queued"
-            and row.queue_reason != "profile_conflict"
-            and row.match_input != match_input(obs)
-            and all(r.source_id != obs.source_id for r in rematch)
-        ):
-            rematch.append(obs)
+        if batch.source == "gr_rss":
+            obs = _refreshed(obs, row, fill=False)  # RSS has no ISBN-13 or Binding
+        _refresh_input(conn, profile, source, obs, row, rematch)
         seen.append((observed_at, observed_at, profile, source, obs.source_id))
         if obs.format is not None:
             formats.append((obs.format, source, obs.source_id, obs.format))
@@ -393,6 +388,82 @@ BASELINE_FIRST = frozenset({"read_count"})
 """Fields whose first observation is a baseline even on a row first seen after the backfill:
 ``read_count`` never counts on its first observation, so a new Read row gets one read, from
 its status (§3.4a.6 rule 6)."""
+
+
+def fill(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, batch: Batch
+) -> list[Observation]:
+    """Apply a **stale** batch, which only fills (§3.4a.8): on rows SyncShelf already has, a
+    field never observed takes the batch's value as its baseline, with no ``observed_at``, so
+    any dated observation beats it. Match inputs gain an ISBN-13 or a Binding they lack, and
+    a link a Binding it lacks. It never creates rows, pushes, or marks a row gone, and a row
+    already gone is left alone. Returns the queued rows whose match input changed, for the
+    caller to re-match."""
+    rows = load_rows(conn, profile, source)
+    rematch: list[Observation] = []
+    for obs in batch.rows:
+        row = rows.get(obs.source_id)
+        if row is None or row.gone_at is not None:
+            continue
+        conn.executemany(
+            "INSERT INTO baseline_fields (profile, source, source_id, field, value) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (profile, source, obs.source_id, name, value)
+                for name, value in obs.fields.items()
+                if name not in row.baselines
+            ],
+        )
+        obs = _refreshed(obs, row, fill=True)
+        _refresh_input(conn, profile, source, obs, row, rematch)
+        if obs.format is not None:
+            conn.execute(
+                "UPDATE links SET format = ? WHERE source = ? AND source_id = ? AND format IS NULL",
+                (obs.format, source, obs.source_id),
+            )
+    return rematch
+
+
+def _refreshed(obs: Observation, row: SourceRow, *, fill: bool) -> Observation:
+    """``obs`` as the matcher should see it, given what the row's stored input already has.
+    RSS carries no ISBN-13 or Binding, so the stored ones stand (``fill`` false). A stale
+    batch only fills, so every stored detail stands and it adds only what's missing."""
+    before = seen(row)
+    if not fill:
+        return replace(obs, isbn13=before.isbn13, format=before.format)
+    return replace(
+        obs,
+        title=before.title or obs.title,
+        author=before.author or obs.author,
+        isbn10=before.isbn10 or obs.isbn10,
+        isbn13=before.isbn13 or obs.isbn13,
+        format=before.format or obs.format,
+    )
+
+
+def _refresh_input(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    obs: Observation,
+    row: SourceRow,
+    rematch: list[Observation],
+) -> None:
+    """Keep the row's match input to what it was last seen as. A queued row whose input
+    changed is matched again instead, which writes it (§3.4a.5: re-matching happens only on
+    a change or on request), unless a person must settle it (a conflict with the shared link)
+    or the batch already listed it."""
+    given = match_input(obs)
+    if row.match_input == given:
+        return
+    if row.state == "queued" and row.queue_reason != "profile_conflict":
+        if all(r.source_id != obs.source_id for r in rematch):
+            rematch.append(obs)
+        return
+    conn.execute(
+        "UPDATE source_rows SET match_input = ? WHERE profile = ? AND source = ? AND source_id = ?",
+        (given, profile, source, obs.source_id),
+    )
 
 
 def add_rows(

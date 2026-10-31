@@ -2,11 +2,12 @@
 run can apply it and later runs can learn the profile's shelves from it (#182).
 
 Only the last :data:`KEEP` per profile are kept. A batch without ``observed_at`` (an upload
-with no ``generated_at``) is **stale**: it only fills, never pushes (#168).
+with no ``generated_at``) is **stale**: it only fills, never pushes (§3.4a.8).
 
-**Batches, then RSS** (#204): every Goodreads run first applies the profile's unprocessed dated
-batches, oldest generation time first, then reads RSS. An upload that lands during a run waits
-for the next one; "the newer observation wins" (§3.4a.6 rule 8) makes the order safe.
+**Batches, then RSS** (#204): every Goodreads run first applies the profile's unprocessed
+batches, the dated ones oldest generation time first and then the stale ones, then reads RSS.
+An upload that lands during a run waits for the next one; "the newer observation wins"
+(§3.4a.6 rule 8) makes the order safe.
 """
 
 import sqlite3
@@ -61,17 +62,20 @@ class Stored:
 
     id: int
     source: Source
-    observed_at: int
+    observed_at: int | None
+    """``None`` for a stale upload, which only fills."""
     payload: bytes
 
 
 def unprocessed(conn: sqlite3.Connection, profile: str) -> list[Stored]:
-    """The profile's dated batches no run has applied, oldest generation time first."""
+    """The profile's batches no run has applied: the dated ones, oldest generation time
+    first, then the stale ones, oldest upload first, so a fill never comes before an
+    observation it could have yielded to."""
     return [
         Stored(*row)
         for row in conn.execute(
             "SELECT id, source, observed_at, payload FROM ingest_batches WHERE profile = ? "
-            "AND NOT stale AND processed_at IS NULL ORDER BY observed_at, id",
+            "AND processed_at IS NULL ORDER BY stale, observed_at, id",
             (profile,),
         )
     ]
