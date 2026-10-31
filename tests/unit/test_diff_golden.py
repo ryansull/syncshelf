@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from syncshelf.sync import batches
+from syncshelf.sync import batches, identity
 
 from fakes.goodreads_csv import ExportBook, library_export
 from sync_world import GR_USER, HC_USER, World, world
@@ -55,14 +55,43 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
         for n, run in enumerate(case["runs"]):
             if n:
                 w.clock.advance(3600)
+            for book_id, fields in (run.get("shelve") or {}).items():
+                w.hardcover.add_user_book(HC_USER, int(book_id), **_shelf_fields(fields))
             if resolve := run.get("resolve"):
                 # A person's answer (resolve_match), applied at once with no run.
                 writes_before = len(w.hardcover.writes)
                 log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
-                done = await w.sync.resolve("alice", str(resolve["id"]), resolve["book"])
                 expect = run.get("expect") or {}
-                if "resolved" in expect:
-                    assert {k: getattr(done, k) for k in expect["resolved"]} == expect["resolved"]
+                if resolve["book"] is None:
+                    now = int(w.clock.time())
+                    await w.db.write(
+                        identity.ignore_row, "alice", "goodreads", str(resolve["id"]), now
+                    )
+                else:
+                    done = await w.sync.resolve("alice", str(resolve["id"]), resolve["book"])
+                    if "resolved" in expect:
+                        found = {k: getattr(done, k) for k in expect["resolved"]}
+                        assert found == expect["resolved"]
+                await _check(w, expect, None, writes_before, log_before)
+                continue
+            if "rebaseline" in run:
+                # rebaseline("goodreads"), its preview confirmed or not.
+                writes_before = len(w.hardcover.writes)
+                log_before = (await w.rows("SELECT count(*) FROM change_log"))[0][0]
+                go = bool(run["rebaseline"].get("confirm"))
+                done = await w.sync.rebaseline("alice", lambda plan, go=go: go)
+                assert done is not None
+                plan, did = done
+                assert did is go
+                expect = run.get("expect") or {}
+                if "preview" in expect:
+                    counts = {
+                        "rematch": len(plan.rematch),
+                        "dropped": len(plan.dropped),
+                        "human": plan.human,
+                        "ignored": plan.ignored,
+                    }
+                    assert counts == expect["preview"]
                 await _check(w, expect, None, writes_before, log_before)
                 continue
             if "export" in run:
@@ -197,6 +226,6 @@ async def _check(
         assert [r[0] for r in found] == [str(i) for i in expect["gone"]]
     if "backfill" in expect:
         found = await w.rows(
-            "SELECT rows_linked, rows_queued FROM backfills WHERE run_id = ?", run_id
+            "SELECT rows_linked, rows_queued FROM backfills WHERE run_id IS ?", run_id
         )
         assert [list(r) for r in found] == [expect["backfill"]]

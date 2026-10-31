@@ -48,6 +48,9 @@ __all__ = [
     "release_on_new_version",
     "release_quarantine",
     "record_backfill",
+    "Rebaseline",
+    "rebaseline_plan",
+    "record_rebaseline",
     "rematch_rows",
     "settle",
     "shared_links",
@@ -535,6 +538,97 @@ def rematch_rows(
                 (_reason(place), match_input(obs), profile, source, obs.source_id),
             )
             _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+@dataclass(frozen=True)
+class Rebaseline:
+    """What ``rebaseline`` would do to one profile's source (§3.4a.11), as its preview shows
+    it and its confirm token is bound to."""
+
+    rematch: tuple[str, ...]
+    """The queued rows matched again by the backfill's rules. A conflict with the shared
+    link waits for a person, and a row Goodreads no longer lists isn't matched."""
+    dropped: tuple[int, ...]
+    """The pending changes (baseline ids) dropped, quarantined ones included."""
+    human: int
+    """Rows linked by a person, which keep their links."""
+    ignored: int
+    """Rows a person ignored, which stay ignored."""
+
+
+def rebaseline_plan(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> Rebaseline:
+    """What re-running the profile's backfill of ``source`` would do, read from SQLite only."""
+    rematch = conn.execute(
+        "SELECT source_id FROM source_rows WHERE profile = ? AND source = ? AND state = 'queued'"
+        " AND gone_at IS NULL AND queue_reason IS NOT 'profile_conflict' ORDER BY source_id",
+        (profile, source),
+    ).fetchall()
+    dropped = conn.execute(
+        "SELECT id FROM baseline_fields WHERE profile = ? AND source = ? "
+        "AND pending_since IS NOT NULL ORDER BY id",
+        (profile, source),
+    ).fetchall()
+    (human,) = conn.execute(
+        "SELECT count(*) FROM source_rows r JOIN links l USING (source, source_id) "
+        "WHERE r.profile = ? AND r.source = ? AND r.state = 'linked' AND l.method = 'human'",
+        (profile, source),
+    ).fetchone()
+    (ignored,) = conn.execute(
+        "SELECT count(*) FROM source_rows WHERE profile = ? AND source = ? AND state = 'ignored'",
+        (profile, source),
+    ).fetchone()
+    return Rebaseline(tuple(r[0] for r in rematch), tuple(r[0] for r in dropped), human, ignored)
+
+
+def record_rebaseline(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    placements: Iterable[Placement],
+    now: int,
+) -> tuple[int, int]:
+    """Write a re-run backfill (§3.4a.11 ``rebaseline``): each re-matched row linked (with
+    its shelf entry) or queued as the backfill queues it; then every pending change of the
+    source dropped, its baseline taken to that latest observation, as of when the row was
+    last seen; then the ``backfills`` row rewritten. Pushes nothing. Returns (rows linked,
+    rows queued) in the source now."""
+    placed = list(placements)
+    rematch_rows(conn, profile, source, placed, now)
+    for place in placed:
+        if place.linked:
+            conn.execute(
+                "UPDATE source_rows SET hc_user_book_id = ? WHERE profile = ? AND source = ? "
+                "AND source_id = ?",
+                (place.hc_user_book_id, profile, source, place.observation.source_id),
+            )
+        else:
+            # Still queued: resolving it now follows the backfill's rules (§3.4a.12).
+            conn.execute(
+                "UPDATE source_rows SET backfill_queued = 1 WHERE profile = ? AND source = ? "
+                "AND source_id = ?",
+                (profile, source, place.observation.source_id),
+            )
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, "
+        "observed_at = COALESCE((SELECT r.last_seen_at FROM source_rows r WHERE "
+        "r.profile = baseline_fields.profile AND r.source = baseline_fields.source AND "
+        "r.source_id = baseline_fields.source_id), observed_at), pending_value = NULL, "
+        "pending_since = NULL, attempts = 0, first_failed_at = NULL, last_error = NULL, "
+        "last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND pending_since IS NOT NULL",
+        (profile, source),
+    )
+    linked, queued = conn.execute(
+        "SELECT count(*) FILTER (WHERE state = 'linked'), count(*) FILTER (WHERE state = "
+        "'queued') FROM source_rows WHERE profile = ? AND source = ?",
+        (profile, source),
+    ).fetchone()
+    conn.execute(
+        "UPDATE backfills SET done_at = ?, run_id = NULL, rows_linked = ?, rows_queued = ? "
+        "WHERE profile = ? AND source = ?",
+        (now, linked, queued, profile, source),
+    )
+    return linked, queued
 
 
 def link_human(

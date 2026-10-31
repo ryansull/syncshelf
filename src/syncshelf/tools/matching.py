@@ -1,5 +1,6 @@
 """``unmatched_books``: the books SyncShelf couldn't place on Hardcover by itself (SPEC
-§3.4a.5, §3.4a.11).
+§3.4a.5, §3.4a.11), ``resolve_match`` to settle them, and ``rebaseline`` to run the backfill
+again.
 
 Each entry is one queued source row: its opaque ``entry_id``, why it's queued, the book as
 Goodreads gave it, what would reach Hardcover once it's resolved (the pending diff, in
@@ -20,8 +21,17 @@ from syncshelf.sync import identity
 from syncshelf.sync.identity import SourceRow
 from syncshelf.sync.mirror import AUTHOR_ROLES, FetchFailed
 from syncshelf.tools import REGISTRY, current_profile, iso, services, with_attention
+from syncshelf.tools.confirm import Redeemed, snapshot_of
 
-__all__ = ["SHOWN", "Entry", "Resolved", "resolve_match", "unmatched_books"]
+__all__ = [
+    "SHOWN",
+    "Entry",
+    "Rebaselined",
+    "Resolved",
+    "rebaseline",
+    "resolve_match",
+    "unmatched_books",
+]
 
 SHOWN = 50
 """Entries listed, oldest first; ``total`` counts them all."""
@@ -391,3 +401,117 @@ def _left(book_id: int) -> str:
         f"The entry was linked to book {book_id}; any shelf entry it has stays, and "
         "remove_book can take it off if it shouldn't be there."
     )
+
+
+class Rebaselined(TypedDict):
+    """What ``rebaseline`` did or, for a preview, would do."""
+
+    source: Literal["goodreads"]
+    done: bool
+    rows_rematched: int
+    """Unmatched books matched again (by the first sync's rules)."""
+    pending_dropped: int
+    """Changes waiting to reach Hardcover that are dropped, quarantined ones included."""
+    human_links_kept: int
+    ignored_kept: int
+    rows_linked: NotRequired[int]
+    rows_queued: NotRequired[int]
+    confirm: str | None
+    """For a preview: pass it back as confirm to go ahead, within 10 minutes."""
+    note: str
+
+
+@REGISTRY.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def rebaseline(
+    source: Literal["goodreads", "abs"], confirm: str | None = None
+) -> Rebaselined:
+    """Run the caller's first Goodreads sync again: for when it ran before the user had
+    finished importing their Goodreads library into Hardcover by hand, so books were left
+    unmatched that are on their shelves now. Use it only when the user asks for that.
+
+    It takes two calls:
+    1. Without confirm, it previews how many unmatched books would be matched again and how
+       many changes still waiting to reach Hardcover would be dropped, changing nothing. Show
+       the user the preview.
+    2. Once they agree, call again with the confirm it returned, within 10 minutes. If
+       anything changed since the preview, or the token is stale, you get a fresh preview
+       instead, and nothing is changed.
+
+    Confirmed, the unmatched books are matched again, linking only to books on the user's
+    Hardcover shelves; books the user matched or ignored by hand stay as they are. Then what
+    Goodreads shows now becomes what later changes are measured from, so the waiting changes
+    are dropped and nothing is sent to Hardcover. unmatched_books then lists what's still
+    unmatched. While a sync is running this refuses; try again shortly.
+
+    - source: "goodreads" (Audiobookshelf arrives in phase 5).
+    """
+    if source == "abs":
+        raise ToolError("Audiobookshelf syncing arrives in phase 5.")
+    caller, bound = current_profile(), services()
+    sync = bound.scheduler.sync
+    if not sync.enabled(caller):
+        raise ToolError("You have no Goodreads sync set up, so there's nothing to run again.")
+    if not await bound.db.read(identity.backfilled, caller, "goodreads"):
+        raise ToolError(
+            "Your first Goodreads sync hasn't finished yet, so there's nothing to run again: "
+            "it runs on the first complete sync."
+        )
+    tokens = bound.confirm
+    outcome: list[Redeemed] = []
+
+    def confirmed(plan: identity.Rebaseline) -> bool:
+        if confirm is None:
+            return False
+        outcome.append(tokens.redeem(confirm, caller, "rebaseline", "goodreads", _plan(plan)))
+        return outcome[0] is Redeemed.OK
+
+    try:
+        done = await sync.rebaseline(caller, confirmed)
+    except (HardcoverError, FetchFailed) as exc:
+        raise ToolError(
+            f"Hardcover couldn't be read, so nothing was changed: {scrub(str(exc))}"
+        ) from None
+    if done is None:
+        raise ToolError("A sync is running, so nothing was changed; try again shortly.")
+    plan, did = done
+    answer = Rebaselined(
+        source="goodreads",
+        done=did,
+        rows_rematched=len(plan.rematch),
+        pending_dropped=len(plan.dropped),
+        human_links_kept=plan.human,
+        ignored_kept=plan.ignored,
+        confirm=None,
+        note="Done. Nothing was sent to Hardcover; unmatched_books lists what's still unmatched.",
+    )
+    if did:
+        answer["rows_linked"], answer["rows_queued"] = await bound.db.read(_backfill, caller)
+        return answer
+    answer["confirm"] = tokens.issue(caller, "rebaseline", "goodreads", _plan(plan))
+    answer["note"] = _preview(outcome)
+    return answer
+
+
+def _plan(plan: identity.Rebaseline) -> str:
+    """What a rebaseline confirm token is bound to: the rows it re-matches and the changes
+    it drops."""
+    return snapshot_of({"rematch": plan.rematch, "dropped": plan.dropped})
+
+
+def _preview(outcome: list[Redeemed]) -> str:
+    ask = (
+        "Show the user what would happen; once they agree, call again with this confirm "
+        "within 10 minutes."
+    )
+    if not outcome:
+        return f"Preview only: nothing was changed. {ask}"
+    if outcome[0] is Redeemed.CHANGED:
+        return f"Things changed since that preview, so nothing was changed. This is it now. {ask}"
+    return f"That confirm is expired, used or for something else, so nothing was changed. {ask}"
+
+
+def _backfill(conn: sqlite3.Connection, profile: str) -> tuple[int, int]:
+    return conn.execute(
+        "SELECT rows_linked, rows_queued FROM backfills WHERE profile = ? AND source = 'goodreads'",
+        (profile,),
+    ).fetchone()

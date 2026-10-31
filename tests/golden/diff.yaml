@@ -30,8 +30,11 @@
 # date_read (YYYY-MM-DD), read_count, binding (default Paperback), spoiler, review, isbn13.
 # Without a `feed`, RSS fails that run, so only the export speaks.
 # A run may instead be `resolve: {id, book}`: resolve_match's answer for that row, applied at
-# once with no run (§3.4a.11); its `expect` may add `resolved: {shared, pushed, failed,
-# old_book}` for what it reports.
+# once with no run (§3.4a.11), or `book: null` to ignore it; its `expect` may add `resolved:
+# {shared, pushed, failed, old_book}` for what it reports. Or it may be `rebaseline: {confirm}`:
+# rebaseline("goodreads"), previewed only or confirmed; its `expect` may add `preview:
+# {rematch, dropped, human, ignored}` for the counts it previews, and `backfill` then reads the
+# rewritten row. Any run may `shelve: {book: fields}` first, as a hand import into Hardcover.
 # When a case and a ticket disagree, fix the case.
 
 cases:
@@ -752,3 +755,49 @@ cases:
           pending: {}
           baselines: {"100": {rating: "4", spoiler: "1", read_count: "2"}}
           rows: {"300": [queued, no_hit]}
+
+  # --- rebaseline (§3.4a.11) ----------------------------------------------------------------
+
+  - name: rebaseline previews what it would re-match and drop, and changes nothing
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9, 300: 7}
+      editions: [{id: 80, book: 8, title: Lost}]
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          backfill: [1, 3]
+      - resolve: {id: 500, book: 8}
+      - resolve: {id: 600, book: null}
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          pending: {"300": {rating: "2"}}
+      - rebaseline: {confirm: false}
+        expect:
+          preview: {rematch: 1, dropped: 1, human: 1, ignored: 1}
+          writes: []
+          pending: {"300": {rating: "2"}}
+          rows: {"300": [queued, not_in_library]}
+
+  - name: a confirmed rebaseline links books since imported, keeps human and ignored rows, and pushes nothing
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9, 300: 7}
+      editions: [{id: 80, book: 8, title: Lost}]
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+      - resolve: {id: 500, book: 8}
+      - resolve: {id: 600, book: null}
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+      - rebaseline: {confirm: true}
+        shelve: {7: {status: 3, rating: 4.0}}
+        expect:
+          writes: []
+          pending: {}
+          baselines: {"300": {rating: "2"}}
+          rows: {"300": [linked, null], "500": [linked, null], "600": [ignored, null]}
+          backfill: [3, 0]
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          writes: []
+          shelf: {7: {rating: 4.0}}

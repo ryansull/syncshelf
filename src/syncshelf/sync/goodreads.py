@@ -263,6 +263,52 @@ class GoodreadsSync:
             after = await self._db.read(identity.load_rows, profile, SOURCE)
         return [o.source_id for o in again if after[o.source_id].state == "linked"]
 
+    async def rebaseline(
+        self, profile: str, confirm: Callable[[identity.Rebaseline], bool]
+    ) -> tuple[identity.Rebaseline, bool] | None:
+        """Re-run the profile's backfill (``rebaseline("goodreads")``, §3.4a.11), for one that
+        ran before the hand import into Hardcover finished. Under the sync lock, it works out
+        what it would do and asks ``confirm`` about that. Confirmed, it matches the queued
+        rows again by the backfill's rules (a link only to a book on the profile's shelves,
+        no fuzzy link; human links and ignored rows kept), resets every baseline to its latest
+        observation, dropping pending changes, and rewrites the ``backfills`` row. It reads
+        Hardcover and never writes it. Returns the plan and whether it was done, or ``None``
+        when a run holds the sync lock: this never waits for one. Raises
+        :class:`~syncshelf.sync.mirror.FetchFailed` or
+        :class:`~syncshelf.clients.hardcover.HardcoverError`, having changed nothing, when
+        Hardcover can't be read."""
+        lock = self._locks[profile]
+        if lock.locked():
+            return None
+        async with lock:
+            plan = await self._db.read(identity.rebaseline_plan, profile, SOURCE)
+            if not confirm(plan):
+                return plan, False
+            placements: list[Placement] = []
+            if plan.rematch:
+                rows = await self._db.read(identity.load_rows, profile, SOURCE)
+                again = [identity.seen(rows[source_id]) for source_id in plan.rematch]
+                library = await self._mirror.fetch(profile)
+                shelved = _shelved(library.user_books)
+                placements = await self._placements(profile, again, shelved=shelved)
+            now = int(self._clock.time())
+            linked, queued = await self._db.write(
+                identity.record_rebaseline, profile, SOURCE, placements, now
+            )
+        log.info(
+            "Goodreads backfill run again",
+            extra={
+                "event": "rebaselined",
+                "profile": profile,
+                "source": SOURCE,
+                "rematched": len(plan.rematch),
+                "dropped": len(plan.dropped),
+                "rows_linked": linked,
+                "rows_queued": queued,
+            },
+        )
+        return plan, True
+
     def lock(self, profile: str) -> asyncio.Lock:
         """The profile's Goodreads sync lock (§2.2): one run of its source at a time. A run
         takes it; the scheduler skips a tick, and ``sync_now`` reports the run in progress,
