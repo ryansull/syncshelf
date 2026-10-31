@@ -353,7 +353,10 @@ class Applier:
                     old,
                     finished_at=op.on,
                     started_at=started or old.get("started_at"),
-                    edition_id=edition if op.format else old.get("edition_id"),
+                    # A moved finish keeps its read's edition, which may be the user's pick.
+                    edition_id=edition
+                    if op.format and isinstance(op, Finish)
+                    else old.get("edition_id"),
                 )
                 if intended != _full(read):
                     await self._write_read(client, UPDATE_READ, {"id": read["id"]}, intended)

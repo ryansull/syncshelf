@@ -208,3 +208,44 @@ async def test_the_shelf_vocabulary_is_parsed_only_when_exports_change(
     await w.sync.run_rss("alice")
     await w.sync.run_rss("alice")
     assert parsed == [0, 1]
+
+
+async def only_exports(w: World, *books: ExportBook) -> None:
+    """A run in which only an export just uploaded speaks."""
+    await upload(w, *books)
+    w.goodreads.fail_next("server_error")
+    await w.sync.run_rss("alice")
+    w.clock.advance(3600)
+
+
+async def test_a_read_count_two_higher_is_only_a_baseline_for_now(w: World) -> None:
+    await only_exports(w, ExportBook(100, "Dune", rating=4, read_count=1))
+    await only_exports(w, ExportBook(100, "Dune", rating=4, read_count=3))
+    assert w.hardcover.writes == []  # #210: not one more read, so no read is guessed
+    assert await w.rows(
+        "SELECT value, pending_since FROM baseline_fields WHERE field = 'read_count'"
+    ) == [("3", None)]
+
+
+async def test_a_binding_sets_the_links_format(w: World) -> None:
+    await backfill_by_rss(w)
+    assert await w.rows("SELECT format FROM links") == [(None,)]
+    await only_exports(w, ExportBook(100, "Dune", rating=4, binding="Kindle Edition"))
+    assert await w.rows("SELECT format FROM links") == [("ebook",)]
+
+
+async def test_a_backfill_queued_row_resolved_onto_a_new_book_gets_one_read(w: World) -> None:
+    w.hardcover.add_book(8, title="Orphan")
+    await only_exports(
+        w,
+        ExportBook(100, "Dune", rating=4),
+        ExportBook(300, "Orphan", date_read="2026-06-01", read_count=2),
+    )
+    assert await w.rows("SELECT state FROM source_rows WHERE source_id = '300'") == [("queued",)]
+    await w.sync.resolve("alice", "300", 8)
+    (added,) = [ub for ub in w.hardcover.user_books[HC_USER] if ub["book_id"] == 8]
+    assert [r["finished_at"][:10] for r in added["user_book_reads"]] == ["2026-06-01"]
+    assert await w.rows(
+        "SELECT value, pending_since FROM baseline_fields "
+        "WHERE source_id = '300' AND field = 'read_count'"
+    ) == [("2", None)]

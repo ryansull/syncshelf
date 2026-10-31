@@ -20,6 +20,7 @@ from syncshelf.sync.matcher import METHOD_RANK, Candidate, IdHit
 from syncshelf.sync.observations import Batch, Observation
 
 __all__ = [
+    "BASELINE_FIRST",
     "Baseline",
     "IdentitySource",
     "Observed",
@@ -311,6 +312,8 @@ def observe(
     Presence follows rule 8 too, by the batch's ``observed_at``: an export made before a row
     was last seen can't find it gone, and one made before it went can't bring it back.
 
+    A Binding sets the format on the row's shared link, which later reads follow (§3.3.5).
+
     Rows SyncShelf has never seen are returned as ``new``, for the caller to match and add
     with :func:`add_rows`.
     """
@@ -320,6 +323,7 @@ def observe(
     observed_at = batch.observed_at
     new: list[Observation] = []
     rematch: list[Observation] = []
+    formats: list[tuple[str, str, str, str]] = []
     for obs in batch.rows:
         row = rows.get(obs.source_id)
         if row is None:
@@ -338,6 +342,8 @@ def observe(
         ):
             rematch.append(obs)
         seen.append((observed_at, observed_at, profile, source, obs.source_id))
+        if obs.format is not None:
+            formats.append((obs.format, source, obs.source_id, obs.format))
         for name, value in obs.fields.items():
             baseline = row.baselines.get(name)
             if baseline is None:
@@ -353,6 +359,11 @@ def observe(
         "gone_at = CASE WHEN gone_at < ? THEN NULL ELSE gone_at END "
         "WHERE profile = ? AND source = ? AND source_id = ?",
         seen,
+    )
+    # Once a CSV has shown a Binding, it decides the format of later reads (§3.3.5).
+    conn.executemany(
+        "UPDATE links SET format = ? WHERE source = ? AND source_id = ? AND format IS NOT ?",
+        formats,
     )
     gone = 0
     if batch.complete:
@@ -378,6 +389,12 @@ def observe(
     return Observed(pending, gone, new, rematch)
 
 
+BASELINE_FIRST = frozenset({"read_count"})
+"""Fields whose first observation is a baseline even on a row first seen after the backfill:
+``read_count`` never counts on its first observation, so a new Read row gets one read, from
+its status (§3.4a.6 rule 6)."""
+
+
 def add_rows(
     conn: sqlite3.Connection,
     profile: str,
@@ -388,8 +405,8 @@ def add_rows(
 ) -> list[Pending]:
     """Add rows first seen after the backfill, each linked or queued, from an **empty
     baseline** (§3.4a.6, rule 3): every non-empty field of this first observation is a
-    pending change, and an empty one just sets its baseline. Returns the pending changes on
-    the rows linked."""
+    pending change, and an empty one just sets its baseline, as does any field in
+    :data:`BASELINE_FIRST`. Returns the pending changes on the rows linked."""
     assert batch.observed_at is not None
     added: list[str] = []
     for place in placements:
@@ -401,15 +418,15 @@ def add_rows(
         fields = {"status": None, **obs.fields}
         conn.executemany(
             "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at,"
-            " pending_value, pending_since) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
+            " pending_value, pending_since) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (profile, source, obs.source_id, name)
                 + (
-                    (None, None, None)
+                    (None, None, None, None)
                     if name not in obs.fields
-                    else (batch.observed_at, None, None)
-                    if value is None
-                    else (None, value, now)
+                    else (value, batch.observed_at, None, None)
+                    if value is None or name in BASELINE_FIRST
+                    else (None, None, value, now)
                 )
                 for name, value in fields.items()
             ],
@@ -511,14 +528,25 @@ def empty_baseline(
 ) -> None:
     """A backfill-queued row resolved onto a book not on the shelves (§3.4a.12): diffed
     against an empty baseline, so what Goodreads has now (a pending change's value, or the
-    baseline's) becomes pending, quarantined or not."""
+    baseline's) becomes pending, quarantined or not. A field in :data:`BASELINE_FIRST` takes
+    what Goodreads has now as its baseline instead."""
+    first = ",".join("?" * len(BASELINE_FIRST))
     conn.execute(
-        "UPDATE baseline_fields SET "
+        "UPDATE baseline_fields SET "  # noqa: S608
         "pending_value = CASE WHEN pending_since IS NOT NULL THEN pending_value ELSE value END, "
         "pending_since = COALESCE(pending_since, ?), value = NULL, observed_at = NULL, "
         "attempts = 0, first_failed_at = NULL, last_error = NULL, last_error_class = NULL, "
-        "quarantined_at = NULL WHERE profile = ? AND source = ? AND source_id = ?",
-        (now, profile, source, source_id),
+        "quarantined_at = NULL WHERE profile = ? AND source = ? AND source_id = ? "
+        f"AND field NOT IN ({first})",
+        (now, profile, source, source_id, *BASELINE_FIRST),
+    )
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, "  # noqa: S608
+        "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
+        "last_error = NULL, last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND source_id = ? AND pending_since IS NOT NULL "
+        f"AND field IN ({first})",
+        (profile, source, source_id, *BASELINE_FIRST),
     )
     # Nothing to insert for a field Goodreads has empty.
     conn.execute(
@@ -915,18 +943,19 @@ def settle(
 
 def link_editions(
     conn: sqlite3.Connection, source: IdentitySource, ids: Iterable[str]
-) -> dict[str, int]:
-    """The edition each row's shared link names, for rows whose link has one (§3.3.5)."""
+) -> dict[str, tuple[int | None, str | None]]:
+    """The edition and format each row's shared link names (§3.3.5), for rows whose link has
+    either. The format is the Goodreads Binding, once a feed has shown one."""
     wanted = list(ids)
-    found: dict[str, int] = {}
+    found: dict[str, tuple[int | None, str | None]] = {}
     for start in range(0, len(wanted), 500):
         chunk = wanted[start : start + 500]
         marks = ",".join("?" * len(chunk))
-        found.update(
-            conn.execute(
-                "SELECT source_id, hc_edition_id FROM links WHERE source = ? "  # noqa: S608
-                f"AND hc_edition_id IS NOT NULL AND source_id IN ({marks})",
-                (source, *chunk),
-            ).fetchall()
-        )
+        for source_id, edition, fmt in conn.execute(
+            "SELECT source_id, hc_edition_id, format FROM links WHERE source = ? "  # noqa: S608
+            "AND (hc_edition_id IS NOT NULL OR format IS NOT NULL) "
+            f"AND source_id IN ({marks})",
+            (source, *chunk),
+        ):
+            found[source_id] = (edition, fmt)
     return found

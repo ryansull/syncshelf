@@ -7,6 +7,9 @@ from typing import Any
 import pytest
 import yaml
 
+from syncshelf.sync import batches
+
+from fakes.goodreads_csv import ExportBook, library_export
 from sync_world import GR_USER, HC_USER, World, world
 
 pytestmark = pytest.mark.anyio
@@ -32,7 +35,11 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
                 HC_USER, int(book_id), user_book_reads=reads, **_shelf_fields(fields)
             )
         # A mapped book carries the title the feed gives it, so the title floor passes.
-        titles = {str(i["id"]): i.get("title") for run in case["runs"] for i in run.get("feed", [])}
+        titles = {
+            str(i["id"]): i.get("title")
+            for run in case["runs"]
+            for i in [*run.get("feed", []), *run.get("export", [])]
+        }
         for goodreads_id, mapping in (hardcover.get("mappings") or {}).items():
             title = titles.get(str(goodreads_id))
             if isinstance(mapping, dict):
@@ -58,7 +65,12 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
                     assert {k: getattr(done, k) for k in expect["resolved"]} == expect["resolved"]
                 await _check(w, expect, None, writes_before, log_before)
                 continue
-            _serve(w, run["feed"], run.get("filler", 0))
+            if "export" in run:
+                await _upload(w, run["export"], run.get("export_ago", 0))
+                if "feed" not in run:
+                    w.goodreads.fail_next("server_error")  # only the export speaks
+            if "feed" in run:
+                _serve(w, run["feed"], run.get("filler", 0))
             if fail := run.get("fail"):
                 w.goodreads.fail_next(fail["fault"], page=fail.get("page"))
             if fail := run.get("hardcover_fail"):
@@ -72,6 +84,21 @@ async def test_case(tmp_path: Path, case: dict[str, Any]) -> None:
 
 def _shelf_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return {{"status": "status_id"}.get(k, k): v for k, v in fields.items()}
+
+
+async def _upload(w: World, export: list[dict[str, Any]], ago: int | None) -> None:
+    """Store a library export made ``ago`` seconds before now (``None``: undated, stale)."""
+    keys = ("rating", "shelf", "date_read", "read_count", "binding", "spoiler", "review", "isbn13")
+    books = [
+        ExportBook(
+            int(b["id"]), b.get("title", f"Book {b['id']}"), **{k: b[k] for k in keys if k in b}
+        )
+        for b in export
+    ]
+    now = int(w.clock.time())
+    observed = None if ago is None else now - ago
+    payload = library_export(*books)
+    await w.db.write(batches.store, "alice", "gr_csv_ingest", now, observed, payload, len(books))
 
 
 def _serve(w: World, feed: list[dict[str, Any]], filler: int) -> None:

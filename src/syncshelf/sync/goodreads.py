@@ -24,13 +24,18 @@ incomplete stores nothing and pushes nothing; the next one tries again.
   Reading opens one the same way (none is opened over a read already open). Read →
   Currently Reading → Read is a re-read. An exclusive shelf missing from ``shelf_map`` is
   logged and settles its baseline without a push;
+- a CSV's **Read Count** one higher is one new read: the read a status change alongside it
+  edits, or else a re-read on the new Date Read alongside it. Its first observation, and any
+  other change, is only a baseline (#210);
 - any other **Date Read** change is a correction of the read finished on the old date, or a
   finish when there was none. A vanished Date Read is never pushed, but its baseline moves on;
 - a **rating**, **review** or **spoiler** change sets or clears that field; an emptied
   review clears the review and its spoiler flag (rule 5).
 
-A new read carries the link's edition when Hardcover gives that edition a format, else no
-edition (§3.3.5, an RSS-only row), and inserts take the profile's ``hardcover_privacy``.
+A new read's format is the CSV's Binding, once one has been seen: the link's edition when
+it's that format, else the book's default edition for it. Before that (an RSS-only row) it
+carries the link's edition when Hardcover gives that edition a format, else no edition
+(§3.3.5). Inserts take the profile's ``hardcover_privacy``.
 
 **Books first seen after the backfill** are matched and added from an empty baseline, so
 every non-empty field of their first observation is pushed (rule 3); unlike the backfill, a
@@ -75,6 +80,7 @@ from syncshelf.sync.apply import (
     NotShelved,
     OpenReadExists,
     ReadStillOpen,
+    Settable,
     Start,
     Target,
 )
@@ -100,8 +106,8 @@ TRIGGER = "goodreads"
 """Who the write procedure's change lines name as asking."""
 LOGGED = frozenset({"status", "rating", "date_read", "read_count", "spoiler"})
 """The fields whose values a change line may carry (§2.7)."""
-PUSHED = frozenset({"status", "date_read", "rating", "review", "spoiler"})
-"""The fields whose changes reach Hardcover. ``read_count`` is a re-read signal (#168)."""
+PUSHED = frozenset({"status", "date_read", "rating", "review", "spoiler", "read_count"})
+"""The fields whose changes are planned. ``read_count`` only ever adds a re-read (rule 6)."""
 READ, CURRENTLY_READING = 3, 2
 """The Hardcover statuses that carry read edits."""
 
@@ -653,7 +659,7 @@ class GoodreadsSync:
             read, open_now = plan.target.read, _has_open_read(reads.get(plan.hc_book_id, []))
             if isinstance(read, Start) and open_now:
                 plans[i] = replace(plan, target=replace(plan.target, read=None))
-            elif isinstance(read, Finish) and plan.trigger == "reread_cycle" and not open_now:
+            elif isinstance(read, Finish) and plan.trigger in REREADS and not open_now:
                 read = replace(read, reread=True)
                 plans[i] = replace(plan, target=replace(plan.target, read=read))
         reading = {p.source_id: p.hc_book_id for p in plans if p.reads}
@@ -671,31 +677,40 @@ class GoodreadsSync:
             return [p for p in plans if not p.reads]
         for i, plan in enumerate(plans):
             if plan.target is not None and plan.target.read is not None:
-                read = replace(plan.target.read, edition=editions.get(plan.source_id))
+                edition, fmt = editions.get(plan.source_id, (None, None))
+                read = replace(plan.target.read, edition=edition, format=fmt)
                 plans[i] = replace(plan, target=replace(plan.target, read=read))
         return plans
 
-    async def _editions(self, profile: str, books: Mapping[str, int]) -> dict[str, int]:
-        """The edition each row's new read is written with (``books``: source id → the book
-        the read goes on): its link's, when Hardcover says that edition is of this book and
-        has a format. Otherwise the row is left out and its read has no edition, so it counts
-        as ``unknown`` rather than a guessed format (§3.3.5)."""
+    async def _editions(
+        self, profile: str, books: Mapping[str, int]
+    ) -> dict[str, tuple[Settable[int | None], str | None]]:
+        """The edition and format each row's new read is written with (``books``: source id
+        → the book the read goes on), by §3.3.5. Once a CSV has shown the row's Binding, that
+        format decides: the link's edition when Hardcover says it's of this book in that
+        format, else the book's default edition for it (``UNSET``: the write procedure picks
+        it). Before that, the link's edition when Hardcover gives it a format, else none, so
+        the read counts as ``unknown`` rather than a guessed format."""
         linked = await self._db.read(identity.link_editions, SOURCE, books)
-        if not linked:
-            return {}
-        result = await self._hardcover[profile].execute(
-            EDITION_FORMATS, {"ids": sorted(set(linked.values()))}
-        )
-        known = {
-            e["id"]: e.get("book_id")
-            for e in result.data.get("editions") or []
-            if e.get("reading_format_id")
-        }
-        return {
-            source_id: edition
-            for source_id, edition in linked.items()
-            if edition in known and known[edition] == books[source_id]
-        }
+        ids = sorted({edition for edition, _ in linked.values() if edition is not None})
+        known: dict[int, tuple[int | None, str | None]] = {}
+        if ids:
+            result = await self._hardcover[profile].execute(EDITION_FORMATS, {"ids": ids})
+            known = {
+                e["id"]: (e.get("book_id"), FORMATS.get(e["reading_format_id"]))
+                for e in result.data.get("editions") or []
+                if e.get("reading_format_id")
+            }
+        choices: dict[str, tuple[Settable[int | None], str | None]] = {}
+        for source_id, book in books.items():
+            edition, fmt = linked.get(source_id, (None, None))
+            of_book, of_format = known.get(edition, (None, None)) if edition else (None, None)
+            ours = of_book == book
+            if fmt is None:
+                choices[source_id] = (edition if ours else None, None)
+            else:
+                choices[source_id] = (edition if ours and of_format == fmt else UNSET, fmt)
+        return choices
 
     async def _backfill(
         self, profile: str, batch: Batch, run_id: int, counts: RunCounts
@@ -932,6 +947,13 @@ REFUSALS = (
 change and leaves its baseline, never the run."""
 
 
+FORMATS = {1: "print", 2: "audio", 4: "ebook"}
+"""Hardcover's ``reading_format_id`` values that name one format, as Binding gives them."""
+
+REREADS = frozenset({"reread_cycle", "read_count"})
+"""The triggers of a finish that is a new read, unless it completes the read left open."""
+
+
 RETRY_DELAYS = (2.0, 8.0)
 """Seconds before each in-run retry of a transient failure (§3.4a.7)."""
 
@@ -1006,8 +1028,13 @@ def _plans(
     dated_only: bool = False,
 ) -> list[_Plan]:
     """Each row's pending changes as writes: its status (with the read edits it carries and
-    any Date Read change), a Date Read correction, its rating. ``dated_only`` writes a read
-    only on a real Goodreads Date Read, never an undated or invented one (§3.4a.12)."""
+    any Date Read change), a Date Read correction or re-read, its rating. ``dated_only`` writes
+    a read only on a real Goodreads Date Read, never an undated or invented one (§3.4a.12).
+
+    A Read Count one higher than its baseline is one new read (rule 6): the read the status
+    change alongside it edits, or else a re-read on the new Date Read alongside it. With
+    neither, a feed already showed that read, so the count is only a baseline; so is any other
+    Read Count change, for now (#210)."""
     by_row: dict[str, dict[str, Pending]] = {}
     for change in changes:
         by_row.setdefault(change.source_id, {})[change.field] = change
@@ -1015,10 +1042,25 @@ def _plans(
     for source_id, fields in by_row.items():
         row, obs = rows[source_id], observations[source_id]
         status, date_read = fields.get("status"), fields.get("date_read")
+        count = fields.get("read_count")
+        if count is not None and not _one_more(count):
+            plans.append(_Plan(source_id, count.hc_book_id, [count]))
+            count = None
         if status is not None:
-            plans.extend(_status_plan(status, date_read, obs, row, shelf_map, zone, dated_only))
+            made = _status_plan(status, date_read, obs, row, shelf_map, zone, dated_only)
+            if count is not None and made[0].reads:
+                made[0].settles.append(count)  # the read this status change edits
+                count = None
+            plans.extend(made)
         elif date_read is not None:
-            plans.append(_date_plan(date_read, _value(row, "status"), shelf_map))
+            on_read = shelf_map.get(_value(row, "status") or "") == READ
+            if count is not None and date_read.new is not None and on_read:
+                plans.append(_reread_plan(count, date_read))
+                count = None
+            else:
+                plans.append(_date_plan(date_read, _value(row, "status"), shelf_map))
+        if count is not None:
+            plans.append(_Plan(source_id, count.hc_book_id, [count]))
         if (rating := fields.get("rating")) is not None:
             # Goodreads rates in whole stars; unrated clears the Hardcover rating.
             target = Target(rating=None if rating.new is None else float(rating.new))
@@ -1140,6 +1182,28 @@ def _status_plan(
     target = Target(status_id=new, read=op)
     plan = _Plan(status.source_id, status.hc_book_id, settles, target, [push], trigger, date_source)
     return [plan, *rest]
+
+
+def _one_more(count: Pending) -> bool:
+    """Whether a Read Count change is a rise of exactly one from an observed value."""
+    old, new = count.old, count.new
+    return old is not None and new is not None and old.isdigit() and new == str(int(old) + 1)
+
+
+def _reread_plan(count: Pending, date_read: Pending) -> _Plan:
+    """One more read on Goodreads, finished on the new Date Read: a re-read, not a correction
+    of the read before it (rule 6)."""
+    assert date_read.new is not None
+    push = LogRow("push", "read_count", count.old, count.new, "read_count", "goodreads_date_read")
+    return _Plan(
+        count.source_id,
+        count.hc_book_id,
+        [count, date_read],
+        Target(read=Finish(date_read.new)),
+        [push],
+        "read_count",
+        "goodreads_date_read",
+    )
 
 
 def _date_plan(change: Pending, status: str | None, shelf_map: Mapping[str, int]) -> _Plan:

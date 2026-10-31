@@ -25,6 +25,10 @@
 # A run may add `filler: N` unmatched books after its feed (to make a second page) and
 # `fail: {page: N, fault: …}` to make a page unusable, and `hardcover_fail: {op, fault, times?}`
 # to fail Hardcover operations (a transient fault is retried twice within the run).
+# A run may give `export: [...]`, a library export uploaded just before it, `export_ago`
+# seconds old (default 0; null makes it stale). Its books take id, title, rating (0-5), shelf,
+# date_read (YYYY-MM-DD), read_count, binding (default Paperback), spoiler, review, isbn13.
+# Without a `feed`, RSS fails that run, so only the export speaks.
 # A run may instead be `resolve: {id, book}`: resolve_match's answer for that row, applied at
 # once with no run (§3.4a.11); its `expect` may add `resolved: {shared, pushed, failed,
 # old_book}` for what it reports.
@@ -645,3 +649,91 @@ cases:
           shelf: {7: {status: 2, rating: 4.0}}
           reads: {7: []}
           pending: {}
+
+  # --- library exports: Read Count and Binding (#168) ------------------------------------
+
+  - name: the first export after an RSS backfill pushes nothing, and Read Count adds no read
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0, reads: [[null, "2026-01-20", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4", read_at: "Tue, 20 Jan 2026 00:00:00 +0000"}]
+      - export: [{id: 100, title: Dune, rating: 4, date_read: "2026-01-20", read_count: 2, spoiler: true}]
+        expect:
+          writes: []
+          pending: {}
+          baselines: {"100": {read_count: "2", spoiler: "1"}}
+
+  - name: spoiler first observed on an existing row only sets its baseline
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4", review: Loved it}]
+      - export: [{id: 100, title: Dune, rating: 4, review: Loved it, spoiler: true}]
+        expect:
+          writes: []
+          baselines: {"100": {spoiler: "1", review: Loved it}}
+
+  - name: a new Read row inserts one read, whatever its Read Count
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7, 200: {book: 8, edition: 81, format: 1}, 300: {book: 9, edition: 91, format: 1}}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - export:
+          - {id: 100, title: Dune, rating: 4}
+          - {id: 200, title: Emma, date_read: "2026-05-01", read_count: 1}
+          - {id: 300, title: Persuasion, date_read: "2026-06-01", read_count: 2}
+        expect:
+          reads: {8: [[null, "2026-05-01", 81]], 9: [[null, "2026-06-01", 91]]}
+          baselines: {"200": {read_count: "1"}, "300": {read_count: "2"}}
+          pending: {}
+
+  - name: Read Count one higher with a new Date Read is a re-read, not a correction
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2025-03-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2025-03-01", read_count: 1}]
+        expect:
+          backfill: [1, 0]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 2}]
+        expect:
+          reads: {7: [[null, "2025-03-01", 71], [null, "2026-06-01", 71]]}
+          baselines: {"100": {read_count: "2", date_read: "2026-06-01"}}
+          log: [[push, read_count, read_count, goodreads_date_read], [read_insert, null, read_count, goodreads_date_read]]
+
+  - name: Read Count one higher with no new Date Read is a read already seen, so only a baseline
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-06-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 1}]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 2}]
+        expect:
+          writes: []
+          baselines: {"100": {read_count: "2"}}
+          pending: {}
+
+  - name: Read Count one higher with a move to Currently Reading is the read that move opens
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2025-03-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2025-03-01", read_count: 1}]
+      - export: [{id: 100, title: Dune, shelf: currently-reading, date_read: "2025-03-01", read_count: 2}]
+        expect:
+          baselines: {"100": {read_count: "2", status: currently-reading}}
+          pending: {}
+          log: [[push, status, status, first_seen], [read_insert, null, status, first_seen]]
+
+  - name: an observed Binding picks the book's default edition when the link's isn't that format
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 74, format: 4}}
+    runs:
+      - export: [{id: 100, title: Dune, shelf: to-read, binding: Paperback}]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", binding: Paperback}]
+        expect:
+          reads: {7: [[null, "2026-06-01", 70]]}
