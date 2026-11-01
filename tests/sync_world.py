@@ -16,10 +16,12 @@ from syncshelf.db import Database
 from syncshelf.profiles import sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.goodreads import GoodreadsSync
+from syncshelf.sync.goodreads_session import SignIns
 from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.sync.mirror import Mirror
 
 from clock import FakeClock
+from fakes.browser import FakeBrowser, signed_in
 from fakes.goodreads import FakeGoodreads
 from fakes.hardcover import FakeHardcover
 from serving import HARDCOVER_URL, hardcover_token, make_config
@@ -31,6 +33,9 @@ GR_USERS = {"alice": GR_USER, "bob": "27182818"}
 HC_USERS = {"alice": HC_USER, "bob": 43}
 """Each profile's Hardcover user id."""
 SHELF_MAP = "{read: 3, currently-reading: 2, to-read: 1, did-not-finish: 5}"
+GR_EMAIL = "reader@example.com"
+GR_PASSWORD = "a-test-password-never-shown"
+"""The credentials a CSV world's profiles carry. Placeholders only (§2.6)."""
 
 
 @dataclass
@@ -44,6 +49,9 @@ class World:
     hardcover: FakeHardcover
     sync: GoodreadsSync
     mirror: Mirror
+    sign_ins: SignIns | None = None
+    """The real holder over a fake browser, in a ``csv`` world. ``None`` without one."""
+    browser: FakeBrowser | None = None
 
     async def rows(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
         """Run a read query against the database."""
@@ -62,11 +70,14 @@ async def world(
     shelf_map: str = SHELF_MAP,
     reserve: int | None = None,
     others: Sequence[str] = (),
+    csv: bool = False,
 ) -> AsyncIterator[World]:
     """A world for ``profile`` (and the ``others``, from ``bob``), each with a Goodreads
     section (``shelf_map`` as flow YAML), a Goodreads user and a Hardcover user, all empty.
     With ``reserve``, Hardcover calls go through a real limiter on the clock, keeping that
-    much of the daily budget back."""
+    much of the daily budget back. With ``csv``, every profile also carries Goodreads
+    credentials and the engine gets the jars and a real sign-in holder over a fake browser,
+    so its CSV source runs (§3.4b.5)."""
     names = [profile, *others]
     clock = FakeClock()
     goodreads = FakeGoodreads(clock)
@@ -76,11 +87,18 @@ async def world(
     for name in names:
         goodreads.add_user(GR_USERS[name])
         hardcover.add_user(hardcover_token(name), user_id=HC_USERS[name])
+        credentials = ', email: "${GR_EMAIL}", password: "${GR_PASSWORD}"' if csv else ""
         bodies[name] = (
-            f'{{goodreads: {{user_id: "{GR_USERS[name]}", shelf_map: {shelf_map}}}, '
-            "timezone: Etc/UTC}"
+            f'{{goodreads: {{user_id: "{GR_USERS[name]}", shelf_map: {shelf_map}'
+            f"{credentials}}}, timezone: Etc/UTC}}"
         )
-    config = make_config(tmp_path, profiles=names, profile_yaml=bodies)
+    config = make_config(
+        tmp_path,
+        profiles=names,
+        profile_yaml=bodies,
+        browser_ws="ws://sidecar.invalid:3000" if csv else None,
+        environ={"GR_EMAIL": GR_EMAIL, "GR_PASSWORD": GR_PASSWORD} if csv else None,
+    )
 
     def route(request: httpx2.Request) -> httpx2.Response:
         if request.url.host == "www.goodreads.com":
@@ -103,6 +121,12 @@ async def world(
         await db.write(sync_profiles, names, int(clock.time()))
         mirror = Mirror(db, clients, ttl=600, clock=clock.time)
         applier = Applier(clients, mirror, config.profiles)
+        browser = FakeBrowser(signed_in()) if csv else None
+        sign_ins = (
+            SignIns(browser, data_dir=tmp_path, db=db, clock=clock.time)
+            if browser is not None
+            else None
+        )
         sync = GoodreadsSync(
             db=db,
             profiles=config.profiles,
@@ -110,9 +134,11 @@ async def world(
             mirror=mirror,
             applier=applier,
             clock=clock,
+            data_dir=tmp_path if csv else None,
+            sign_ins=sign_ins,
             transport=transport,
         )
-        yield World(config, db, clock, goodreads, hardcover, sync, mirror)
+        yield World(config, db, clock, goodreads, hardcover, sync, mirror, sign_ins, browser)
     finally:
         if sync is not None:
             await sync.aclose()

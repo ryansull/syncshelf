@@ -59,6 +59,12 @@ class _ExportPlan:
 
     rotate: int = 0
     expired: bool = False
+    expire_next: int = 0
+    """How many leading export requests answer signed-out before the session works.
+
+    ``expired`` is the session being gone for good; this is a session that a sign-in fixes,
+    which is what §3.4b.2's unattended re-sign-in is for.
+    """
     offsite: str | None = None
     body: str = "<html><body>import</body></html>"
     status: int = 200
@@ -187,6 +193,7 @@ class FakeGoodreads:
         *,
         rotate: int = 0,
         expired: bool = False,
+        expire_next: int = 0,
         offsite: str | None = None,
         body: str = "<html><body>import</body></html>",
         status: int = 200,
@@ -199,12 +206,14 @@ class FakeGoodreads:
 
         ``rotate`` answers that many hops with a same-URL redirect carrying a new
         ``_session_id2``, which is how §3.4b.1 says Goodreads regenerates it. ``expired``
-        redirects to the sign-in page. ``offsite`` redirects to that absolute URL, for the leak
-        guard. A WAF stop is injected with :meth:`fail_next` as for the feed.
+        redirects to the sign-in page for good, and ``expire_next`` for that many requests
+        only, as a session a sign-in can recover does. ``offsite`` redirects to that absolute
+        URL, for the leak guard. A WAF stop is injected with :meth:`fail_next`, as for the feed.
         """
         self._export_plan = _ExportPlan(
             rotate,
             expired,
+            expire_next,
             offsite,
             body,
             status,
@@ -226,14 +235,14 @@ class FakeGoodreads:
         # whatever was asked for, so they must not be shadowed by the path dispatch below.
         if plan.offsite is not None:
             # One-shot, so a same-host redirect can be followed to an ordinary 200 next hop.
-            self._export_plan = _ExportPlan(plan.rotate, plan.expired, None, plan.body, plan.status)
+            self._export_plan = replace(plan, offsite=None)
             return httpx2.Response(302, headers={"location": plan.offsite})
-        if plan.expired:
+        if plan.expired or plan.expire_next > 0:
+            if plan.expire_next > 0:
+                self._export_plan = replace(plan, expire_next=plan.expire_next - 1)
             return httpx2.Response(302, headers={"location": "/user/sign_in"})
         if plan.rotate > 0:
-            self._export_plan = _ExportPlan(
-                plan.rotate - 1, plan.expired, plan.offsite, plan.body, plan.status
-            )
+            self._export_plan = replace(plan, rotate=plan.rotate - 1)
             self.rotations += 1
             # A same-URL redirect that carries the regenerated Rails cookie (§3.4b.1).
             return httpx2.Response(

@@ -20,6 +20,7 @@ from syncshelf.sync.goodreads_session import (
     jar_path,
     may_sign_in_again,
     record,
+    record_expired,
     stamp_auto_sign_in,
 )
 
@@ -222,3 +223,29 @@ class TestAttemptingUnattended:
             "alice", EMAIL, PASSWORD, NOW
         )
         assert result.reason and PASSWORD not in result.reason and EMAIL not in result.reason
+
+
+class TestNotingAnExpiredSession:
+    """``record_expired``: what an expired request does to the stored state."""
+
+    async def test_an_ok_session_becomes_needs_sign_in(self, db: Database) -> None:
+        await profile_row(db)
+        await db.write(record, "alice", "ok", NOW - 100, None)
+        await db.write(record_expired, "alice", NOW, "asked again")
+        assert await state_of(db) == ("needs_sign_in", "asked again")
+
+    async def test_a_fresh_profile_gets_a_row(self, db: Database) -> None:
+        await profile_row(db)
+        await db.write(record_expired, "alice", NOW, "asked again")
+        assert await state_of(db) == ("needs_sign_in", "asked again")
+
+    @pytest.mark.parametrize("sticky", STICKY_STATES)
+    async def test_a_sticky_state_is_left_exactly_as_it_was(
+        self, db: Database, sticky: SessionState
+    ) -> None:
+        # Losing it would both hide why the session stopped and let the next unattended
+        # attempt past may_sign_in_again, which reads this very column.
+        await profile_row(db)
+        await db.write(record, "alice", sticky, NOW - 100, "why it stopped")
+        await db.write(record_expired, "alice", NOW, "asked again")
+        assert await state_of(db) == (sticky, "why it stopped")
