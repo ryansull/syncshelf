@@ -1,0 +1,64 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-19",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "book_mappings": [
+        {
+          "external_id": "247031753",
+          "book_id": 1817542,
+          "edition_id": 32648677,
+          "book": {
+            "id": 1817542,
+            "title": "A Parade of Horribles",
+            "canonical_id": null
+          },
+          "edition": {
+            "id": 32648677,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B0GJJDXG4L",
+            "reading_format_id": 0
+          }
+        },
+        {
+          "external_id": "34873380",
+          "book_id": 427473,
+          "edition_id": 30442014,
+          "book": {
+            "id": 427473,
+            "title": "Red Rising",
+            "canonical_id": null
+          },
+          "edition": {
+            "id": 30442014,
+            "isbn_13": "9780345539793",
+            "isbn_10": "0345539796",
+            "asin": "B00CVS2J80",
+            "reading_format_id": 0
+          }
+        },
+        {
+          "external_id": "57189884",
+          "book_id": 2371526,
+          "edition_id": 31147088,
+          "book": {
+            "id": 2371526,
+            "title": "He Who Fights with Monsters",
+            "canonical_id": null
+          },
+          "edition": {
+            "id": 31147088,
+            "isbn_13": null,
+            "isbn_10": null,
+            "asin": "B08WCT9W26",
+            "reading_format_id": 0
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,1126 @@
+"""Links, source rows and their baselines in SQLite (SPEC §3.4a.4, §3.4a.6, §3.4a.12).
+
+**Links** are shared facts about the world, ``(source, source_id) → book``, stored once for
+both profiles. **Source rows** are per profile: their state (``linked | queued | ignored``),
+the book that profile's writes target, and one **baseline** per field, the last source value
+SyncShelf accepted with its ``observed_at``. A baseline is recorded whatever the row's state,
+so a queued row's pending diff is always computable.
+
+Every function here is a plain unit of work on the writer (or a reader) connection, inside
+the caller's transaction (§2.4).
+"""
+
+import json
+import sqlite3
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from typing import Literal
+
+from syncshelf.sync.matcher import METHOD_RANK, Candidate, IdHit
+from syncshelf.sync.observations import Batch, Observation
+
+__all__ = [
+    "BASELINE_FIRST",
+    "Baseline",
+    "IdentitySource",
+    "Observed",
+    "Pending",
+    "Placement",
+    "SourceRow",
+    "add_rows",
+    "adopt_observation",
+    "LogRow",
+    "backfilled",
+    "empty_baseline",
+    "fill",
+    "ignore_row",
+    "link_human",
+    "follow_merges",
+    "link_editions",
+    "load_rows",
+    "mark_stale",
+    "match_input",
+    "seen",
+    "observe",
+    "pending_for",
+    "record_failure",
+    "release_changes",
+    "release_on_new_version",
+    "release_quarantine",
+    "record_backfill",
+    "Rebaseline",
+    "rebaseline_plan",
+    "record_rebaseline",
+    "rematch_rows",
+    "settle",
+    "shared_links",
+]
+
+IdentitySource = Literal["goodreads", "abs"]
+"""``source`` on the identity tables. Goodreads' observation sources all map to ``goodreads``."""
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """One field's baseline, with its pending change if it has one (§3.4a.6)."""
+
+    id: int
+    """The ``change_id`` that ``retry_failed`` and the logs name."""
+    field: str
+    value: str | None
+    observed_at: int | None
+    """``None`` marks an empty baseline: a row first seen after the backfill."""
+    prev_value: str | None = None
+    pending_value: str | None = None
+    pending_since: int | None = None
+    """Set exactly when the field has a pending change."""
+    quarantined_at: int | None = None
+
+    @property
+    def pending(self) -> bool:
+        return self.pending_since is not None
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """One profile's row in one source, with its baselines by field."""
+
+    source_id: str
+    state: Literal["linked", "queued", "ignored"]
+    hc_book_id: int | None
+    hc_user_book_id: int | None
+    baselines: Mapping[str, Baseline] = field(default_factory=dict[str, Baseline])
+    gone_at: int | None = None
+    match_input: str | None = None
+    queue_reason: str | None = None
+    backfill_queued: bool = False
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where the backfill put one row: linked to a book in the profile's library, or queued."""
+
+    observation: Observation
+    hit: IdHit | None
+    """The id hit the row was placed by, if any (a queued ``not_in_library`` row has one)."""
+    linked: bool
+    hc_user_book_id: int | None = None
+    reason: str | None = None
+    """Why a queued row is queued, when its hit doesn't say (a ``stale`` link)."""
+    candidates: tuple[Candidate, ...] = ()
+    """A queued row's candidates, best first (at most 5)."""
+
+
+@dataclass(frozen=True)
+class Observed:
+    """What diffing one batch found."""
+
+    pending: list[Pending]
+    """The pending changes ready to apply: on linked rows this batch lists, not
+    quarantined."""
+    gone: int
+    """Rows this batch concluded are gone from the source."""
+    new: list[Observation] = field(default_factory=list[Observation])
+    """Rows SyncShelf has never seen: the caller matches them, then :func:`add_rows`."""
+    rematch: list[Observation] = field(default_factory=list[Observation])
+    """Queued rows whose match input changed: the caller re-matches them, then
+    :func:`rematch_rows` (§3.4a.5: re-matching happens only on a change or on request)."""
+
+
+@dataclass(frozen=True)
+class Pending:
+    """A pending change on a linked row, ready to apply."""
+
+    baseline_id: int
+    source_id: str
+    field: str
+    old: str | None
+    """The baseline's value: what was last accepted."""
+    new: str | None
+    """The pending value."""
+    hc_book_id: int
+    prev_value: str | None = None
+    """The value before ``old``: the Read → Currently Reading → Read re-read signal."""
+    pending_since: int | None = None
+    """When SyncShelf first saw the change: the date of an undated finish, failing all else."""
+
+
+@dataclass(frozen=True)
+class LogRow:
+    """One ``change_log`` row written with a settled change."""
+
+    kind: Literal["push", "read_insert", "read_adopt"]
+    field: str | None
+    old: str | None = None
+    new: str | None = None
+    trigger: str | None = None
+    date_source: str | None = None
+
+
+def backfilled(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> bool:
+    """Whether the profile's backfill of ``source`` is done (a ``backfills`` row exists)."""
+    found = conn.execute(
+        "SELECT 1 FROM backfills WHERE profile = ? AND source = ?", (profile, source)
+    ).fetchone()
+    return found is not None
+
+
+def shared_links(
+    conn: sqlite3.Connection, source: IdentitySource, ids: Iterable[str]
+) -> tuple[dict[str, IdHit], set[str]]:
+    """The shared links for ``ids``: the active ones in the matcher's hit shape, so the
+    backfill reuses a link the other profile's rows already made (§3.4a.4, rule 6), and the
+    ids whose link is ``stale``, whose rows are queued until a person resolves them."""
+    wanted = list(ids)
+    active: dict[str, IdHit] = {}
+    stale: set[str] = set()
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            "SELECT source_id, hc_book_id, hc_edition_id, method, state FROM links "  # noqa: S608
+            f"WHERE source = ? AND source_id IN ({marks})",
+            (source, *chunk),
+        )
+        for source_id, book_id, edition_id, method, state in rows:
+            if state == "stale":
+                stale.add(source_id)
+            else:
+                active[source_id] = IdHit(book_id, edition_id, "", method)
+    return active, stale
+
+
+def load_rows(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource
+) -> dict[str, SourceRow]:
+    """Every source row of the profile's ``source``, with its baselines."""
+    baselines: dict[str, dict[str, Baseline]] = {}
+    for row in conn.execute(
+        "SELECT source_id, id, field, value, observed_at, prev_value, pending_value, "
+        "pending_since, quarantined_at FROM baseline_fields WHERE profile = ? AND source = ?",
+        (profile, source),
+    ):
+        source_id, *rest = row
+        baseline = Baseline(*rest)
+        baselines.setdefault(source_id, {})[baseline.field] = baseline
+    return {
+        source_id: SourceRow(
+            source_id,
+            state,
+            book,
+            user_book,
+            baselines.get(source_id, {}),
+            gone,
+            given,
+            reason,
+            bool(backfill),
+        )
+        for source_id, state, book, user_book, gone, given, reason, backfill in conn.execute(
+            "SELECT source_id, state, hc_book_id, hc_user_book_id, gone_at, match_input, "
+            "queue_reason, backfill_queued FROM source_rows WHERE profile = ? AND source = ?",
+            (profile, source),
+        )
+    }
+
+
+def match_input(observation: Observation) -> str:
+    """The row as the matcher saw it, as stored on ``source_rows.match_input`` (§3.4a.5)."""
+    isbns = [i for i in (observation.isbn13, observation.isbn10) if i]
+    return json.dumps(
+        {
+            "title": observation.title,
+            "authors": [observation.author] if observation.author else [],
+            "isbns": isbns,
+            "asin": None,
+            "gr_book_id": observation.source_id,
+            "format": observation.format,
+            "year": None,
+        },
+        ensure_ascii=False,
+    )
+
+
+def seen(row: SourceRow) -> Observation:
+    """A row as the matcher last saw it, read back from its stored match input: the one
+    reader of what :func:`match_input` writes."""
+    given = json.loads(row.match_input or "{}")
+    isbns = given.get("isbns") or []
+    return Observation(
+        source_id=row.source_id,
+        fields={},
+        title=given.get("title") or "",
+        author=(given.get("authors") or [None])[0],
+        isbn10=next((i for i in isbns if len(i) == 10), None),
+        isbn13=next((i for i in isbns if len(i) == 13), None),
+        format=given.get("format"),
+    )
+
+
+def record_backfill(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    batch: Batch,
+    placements: Iterable[Placement],
+    run_id: int,
+    now: int,
+) -> tuple[int, int]:
+    """Write the map-only backfill (§3.4a.12): every row linked or queued, its baselines set
+    to what was observed, and the ``backfills`` stamp. Pushes nothing. Returns (rows linked,
+    rows queued)."""
+    linked = queued = 0
+    for place in placements:
+        obs = place.observation
+        if place.linked:
+            linked += 1
+        else:
+            queued += 1
+        seen_at = batch.observed_at if batch.observed_at is not None else now
+        _insert_row(conn, profile, source, place, now, seen_at, backfill=True)
+        conn.executemany(
+            "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (profile, source, obs.source_id, name, value, batch.observed_at)
+                for name, value in obs.fields.items()
+            ],
+        )
+    conn.execute(
+        "INSERT INTO backfills (profile, source, done_at, run_id, rows_linked, rows_queued) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (profile, source, now, run_id, linked, queued),
+    )
+    return linked, queued
+
+
+def observe(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    batch: Batch,
+    now: int,
+) -> Observed:
+    """Diff a batch against the rows' baselines (§3.4a.6), record what it saw, and return the
+    pending changes ready to apply and how many rows it found gone.
+
+    A field applies only if the batch carries it and is newer than its baseline (rule 8):
+    - equal to the baseline: its ``observed_at`` advances, and any pending change it had is
+      cleared, since the source went back;
+    - different: it becomes the pending change. A value that differs from the one already
+      pending supersedes it, starting over (the attempts and quarantine are cleared);
+    - never observed on this row before: it only sets the baseline (rule 3).
+
+    **Removals are recorded, never pushed** (rule 4). Only a complete enumeration may conclude
+    a row is gone: it gets ``gone_at``, its ``last_seen_at`` freezes, and a ``gone`` row goes
+    in ``change_log``. A row seen again isn't gone any more, so its ``gone_at`` clears.
+    Presence follows rule 8 too, by the batch's ``observed_at``: an export made before a row
+    was last seen can't find it gone, and one made before it went can't bring it back.
+
+    A Binding sets the format on the row's shared link, which later reads follow (§3.3.5).
+
+    Rows SyncShelf has never seen are returned as ``new``, for the caller to match and add
+    with :func:`add_rows`.
+    """
+    assert batch.observed_at is not None, "a stale batch only fills"
+    rows = load_rows(conn, profile, source)
+    seen: list[tuple[int, int, str, str, str]] = []
+    observed_at = batch.observed_at
+    new: list[Observation] = []
+    rematch: list[Observation] = []
+    formats: list[tuple[str, str, str, str]] = []
+    for obs in batch.rows:
+        row = rows.get(obs.source_id)
+        if row is None:
+            if all(n.source_id != obs.source_id for n in new):
+                new.append(obs)
+            continue
+        if row.gone_at is not None and row.gone_at >= observed_at:
+            continue  # removed since this was observed: nothing it says applies any more
+        if batch.source == "gr_rss":
+            obs = _refreshed(obs, row, fill=False)  # RSS has no ISBN-13 or Binding
+        _refresh_input(conn, profile, source, obs, row, rematch)
+        seen.append((observed_at, observed_at, profile, source, obs.source_id))
+        if obs.format is not None:
+            formats.append((obs.format, source, obs.source_id, obs.format))
+        for name, value in obs.fields.items():
+            baseline = row.baselines.get(name)
+            if baseline is None:
+                conn.execute(
+                    "INSERT INTO baseline_fields (profile, source, source_id, field, value, "
+                    "observed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (profile, source, obs.source_id, name, value, batch.observed_at),
+                )
+            elif baseline.observed_at is None or batch.observed_at > baseline.observed_at:
+                _diff_field(conn, baseline, value, batch.observed_at, now)
+    conn.executemany(
+        "UPDATE source_rows SET last_seen_at = max(last_seen_at, ?), "
+        "gone_at = CASE WHEN gone_at < ? THEN NULL ELSE gone_at END "
+        "WHERE profile = ? AND source = ? AND source_id = ?",
+        seen,
+    )
+    # Once a CSV has shown a Binding, it decides the format of later reads (§3.3.5).
+    conn.executemany(
+        "UPDATE links SET format = ? WHERE source = ? AND source_id = ? AND format IS NOT ?",
+        formats,
+    )
+    gone = 0
+    if batch.complete:
+        listed = {obs.source_id for obs in batch.rows}
+        last_seen = dict(
+            conn.execute(
+                "SELECT source_id, last_seen_at FROM source_rows WHERE profile = ? AND source = ?",
+                (profile, source),
+            ).fetchall()
+        )
+        for row in rows.values():
+            if (
+                row.source_id not in listed
+                and row.gone_at is None
+                and last_seen[row.source_id] < observed_at
+            ):
+                gone += 1
+                _mark_gone(conn, profile, source, row, observed_at, now)
+    # A row this batch didn't list keeps its pending change for a batch that does, so the
+    # baseline is never stamped with a time it wasn't observed at.
+    listed_now = {source_id for *_, source_id in seen}
+    pending = [p for p in _pending(conn, profile, source) if p.source_id in listed_now]
+    return Observed(pending, gone, new, rematch)
+
+
+BASELINE_FIRST = frozenset({"read_count"})
+"""Fields whose first observation is a baseline even on a row first seen after the backfill:
+``read_count`` never counts on its first observation, so a new Read row gets one read, from
+its status (§3.4a.6 rule 6)."""
+
+
+def fill(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, batch: Batch
+) -> list[Observation]:
+    """Apply a **stale** batch, which only fills (§3.4a.8): on rows SyncShelf already has, a
+    field never observed takes the batch's value as its baseline, with no ``observed_at``, so
+    any dated observation beats it. Match inputs gain an ISBN-13 or a Binding they lack, and
+    a link a Binding it lacks. It never creates rows, pushes, or marks a row gone, and a row
+    already gone is left alone. Returns the queued rows whose match input changed, for the
+    caller to re-match."""
+    rows = load_rows(conn, profile, source)
+    rematch: list[Observation] = []
+    for obs in batch.rows:
+        row = rows.get(obs.source_id)
+        if row is None or row.gone_at is not None:
+            continue
+        conn.executemany(
+            "INSERT INTO baseline_fields (profile, source, source_id, field, value) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (profile, source, obs.source_id, name, value)
+                for name, value in obs.fields.items()
+                if name not in row.baselines
+            ],
+        )
+        obs = _refreshed(obs, row, fill=True)
+        _refresh_input(conn, profile, source, obs, row, rematch)
+        if obs.format is not None:
+            conn.execute(
+                "UPDATE links SET format = ? WHERE source = ? AND source_id = ? AND format IS NULL",
+                (obs.format, source, obs.source_id),
+            )
+    return rematch
+
+
+def _refreshed(obs: Observation, row: SourceRow, *, fill: bool) -> Observation:
+    """``obs`` as the matcher should see it, given what the row's stored input already has.
+    RSS carries no ISBN-13 or Binding, so the stored ones stand (``fill`` false). A stale
+    batch only fills, so every stored detail stands and it adds only what's missing."""
+    before = seen(row)
+    if not fill:
+        return replace(obs, isbn13=before.isbn13, format=before.format)
+    return replace(
+        obs,
+        title=before.title or obs.title,
+        author=before.author or obs.author,
+        isbn10=before.isbn10 or obs.isbn10,
+        isbn13=before.isbn13 or obs.isbn13,
+        format=before.format or obs.format,
+    )
+
+
+def _refresh_input(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    obs: Observation,
+    row: SourceRow,
+    rematch: list[Observation],
+) -> None:
+    """Keep the row's match input to what it was last seen as. A queued row whose input
+    changed is matched again instead, which writes it (§3.4a.5: re-matching happens only on
+    a change or on request), unless a person must settle it (a conflict with the shared link)
+    or the batch already listed it."""
+    given = match_input(obs)
+    if row.match_input == given:
+        return
+    if row.state == "queued" and row.queue_reason != "profile_conflict":
+        if all(r.source_id != obs.source_id for r in rematch):
+            rematch.append(obs)
+        return
+    conn.execute(
+        "UPDATE source_rows SET match_input = ? WHERE profile = ? AND source = ? AND source_id = ?",
+        (given, profile, source, obs.source_id),
+    )
+
+
+def add_rows(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    batch: Batch,
+    placements: Iterable[Placement],
+    now: int,
+) -> list[Pending]:
+    """Add rows first seen after the backfill, each linked or queued, from an **empty
+    baseline** (§3.4a.6, rule 3): every non-empty field of this first observation is a
+    pending change, and an empty one just sets its baseline, as does any field in
+    :data:`BASELINE_FIRST`. Returns the pending changes on the rows linked."""
+    assert batch.observed_at is not None
+    added: list[str] = []
+    for place in placements:
+        obs = place.observation
+        added.append(obs.source_id)
+        _insert_row(conn, profile, source, place, now, batch.observed_at, backfill=False)
+        # A status this observation couldn't read (#182) starts empty too, so the first
+        # status seen later is a change, not a baseline.
+        fields = {"status": None, **obs.fields}
+        conn.executemany(
+            "INSERT INTO baseline_fields (profile, source, source_id, field, value, observed_at,"
+            " pending_value, pending_since) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (profile, source, obs.source_id, name)
+                + (
+                    (None, None, None, None)
+                    if name not in obs.fields
+                    else (value, batch.observed_at, None, None)
+                    if value is None or name in BASELINE_FIRST
+                    else (None, None, value, now)
+                )
+                for name, value in fields.items()
+            ],
+        )
+    return pending_for(conn, profile, source, added)
+
+
+def rematch_rows(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    placements: Iterable[Placement],
+    now: int,
+) -> None:
+    """Record a re-match of queued rows: a row now matched becomes linked, keeping its
+    baselines, so its pending diff applies; one still unmatched keeps its place in the queue
+    (``queued_at``) with its new reason and candidates. Either way its match input is the one
+    just matched."""
+    for place in placements:
+        obs, hit = place.observation, place.hit
+        if place.linked:
+            assert hit is not None
+            book = _link(conn, source, obs, hit, now)
+            conn.execute(
+                "UPDATE source_rows SET state = 'linked', hc_book_id = ?, queue_reason = NULL, "
+                "queued_at = NULL, backfill_queued = 0, match_input = ? "
+                "WHERE profile = ? AND source = ? AND source_id = ?",
+                (book, match_input(obs), profile, source, obs.source_id),
+            )
+            _write_candidates(conn, profile, source, obs.source_id, (), now)
+        else:
+            conn.execute(
+                "UPDATE source_rows SET queue_reason = ?, match_input = ? "
+                "WHERE profile = ? AND source = ? AND source_id = ?",
+                (_reason(place), match_input(obs), profile, source, obs.source_id),
+            )
+            _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+@dataclass(frozen=True)
+class Rebaseline:
+    """What ``rebaseline`` would do to one profile's source (§3.4a.11), as its preview shows
+    it and its confirm token is bound to."""
+
+    rematch: tuple[str, ...]
+    """The queued rows matched again by the backfill's rules. A conflict with the shared
+    link waits for a person, and a row Goodreads no longer lists isn't matched."""
+    dropped: tuple[int, ...]
+    """The pending changes (baseline ids) dropped, quarantined ones included."""
+    human: int
+    """Rows linked by a person, which keep their links."""
+    ignored: int
+    """Rows a person ignored, which stay ignored."""
+
+
+def rebaseline_plan(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> Rebaseline:
+    """What re-running the profile's backfill of ``source`` would do, read from SQLite only."""
+    rematch = conn.execute(
+        "SELECT source_id FROM source_rows WHERE profile = ? AND source = ? AND state = 'queued'"
+        " AND gone_at IS NULL AND queue_reason IS NOT 'profile_conflict' ORDER BY source_id",
+        (profile, source),
+    ).fetchall()
+    dropped = conn.execute(
+        "SELECT id FROM baseline_fields WHERE profile = ? AND source = ? "
+        "AND pending_since IS NOT NULL ORDER BY id",
+        (profile, source),
+    ).fetchall()
+    (human,) = conn.execute(
+        "SELECT count(*) FROM source_rows r JOIN links l USING (source, source_id) "
+        "WHERE r.profile = ? AND r.source = ? AND r.state = 'linked' AND l.method = 'human'",
+        (profile, source),
+    ).fetchone()
+    (ignored,) = conn.execute(
+        "SELECT count(*) FROM source_rows WHERE profile = ? AND source = ? AND state = 'ignored'",
+        (profile, source),
+    ).fetchone()
+    return Rebaseline(tuple(r[0] for r in rematch), tuple(r[0] for r in dropped), human, ignored)
+
+
+def record_rebaseline(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    placements: Iterable[Placement],
+    now: int,
+) -> tuple[int, int]:
+    """Write a re-run backfill (§3.4a.11 ``rebaseline``): each re-matched row linked (with
+    its shelf entry) or queued as the backfill queues it; then every pending change of the
+    source dropped, its baseline taken to that latest observation, as of when the row was
+    last seen; then the ``backfills`` row rewritten. Pushes nothing. Returns (rows linked,
+    rows queued) in the source now."""
+    placed = list(placements)
+    rematch_rows(conn, profile, source, placed, now)
+    for place in placed:
+        if place.linked:
+            conn.execute(
+                "UPDATE source_rows SET hc_user_book_id = ? WHERE profile = ? AND source = ? "
+                "AND source_id = ?",
+                (place.hc_user_book_id, profile, source, place.observation.source_id),
+            )
+        else:
+            # Still queued: resolving it now follows the backfill's rules (§3.4a.12).
+            conn.execute(
+                "UPDATE source_rows SET backfill_queued = 1 WHERE profile = ? AND source = ? "
+                "AND source_id = ?",
+                (profile, source, place.observation.source_id),
+            )
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, "
+        "observed_at = COALESCE((SELECT r.last_seen_at FROM source_rows r WHERE "
+        "r.profile = baseline_fields.profile AND r.source = baseline_fields.source AND "
+        "r.source_id = baseline_fields.source_id), observed_at), pending_value = NULL, "
+        "pending_since = NULL, attempts = 0, first_failed_at = NULL, last_error = NULL, "
+        "last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND pending_since IS NOT NULL",
+        (profile, source),
+    )
+    linked, queued = conn.execute(
+        "SELECT count(*) FILTER (WHERE state = 'linked'), count(*) FILTER (WHERE state = "
+        "'queued') FROM source_rows WHERE profile = ? AND source = ?",
+        (profile, source),
+    ).fetchone()
+    conn.execute(
+        "UPDATE backfills SET done_at = ?, run_id = NULL, rows_linked = ?, rows_queued = ? "
+        "WHERE profile = ? AND source = ?",
+        (now, linked, queued, profile, source),
+    )
+    return linked, queued
+
+
+def link_human(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    source_id: str,
+    book_id: int,
+    user_book_id: int | None,
+    now: int,
+) -> bool:
+    """A person's answer for a row (``resolve_match``, §3.4a.11): the row is linked to
+    ``book_id`` and leaves the queue, and the shared link becomes ``human`` on that book,
+    unless it would contradict another profile, whose rows rely on a different book through
+    it (§3.4a.4 rule 6); then only this profile's row is linked. An earlier ``human`` answer
+    nothing else relies on is corrected like any link. Returns whether the shared link was
+    written."""
+    found = conn.execute(
+        "SELECT hc_book_id, method FROM links WHERE source = ? AND source_id = ?",
+        (source, source_id),
+    ).fetchone()
+    others = conn.execute(
+        "SELECT count(*) FROM source_rows WHERE source = ? AND source_id = ? AND profile <> ? "
+        "AND state = 'linked' AND hc_book_id <> ?",
+        (source, source_id, profile, book_id),
+    ).fetchone()[0]
+    shared = not others
+    if shared and found is None:
+        conn.execute(
+            "INSERT INTO links (source, source_id, hc_book_id, method, linked_at, last_seen_at) "
+            "VALUES (?, ?, ?, 'human', ?, ?)",
+            (source, source_id, book_id, now, now),
+        )
+    elif shared:
+        conn.execute(
+            "UPDATE links SET hc_book_id = ?, method = 'human', state = 'active', linked_at = ? "
+            "WHERE source = ? AND source_id = ?",
+            (book_id, now, source, source_id),
+        )
+    was = conn.execute(
+        "SELECT state FROM source_rows WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE source_rows SET state = 'linked', hc_book_id = ?, hc_user_book_id = ?, "
+        "queue_reason = NULL, queued_at = NULL, backfill_queued = 0 "
+        "WHERE profile = ? AND source = ? AND source_id = ?",
+        (book_id, user_book_id, profile, source, source_id),
+    )
+    _write_candidates(conn, profile, source, source_id, (), now)
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, kind,"
+        " new_value, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (profile, source, source_id, book_id, user_book_id,
+         "unignore" if was == "ignored" else "resolve_match", str(book_id), now),
+    )  # fmt: skip
+    return shared
+
+
+def empty_baseline(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> None:
+    """A backfill-queued row resolved onto a book not on the shelves (§3.4a.12): diffed
+    against an empty baseline, so what Goodreads has now (a pending change's value, or the
+    baseline's) becomes pending, quarantined or not. A field in :data:`BASELINE_FIRST` takes
+    what Goodreads has now as its baseline instead."""
+    first = ",".join("?" * len(BASELINE_FIRST))
+    conn.execute(
+        "UPDATE baseline_fields SET "  # noqa: S608
+        "pending_value = CASE WHEN pending_since IS NOT NULL THEN pending_value ELSE value END, "
+        "pending_since = COALESCE(pending_since, ?), value = NULL, observed_at = NULL, "
+        "attempts = 0, first_failed_at = NULL, last_error = NULL, last_error_class = NULL, "
+        "quarantined_at = NULL WHERE profile = ? AND source = ? AND source_id = ? "
+        f"AND field NOT IN ({first})",
+        (now, profile, source, source_id, *BASELINE_FIRST),
+    )
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, "  # noqa: S608
+        "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
+        "last_error = NULL, last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND source_id = ? AND pending_since IS NOT NULL "
+        f"AND field IN ({first})",
+        (profile, source, source_id, *BASELINE_FIRST),
+    )
+    # Nothing to insert for a field Goodreads has empty.
+    conn.execute(
+        "UPDATE baseline_fields SET pending_since = NULL WHERE profile = ? AND source = ? "
+        "AND source_id = ? AND value IS NULL AND pending_value IS NULL",
+        (profile, source, source_id),
+    )
+
+
+def adopt_observation(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> None:
+    """A backfill-queued row resolved onto a book already on the shelves (§3.4a.12): the link
+    only. Its pending changes become the baseline, pushing nothing, as the backfill would
+    have had it."""
+    conn.execute(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, observed_at = ?, "
+        "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
+        "last_error = NULL, last_error_class = NULL, quarantined_at = NULL "
+        "WHERE profile = ? AND source = ? AND source_id = ? AND pending_since IS NOT NULL",
+        (now, profile, source, source_id),
+    )
+
+
+def ignore_row(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, source_id: str, now: int
+) -> int | None:
+    """A person's "none of these" (``resolve_match`` with no book): the row is ignored, never
+    matched, queued or pushed again until resolved with a book. Its baselines are kept.
+    Returns the book it was linked to, if it was."""
+    (was,) = conn.execute(
+        "SELECT hc_book_id FROM source_rows WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    ).fetchone()
+    conn.execute(
+        "UPDATE source_rows SET state = 'ignored', hc_book_id = NULL, queue_reason = NULL, "
+        "queued_at = NULL WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    )
+    _write_candidates(conn, profile, source, source_id, (), now)
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, kind, at) "
+        "VALUES (?, ?, ?, ?, 'ignore', ?)",
+        (profile, source, source_id, was, now),
+    )
+    return was
+
+
+def follow_merges(conn: sqlite3.Connection, merged: Mapping[int, int], now: int) -> int:
+    """Follow Hardcover's merges (§3.4a.4 rule 7): each ``merged`` book (old id → the book it
+    was merged into) is rewritten to the canonical book on its shared links, on every
+    profile's source rows and on queued rows' candidates, each row's rewrite logged as a
+    ``merge``, never queued. Returns how many
+    source rows moved."""
+    moved = 0
+    for old, canonical in merged.items():
+        if old == canonical:
+            continue
+        rows = conn.execute(
+            "SELECT profile, source, source_id, hc_user_book_id FROM source_rows "
+            "WHERE hc_book_id = ?",
+            (old,),
+        ).fetchall()
+        conn.execute("UPDATE links SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
+        conn.execute("UPDATE source_rows SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old))
+        conn.execute(
+            "UPDATE match_candidates SET hc_book_id = ? WHERE hc_book_id = ?", (canonical, old)
+        )
+        conn.executemany(
+            "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, "
+            "kind, old_value, new_value, at) VALUES (?, ?, ?, ?, ?, 'merge', ?, ?, ?)",
+            [
+                (profile, source, source_id, canonical, user_book, str(old), str(canonical), now)
+                for profile, source, source_id, user_book in rows
+            ],
+        )
+        moved += len(rows)
+    return moved
+
+
+def mark_stale(conn: sqlite3.Connection, book_ids: Iterable[int], now: int) -> int:
+    """Books Hardcover no longer returns (§3.4a.4 rule 7): their links become ``stale``, and
+    each profile's rows on them are queued ``stale`` for a person to resolve, keeping their
+    baselines. Returns how many rows were queued."""
+    queued = 0
+    for book_id in set(book_ids):
+        rows = conn.execute(
+            "SELECT profile, source, source_id, hc_user_book_id FROM source_rows "
+            "WHERE hc_book_id = ? AND state = 'linked'",
+            (book_id,),
+        ).fetchall()
+        conn.execute("UPDATE links SET state = 'stale' WHERE hc_book_id = ?", (book_id,))
+        conn.execute(
+            "UPDATE source_rows SET state = 'queued', hc_book_id = NULL, queue_reason = 'stale',"
+            " queued_at = ? WHERE hc_book_id = ? AND state = 'linked'",
+            (now, book_id),
+        )
+        conn.executemany(
+            "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, "
+            "kind, at) VALUES (?, ?, ?, ?, ?, 'stale', ?)",
+            [
+                (profile, source, source_id, book_id, user_book, now)
+                for profile, source, source_id, user_book in rows
+            ],
+        )
+        queued += len(rows)
+    return queued
+
+
+QUARANTINE_AFTER = 24 * 3600
+"""A change is quarantined once it has failed for this long (seconds)..."""
+QUARANTINE_ATTEMPTS = 3
+"""...and at least this many times (§3.4a.7)."""
+
+ErrorClass = Literal["transient", "permanent", "bug"]
+
+
+def record_failure(
+    conn: sqlite3.Connection,
+    baseline_ids: Iterable[int],
+    error_class: ErrorClass,
+    error: str,
+    now: int,
+) -> set[int]:
+    """Count one failed attempt on a change's baselines, which stay pending (§3.4a.7). A
+    ``bug`` is quarantined at once; any other class once it has failed for
+    :data:`QUARANTINE_AFTER` and :data:`QUARANTINE_ATTEMPTS` times. ``error`` must already be
+    scrubbed. Returns the baselines now quarantined (each keeps its own history)."""
+    ids = list(baseline_ids)
+    conn.executemany(
+        "UPDATE baseline_fields SET attempts = attempts + 1, "
+        "first_failed_at = COALESCE(first_failed_at, ?), last_error = ?, last_error_class = ?, "
+        "quarantined_at = CASE WHEN ? = 'bug' OR (attempts + 1 >= ? AND "
+        "? - COALESCE(first_failed_at, ?) >= ?) THEN ? ELSE quarantined_at END WHERE id = ?",
+        [
+            (now, error, error_class, error_class, QUARANTINE_ATTEMPTS, now, now,
+             QUARANTINE_AFTER, now, baseline_id)
+            for baseline_id in ids
+        ],
+    )  # fmt: skip
+    marks = ",".join("?" * len(ids))
+    found = conn.execute(
+        f"SELECT id FROM baseline_fields WHERE quarantined_at IS NOT NULL "  # noqa: S608
+        f"AND id IN ({marks})",
+        ids,
+    )
+    return {row[0] for row in found}
+
+
+def release_quarantine(conn: sqlite3.Connection, profile: str | None = None) -> int:
+    """Release every quarantined change (of one profile, or all): it is pending again with its
+    attempts started over, so the next run tries it afresh (§3.4a.7). Returns how many."""
+    where = "quarantined_at IS NOT NULL" + (" AND profile = ?" if profile else "")
+    return conn.execute(
+        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, "  # noqa: S608
+        f"first_failed_at = NULL WHERE {where}",
+        (profile,) if profile else (),
+    ).rowcount
+
+
+def release_changes(
+    conn: sqlite3.Connection, profile: str, change_ids: Iterable[int] | None
+) -> list[int]:
+    """Release the profile's own quarantined changes, these ones or all of them (``None``):
+    pending again, attempts started over (§3.4a.11 ``retry_failed``). Returns the ids
+    released; another profile's change, or one not quarantined, is never among them."""
+    ids = None if change_ids is None else list(change_ids)
+    only = "" if ids is None else f" AND id IN ({','.join('?' * len(ids))})"
+    rows = conn.execute(
+        "UPDATE baseline_fields SET quarantined_at = NULL, attempts = 0, "  # noqa: S608
+        f"first_failed_at = NULL WHERE profile = ? AND quarantined_at IS NOT NULL{only} "
+        "RETURNING id",
+        (profile, *(ids or [])),
+    ).fetchall()
+    return sorted(row[0] for row in rows)
+
+
+VERSION_KEY = "last_started_version"
+
+
+def release_on_new_version(conn: sqlite3.Connection, version: str) -> int | None:
+    """At startup (§2.2 step 4): when this is a different SyncShelf version from the last to
+    start (a missing row counts as different), release every quarantined change once, then
+    record the version, in the same transaction, so a crash part-way retries next start.
+    Returns how many were released, or ``None`` when the version is unchanged."""
+    found = conn.execute("SELECT value FROM meta WHERE key = ?", (VERSION_KEY,)).fetchone()
+    if found is not None and found[0] == version:
+        return None
+    released = release_quarantine(conn)
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (VERSION_KEY, version),
+    )
+    return released
+
+
+def pending_for(
+    conn: sqlite3.Connection, profile: str, source: IdentitySource, ids: Iterable[str]
+) -> list[Pending]:
+    """The pending changes ready to apply on these rows."""
+    wanted = set(ids)
+    return [p for p in _pending(conn, profile, source) if p.source_id in wanted]
+
+
+def _insert_row(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    place: Placement,
+    now: int,
+    seen_at: int,
+    *,
+    backfill: bool,
+) -> None:
+    """A new source row, linked (with its shared link) or queued (with its candidates).
+    ``seen_at`` is when its batch was observed, which presence is judged by (rule 8)."""
+    obs, hit = place.observation, place.hit
+    if place.linked:
+        assert hit is not None
+        book = _link(conn, source, obs, hit, now)
+        conn.execute(
+            "INSERT INTO source_rows (profile, source, source_id, state, hc_book_id, "
+            "hc_user_book_id, match_input, first_seen_at, last_seen_at) "
+            "VALUES (?, ?, ?, 'linked', ?, ?, ?, ?, ?)",
+            (profile, source, obs.source_id, book, place.hc_user_book_id,
+             match_input(obs), now, seen_at),
+        )  # fmt: skip
+        return
+    conn.execute(
+        "INSERT INTO source_rows (profile, source, source_id, state, queue_reason, queued_at, "
+        "match_input, first_seen_at, last_seen_at, backfill_queued) "
+        "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+        (profile, source, obs.source_id, _reason(place), now, match_input(obs), now, seen_at,
+         int(backfill)),
+    )  # fmt: skip
+    _write_candidates(conn, profile, source, obs.source_id, place.candidates, now)
+
+
+def _reason(place: Placement) -> str:
+    return place.reason or ("not_in_library" if place.hit is not None else "no_hit")
+
+
+def _write_candidates(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    source_id: str,
+    candidates: Iterable[Candidate],
+    now: int,
+) -> None:
+    conn.execute(
+        "DELETE FROM match_candidates WHERE profile = ? AND source = ? AND source_id = ?",
+        (profile, source, source_id),
+    )
+    conn.executemany(
+        "INSERT INTO match_candidates (profile, source, source_id, rank, hc_book_id, "
+        "hc_edition_id, method, title_score, author_score, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (profile, source, source_id, rank, c.book_id, c.edition_id, c.method,
+             c.title_score, c.author_score, now)
+            for rank, c in enumerate(candidates, start=1)
+        ],
+    )  # fmt: skip
+
+
+def _link(
+    conn: sqlite3.Connection, source: IdentitySource, obs: Observation, hit: IdHit, now: int
+) -> int:
+    """The shared link for a row, returning the book it now names, which the row's writes
+    target. An existing link is replaced only by a strictly stronger method, and never a
+    ``human`` one (§3.4a.4 rule 5; the trigger holds the last in SQL)."""
+    found = conn.execute(
+        "SELECT method, hc_book_id FROM links WHERE source = ? AND source_id = ?",
+        (source, obs.source_id),
+    ).fetchone()
+    if found is None:
+        conn.execute(
+            "INSERT INTO links (source, source_id, hc_book_id, hc_edition_id, format, method,"
+            " linked_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, obs.source_id, hit.book_id, hit.edition_id, obs.format, hit.method, now,
+             now),
+        )  # fmt: skip
+    elif METHOD_RANK[hit.method] > METHOD_RANK[found[0]]:
+        conn.execute(
+            "UPDATE links SET hc_book_id = ?, hc_edition_id = ?, method = ?, state = 'active', "
+            "linked_at = ?, last_seen_at = ? WHERE source = ? AND source_id = ?",
+            (hit.book_id, hit.edition_id, hit.method, now, now, source, obs.source_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE links SET last_seen_at = ? WHERE source = ? AND source_id = ?",
+            (now, source, obs.source_id),
+        )
+        return found[1]
+    return hit.book_id
+
+
+def _mark_gone(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    row: SourceRow,
+    observed_at: int,
+    now: int,
+) -> None:
+    # Gone as of the observation that found it so, which a later one can overturn.
+    conn.execute(
+        "UPDATE source_rows SET gone_at = ? WHERE profile = ? AND source = ? AND source_id = ?",
+        (observed_at, profile, source, row.source_id),
+    )
+    conn.execute(
+        "INSERT INTO change_log (profile, source, source_id, hc_book_id, hc_user_book_id, kind,"
+        " at) VALUES (?, ?, ?, ?, ?, 'gone', ?)",
+        (profile, source, row.source_id, row.hc_book_id, row.hc_user_book_id, now),
+    )
+
+
+def _diff_field(
+    conn: sqlite3.Connection, baseline: Baseline, value: str | None, observed_at: int, now: int
+) -> None:
+    if value == baseline.value:
+        # The source still says what was accepted (an empty field on an empty baseline
+        # included); any pending change was undone at source.
+        conn.execute(
+            "UPDATE baseline_fields SET observed_at = ?, pending_value = NULL, "
+            "pending_since = NULL, attempts = 0, first_failed_at = NULL, last_error = NULL, "
+            "last_error_class = NULL, quarantined_at = NULL WHERE id = ?",
+            (observed_at, baseline.id),
+        )
+    elif not baseline.pending or value != baseline.pending_value:
+        # A new pending change, or a newer value superseding the one pending.
+        conn.execute(
+            "UPDATE baseline_fields SET pending_value = ?, pending_since = ?, attempts = 0, "
+            "first_failed_at = NULL, last_error = NULL, last_error_class = NULL, "
+            "quarantined_at = NULL WHERE id = ?",
+            (value, now, baseline.id),
+        )
+
+
+def _pending(conn: sqlite3.Connection, profile: str, source: IdentitySource) -> list[Pending]:
+    return [
+        Pending(*row)
+        for row in conn.execute(
+            "SELECT b.id, b.source_id, b.field, b.value, b.pending_value, r.hc_book_id, "
+            "b.prev_value, b.pending_since "
+            "FROM baseline_fields b JOIN source_rows r USING (profile, source, source_id) "
+            "WHERE b.profile = ? AND b.source = ? AND b.pending_since IS NOT NULL "
+            "AND b.quarantined_at IS NULL AND r.state = 'linked' ORDER BY b.id",
+            (profile, source),
+        )
+    ]
+
+
+def settle(
+    conn: sqlite3.Connection,
+    profile: str,
+    source: IdentitySource,
+    source_id: str,
+    hc_book_id: int,
+    changes: list[Pending],
+    observed_at: int,
+    hc_user_book_id: int | None,
+    logs: list[LogRow],
+    run_id: int | None,
+    now: int,
+) -> None:
+    """After Hardcover took a change (or when it needs no write): advance each baseline it
+    settles and write its ``change_log`` rows, in one transaction (§3.4a.6, rule 9)."""
+    conn.executemany(
+        "UPDATE baseline_fields SET prev_value = value, value = pending_value, observed_at = ?, "
+        "pending_value = NULL, pending_since = NULL, attempts = 0, first_failed_at = NULL, "
+        "last_error = NULL, last_error_class = NULL, quarantined_at = NULL WHERE id = ?",
+        [(observed_at, change.baseline_id) for change in changes],
+    )
+    if hc_user_book_id is not None:
+        conn.execute(
+            "UPDATE source_rows SET hc_user_book_id = ? WHERE profile = ? AND source = ? "
+            "AND source_id = ?",
+            (hc_user_book_id, profile, source, source_id),
+        )
+    conn.executemany(
+        "INSERT INTO change_log (run_id, profile, source, source_id, hc_book_id, "
+        "hc_user_book_id, kind, field, old_value, new_value, trigger, date_source, at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (run_id, profile, source, source_id, hc_book_id, hc_user_book_id, row.kind,
+             row.field, row.old, row.new, row.trigger, row.date_source, now)
+            for row in logs
+        ],
+    )  # fmt: skip
+
+
+def link_editions(
+    conn: sqlite3.Connection, source: IdentitySource, ids: Iterable[str]
+) -> dict[str, tuple[int | None, str | None]]:
+    """The edition and format each row's shared link names (§3.3.5), for rows whose link has
+    either. The format is the Goodreads Binding, once a feed has shown one."""
+    wanted = list(ids)
+    found: dict[str, tuple[int | None, str | None]] = {}
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        for source_id, edition, fmt in conn.execute(
+            "SELECT source_id, hc_edition_id, format FROM links WHERE source = ? "  # noqa: S608
+            "AND (hc_edition_id IS NOT NULL OR format IS NOT NULL) "
+            f"AND source_id IN ({marks})",
+            (source, *chunk),
+        ):
+            found[source_id] = (edition, fmt)
+    return found

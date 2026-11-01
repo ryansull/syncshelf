@@ -5,7 +5,9 @@ query costs 2–3 requests and 2–3 s, and the answers (counts, stats, filters)
 library anyway. The copy is refreshed on read once it's older than ``cadence.mirror_ttl``:
 
 - **Full replace per profile**, in one transaction. A user_book deleted in Hardcover just
-  disappears; there are no tombstones, and links and baselines (4a) are never touched.
+  disappears; there are no tombstones, and baselines are never touched.
+- **Merges are followed** (4a): a fetch that shows a book Hardcover merged into another moves
+  the links and source rows on it to that book (§3.4a.4 rule 7).
 - **One refresh at a time per profile.** A reader that finds a refresh in progress waits for
   it, then uses its result rather than starting another.
 - **Refresh failure serves stale, flagged.** The tool answers from the copy with ``stale`` and
@@ -15,19 +17,22 @@ What's kept is what the read tools need: no review text and no private notes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from syncshelf.clients.hardcover import HardcoverClient, HardcoverError, Library
 from syncshelf.db import Database
 from syncshelf.logging import scrub
+from syncshelf.sync.identity import follow_merges
 
 __all__ = [
     "TAG_CATEGORIES",
+    "FetchFailed",
     "Freshness",
     "Mirror",
     "NoMirror",
@@ -43,6 +48,15 @@ AUTHOR_ROLES = (None, "", "Author")
 
 TAG_CATEGORIES = ("genres", "moods", "tags")
 """The ``cached_tags`` categories the library query fetches, as ``tags_json`` keys."""
+
+
+_REFRESH_ERRORS = (HardcoverError, sqlite3.Error, KeyError, TypeError)
+"""What a failed refresh raises: Hardcover unreachable or refusing, or a shape the copy can't
+hold."""
+
+
+class FetchFailed(Exception):
+    """A sync's library fetch failed. The message is safe to show and store (§2.7)."""
 
 
 class NoMirror(Exception):
@@ -89,6 +103,8 @@ class Mirror:
         doesn't wait for the TTL (§3.3.4, Write-through)."""
         async with self._locks[profile]:
             await self._db.write(store_user_book, profile, book_id, user_book)
+        if user_book is not None:
+            await self._follow([user_book], int(self._clock()))
 
     async def fresh(self, profile: str) -> Freshness:
         """Make ``profile``'s copy current enough to read, refreshing it if it's older than
@@ -112,28 +128,67 @@ class Mirror:
             as_of = await self._db.read(_as_of, profile)
             if as_of is not None and self._clock() - as_of < self._ttl:
                 return Freshness(as_of)
-            self._attempts[profile] += 1
+            # A database or shape error means Hardcover sent something the copy can't hold;
+            # like an unreachable Hardcover, the old copy is served meanwhile.
+            with contextlib.suppress(*_REFRESH_ERRORS):
+                await self._refresh(profile)
+            return self._outcome(profile)
+
+    async def fetch(self, profile: str) -> Library:
+        """Fetch ``profile``'s whole library now, whatever the copy's age, replace the copy
+        with it, and return it: a sync run's Hardcover fetch (§3.4a.7 stage 3), whose write
+        decisions use only this same-run fetch. A failure is recorded as the copy's last
+        error, as a read-triggered one is, and raised."""
+        async with self._locks[profile]:
             try:
-                library = await self._clients[profile].library()
-                now = int(self._clock())
-                await self._db.write(replace_library, profile, library, now)
-            except (HardcoverError, sqlite3.Error, KeyError, TypeError) as exc:
-                # A database or shape error means Hardcover sent something the copy can't
-                # hold; like an unreachable Hardcover, the old copy is served meanwhile.
-                self._last[profile] = await self._failed(profile, exc)
-                return self._outcome(profile)
+                return await self._refresh(profile)
+            except _REFRESH_ERRORS as exc:
+                raise FetchFailed(_reason(exc)) from exc
+
+    async def _refresh(self, profile: str) -> Library:
+        # The caller holds the profile's lock.
+        self._attempts[profile] += 1
+        try:
+            library = await self._clients[profile].library()
+            now = int(self._clock())
+            await self._db.write(replace_library, profile, library, now)
+        except _REFRESH_ERRORS as exc:
+            self._last[profile] = await self._failed(profile, exc)
+            raise
+        log.info(
+            "refreshed the Hardcover mirror",
+            extra={
+                "event": "mirror_refreshed",
+                "profile": profile,
+                "user_books": len(library.user_books),
+                "cost": library.cost,
+            },
+        )
+        self._last[profile] = Freshness(now)
+        await self._follow(library.user_books, now)
+        return library
+
+    async def _follow(self, user_books: Iterable[Mapping[str, Any]], now: int) -> None:
+        """A fetch that shows a merged book moves the links and source rows on it to the book
+        it was merged into (§3.3.4, §3.4a.4 rule 7)."""
+        merged = {
+            ub["book_id"]: canonical
+            for ub in user_books
+            if (canonical := (ub.get("book") or {}).get("canonical_id"))
+        }
+        if not merged:
+            return
+        try:
+            moved = await self._db.write(follow_merges, merged, now)
+        except sqlite3.Error:
+            # The copy is current all the same; the next fetch tries the merges again.
+            log.exception("following Hardcover merges failed", extra={"event": "merges_failed"})
+            return
+        if moved:
             log.info(
-                "refreshed the Hardcover mirror",
-                extra={
-                    "event": "mirror_refreshed",
-                    "profile": profile,
-                    "user_books": len(library.user_books),
-                    "cost": library.cost,
-                },
+                "followed Hardcover merges onto the books they became",
+                extra={"event": "merges_followed", "count": moved},
             )
-            done = Freshness(now)
-            self._last[profile] = done
-            return done
 
     def _outcome(self, profile: str) -> Freshness:
         last = self._last[profile]
@@ -142,10 +197,8 @@ class Mirror:
         return last
 
     async def _failed(self, profile: str, exc: Exception) -> Freshness | NoMirror:
-        if isinstance(exc, HardcoverError):
-            reason = scrub(str(exc))
-        else:
-            reason = f"Hardcover sent data SyncShelf couldn't store ({type(exc).__name__})"
+        reason = _reason(exc)
+        if not isinstance(exc, HardcoverError):
             log.error(
                 "the Hardcover mirror couldn't store a refresh",
                 exc_info=True,
@@ -164,6 +217,13 @@ class Mirror:
                 f"failed: {reason}"
             )
         return Freshness(as_of, stale=True, stale_reason=reason)
+
+
+def _reason(exc: Exception) -> str:
+    """Why a refresh failed, safe to show and store."""
+    if isinstance(exc, HardcoverError):
+        return scrub(str(exc))
+    return f"Hardcover sent data SyncShelf couldn't store ({type(exc).__name__})"
 
 
 # --- the database side --------------------------------------------------------------------

@@ -12,6 +12,7 @@ dependencies = [
     "httpx2>=2.13",
     "mcp>=2.3,<3",
     "pyjwt[crypto]>=2.10",
+    "python-multipart>=0.0.32",
     "pyyaml>=6",
     "rapidfuzz>=3,<4",
     "starlette>=1.8,<2",
@@ -44,7 +45,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
 # Harness helpers in tests/, imported through pytest's pythonpath.
-known-local-folder = ["access_jwt", "cimd_docs", "clock", "fakes", "image", "invariants", "oauth_flow", "scrub", "serving"]
+known-local-folder = ["access_jwt", "cimd_docs", "clock", "fakes", "image", "invariants", "oauth_flow", "scrub", "serving", "sync_world"]
 
 [tool.pyright]
 include = ["src"]

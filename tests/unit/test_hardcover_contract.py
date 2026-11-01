@@ -18,6 +18,10 @@ import pytest
 from syncshelf.clients.hardcover import (
     BOOK,
     BOOKS_BY_ID,
+    BY_GOODREADS,
+    BY_ISBN10,
+    BY_ISBN13,
+    EDITION_FORMATS,
     GOALS,
     INSERT_USER_BOOK,
     LIBRARY,
@@ -188,3 +192,34 @@ async def test_a_read_status_insert_with_its_finish_date_matches_the_recording()
     for found in (result.data, live["data"]):
         (read,) = found["user_books"][0]["user_book_reads"]
         assert read["started_at"] is None and read["finished_at"]
+
+
+async def test_by_goodreads_matches_the_recording(fake: FakeHardcover) -> None:
+    fake.add_mapping("34873380", 7, 70, isbn_13="9780345539793", reading_format_id=4)
+    fake.add_mapping("1", 8)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(BY_GOODREADS, {"ids": ["34873380", "1", "404"]})
+    assert_same_shape(shape({"data": result.data}), recorded("by_goodreads"))
+    assert [m["external_id"] for m in result.data["book_mappings"]] == ["34873380", "1"]
+
+
+async def test_edition_formats_match_the_recording(fake: FakeHardcover) -> None:
+    fake.add_mapping("1", 7, 70, reading_format_id=4)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(EDITION_FORMATS, {"ids": [70, 404]})
+    assert_same_shape(shape({"data": result.data}), recorded("edition_formats"))
+    assert result.data["editions"] == [{"id": 70, "book_id": 7, "reading_format_id": 4}]
+
+
+@pytest.mark.parametrize(
+    ("query", "key", "name"),
+    [(BY_ISBN13, "isbn_13", "by_isbn13"), (BY_ISBN10, "isbn_10", "by_isbn10")],
+)
+async def test_isbn_lookups_match_the_recording(
+    fake: FakeHardcover, query: str, key: str, name: str
+) -> None:
+    fake.add_edition(70, 7, **{key: "9780345539793"}, reading_format_id=4)
+    client = HardcoverClient(URL, "t", gate=None, transport=fake.transport)
+    result = await client.execute(query, {"v": ["9780345539793", "0"]})
+    assert_same_shape(shape({"data": result.data}), recorded(name))
+    assert [e["id"] for e in result.data["editions"]] == [70]

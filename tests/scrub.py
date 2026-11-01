@@ -9,12 +9,15 @@ A fixture is a JSON file ``{"meta": {...}, "body": ...}``. The checker accepts i
 body is already a fixed point of :func:`scrub` and its metadata says when and against what it
 was recorded. ``tests/live/record.py`` writes fixtures through :func:`write_fixture`.
 
-Goodreads fixtures are the exception (#44): the shelf RSS feed is kept as **native XML** under
-``goodreads/``, so the parser is tested against the bytes Goodreads sends. Its metadata sits in
-a ``<name>.meta.json`` sidecar, and :func:`scrub_rss` holds its per-source rules: the catalog
-elements are kept, and everything personal becomes a placeholder that still parses.
+Goodreads fixtures are the exception (#44): the shelf RSS feed and the library export are kept
+**native** (XML and CSV) under ``goodreads/``, so the parsers are tested against the bytes
+Goodreads sends. Their metadata sits in a ``<name>.meta.json`` sidecar, and :func:`scrub_rss`
+and :func:`scrub_csv` hold the per-source rules: the catalog elements and columns are kept, and
+everything personal becomes a placeholder that still parses.
 """
 
+import csv
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -49,6 +52,7 @@ CATALOG: frozenset[str] = frozenset(
         "book_id",
         "edition_id",
         "author_id",
+        "external_id",
         "book.id",
         "books.id",
         "edition.id",
@@ -204,8 +208,7 @@ def check_tree(root: Path) -> dict[Path, list[str]]:
 # --- native Goodreads fixtures (#44) ------------------------------------------------------
 
 NATIVE_DIR = "goodreads"
-NATIVE_SUFFIXES = frozenset({".xml"})
-"""The CSV scrubber arrives with the CSV parser (#167); until then a ``.csv`` is refused."""
+NATIVE_SUFFIXES = frozenset({".xml", ".csv"})
 META_SUFFIX = ".meta.json"
 
 RSS_CATALOG: frozenset[str] = frozenset(
@@ -286,6 +289,68 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+CSV_CATALOG = frozenset(
+    {
+        "Book Id",
+        "Title",
+        "Author",
+        "Author l-f",
+        "Additional Authors",
+        "ISBN",
+        "ISBN13",
+        "Binding",
+        "Number of Pages",
+        "Year Published",
+        "Original Publication Year",
+    }
+)
+"""Library export columns kept verbatim."""
+PLACEHOLDER_CSV_DATE = "2000/01/01"
+CSV_PLACEHOLDERS = {
+    "My Rating": PLACEHOLDER_RATING,
+    "Date Read": PLACEHOLDER_CSV_DATE,
+    "Date Added": PLACEHOLDER_CSV_DATE,
+    "Bookshelves": PLACEHOLDER_SHELF,
+    "Bookshelves with positions": f"{PLACEHOLDER_SHELF} (#1)",
+    "Exclusive Shelf": PLACEHOLDER_SHELF,
+    "My Review": "",
+    "Spoiler": "",
+    "Private Notes": "",
+    "Read Count": "0",
+    "Owned Copies": "0",
+}
+"""What each personal column becomes when it has a value; any other column becomes
+:data:`PLACEHOLDER_TEXT`. Empty cells stay empty."""
+
+
+def scrub_csv(text: str) -> str:
+    """Return a Goodreads library export with every personal cell replaced.
+
+    The catalog columns (:data:`CSV_CATALOG`) are kept; a personal cell with a value becomes
+    a placeholder in the column's own form (:data:`CSV_PLACEHOLDERS`): ``YYYY/MM/DD`` dates,
+    a ``0`` rating, a placeholder shelf, empty reviews and notes. Goodreads quotes minimally
+    with LF endings, which is how this writes it back, so the real form is kept.
+    """
+    rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    if not rows:
+        return text
+    header, *body = rows
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(header)
+    for row in body:
+        writer.writerow(
+            cell if not cell or name in CSV_CATALOG
+            else CSV_PLACEHOLDERS.get(name, PLACEHOLDER_TEXT)
+            for name, cell in zip(header, row, strict=True)
+        )  # fmt: skip
+    return out.getvalue()
+
+
+def _scrub_native(path: Path, text: str) -> str:
+    return scrub_csv(text) if path.suffix == ".csv" else scrub_rss(text)
+
+
 def write_native_fixture(
     path: Path,
     text: str,
@@ -294,14 +359,15 @@ def write_native_fixture(
     server_version: str,
     provenance: str = "live",
 ) -> None:
-    """Scrub a Goodreads RSS document and write it to ``path`` (in a ``goodreads/``
-    directory), with its metadata in the ``.meta.json`` sidecar beside it."""
+    """Scrub a Goodreads RSS document or library export and write it to ``path`` (an
+    ``.xml`` or ``.csv`` in a ``goodreads/`` directory), with its metadata in the
+    ``.meta.json`` sidecar beside it."""
     if provenance not in PROVENANCES:
         raise ValueError(f"provenance must be one of {sorted(PROVENANCES)}")
     if path.parent.name != NATIVE_DIR or path.suffix not in NATIVE_SUFFIXES:
         raise ValueError(f"a native fixture is a {sorted(NATIVE_SUFFIXES)} file in {NATIVE_DIR}/")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(scrub_rss(text), encoding="utf-8", newline="\n")
+    path.write_text(_scrub_native(path, text), encoding="utf-8", newline="\n")
     meta = {"recorded_at": recorded_at, "server_version": server_version, "provenance": provenance}
     sidecar = path.with_name(path.name + META_SUFFIX)
     sidecar.write_text(json.dumps({"meta": meta}, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -323,12 +389,15 @@ def _check_native(path: Path) -> list[str]:
         else:
             problems.extend(_check_meta(name, doc["meta"]))
     try:
-        text = path.read_text(encoding="utf-8")
-        scrubbed = scrub_rss(text)
-    except (UnicodeDecodeError, ET.ParseError) as exc:
-        return [*problems, f"{name}: not valid XML ({exc})"]
+        with path.open(encoding="utf-8", newline="") as file:
+            text = file.read()
+        scrubbed = _scrub_native(path, text)
+    except (UnicodeDecodeError, ET.ParseError, csv.Error, ValueError) as exc:
+        return [*problems, f"{name}: not valid {path.suffix[1:].upper()} ({exc})"]
     if scrubbed != text:
-        problems.append(f"{name}: the feed is not scrubbed")
+        problems.append(
+            f"{name}: the {'export' if path.suffix == '.csv' else 'feed'} is not scrubbed"
+        )
     problems.extend(_personal_values(name, [text]))
     return problems
 

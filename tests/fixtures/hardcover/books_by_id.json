@@ -1,6 +1,6 @@
 {
   "meta": {
-    "recorded_at": "2026-10-18",
+    "recorded_at": "2026-10-23",
     "server_version": "api.hardcover.app/v1 (sends no version header)",
     "provenance": "live"
   },
@@ -11,9 +11,11 @@
           "id": 1464466,
           "title": "This Inevitable Ruin",
           "subtitle": "Dungeon Crawler Carl, Book 7",
+          "slug": "scrubbed",
           "release_year": 0,
           "rating": 0.0,
           "pages": 0,
+          "canonical_id": null,
           "cached_contributors": [
             {
               "author": {

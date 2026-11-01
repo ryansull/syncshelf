@@ -1,6 +1,8 @@
 """The Goodreads RSS fixture scrubber and checker (SPEC §2.9, #44): native XML, per-source keep
 rules, and placeholders that still parse as the feed."""
 
+import csv
+import io
 import json
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -14,6 +16,7 @@ from scrub import (
     PLACEHOLDER_URL,
     check_fixture,
     check_tree,
+    scrub_csv,
     scrub_rss,
     write_native_fixture,
 )
@@ -183,3 +186,72 @@ class TestNativeFixtures:
         path = self.write(tmp_path)
         path.write_text(bad, encoding="utf-8")
         assert any("not valid XML" in p for p in check_fixture(path))
+
+
+# A library export row with every personal column set; the values are made up but realistic.
+EXPORT = (
+    "Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,My Rating,Publisher,Binding,"
+    "Number of Pages,Year Published,Original Publication Year,Date Read,Date Added,Bookshelves,"
+    "Bookshelves with positions,Exclusive Shelf,My Review,Spoiler,Private Notes,Read Count,"
+    "Owned Copies\n"
+    '12345678,"Example Book (Example Series, #2)",Ann Author,"Author, Ann",,"=""044101359X""",'
+    '"=""9780441013593""",4,Some Press,Kindle Edition,320,2020,2019,2026/03/02,2026/01/05,'
+    '"secret-shelf, faves","secret-shelf (#3), faves (#9)",read,"Loved it,\nreally.",true,'
+    "my note,2,1\n"
+    '87654321,Plain Book,Bo Writer,"Writer, Bo",,"=""""","=""""",0,,Paperback,,,,,2026/02/01,,,'
+    "to-read,,,,0,0\n"
+)
+
+
+class TestCsv:
+    def test_catalog_columns_are_kept(self) -> None:
+        scrubbed = scrub_csv(EXPORT)
+        for kept in ("12345678", '"Example Book (Example Series, #2)"', '"=""044101359X"""',
+                     '"=""9780441013593"""', "Kindle Edition", "320,2020,2019"):  # fmt: skip
+            assert kept in scrubbed
+
+    def test_personal_columns_become_placeholders_that_parse(self) -> None:
+        (row, plain) = list(csv.DictReader(io.StringIO(scrub_csv(EXPORT), newline="")))
+        assert (row["My Rating"], row["Date Read"], row["Date Added"]) == (
+            "0",
+            "2000/01/01",
+            "2000/01/01",
+        )
+        assert (row["Bookshelves"], row["Exclusive Shelf"]) == (PLACEHOLDER_SHELF,) * 2
+        assert (row["My Review"], row["Spoiler"], row["Private Notes"]) == ("", "", "")
+        assert (row["Publisher"], row["Read Count"]) == (PLACEHOLDER_TEXT, "0")
+        assert plain["Date Read"] == plain["Publisher"] == ""  # empty stays empty
+
+    def test_no_personal_value_survives(self) -> None:
+        scrubbed = scrub_csv(EXPORT)
+        for personal in (
+            "secret-shelf",
+            "faves",
+            "Loved it",
+            "my note",
+            "2026/03/02",
+            "Some Press",
+        ):
+            assert personal not in scrubbed
+
+    def test_scrubbing_is_a_fixed_point_in_goodreads_form(self) -> None:
+        once = scrub_csv(EXPORT)
+        assert scrub_csv(once) == once
+        assert "\r" not in once and once.endswith("\n")
+
+    def test_a_written_export_passes_the_checker(self, tmp_path: Path) -> None:
+        path = tmp_path / "goodreads" / "library_export.csv"
+        write_native_fixture(path, EXPORT, recorded_at="2026-10-17", server_version="export")
+        assert check_tree(tmp_path) == {}
+
+    def test_an_unscrubbed_export_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "goodreads" / "library_export.csv"
+        write_native_fixture(path, EXPORT, recorded_at="2026-10-17", server_version="export")
+        path.write_text(EXPORT, encoding="utf-8", newline="\n")
+        assert check_fixture(path) == ["library_export.csv: the export is not scrubbed"]
+
+    def test_csv_outside_the_goodreads_directory_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "hardcover" / "x.csv"
+        path.parent.mkdir()
+        path.write_text(EXPORT, encoding="utf-8")
+        assert check_fixture(path) == ["x.csv: only .json fixtures are supported here"]
