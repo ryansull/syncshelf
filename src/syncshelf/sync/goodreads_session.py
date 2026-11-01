@@ -29,9 +29,12 @@ __all__ = [
     "INTERRUPTED",
     "PENDING_STATES",
     "SIGN_IN_URL",
+    "AUTO_SIGN_IN_EVERY",
+    "STICKY_STATES",
     "GOODREADS_DIR",
     "JAR_MODE",
     "Cookie",
+    "AutoSignIn",
     "Browser",
     "NoSidecar",
     "NotWaiting",
@@ -45,6 +48,8 @@ __all__ = [
     "SignInOutcome",
     "SignInResult",
     "attempt_sign_in",
+    "auto_sign_in_state",
+    "may_sign_in_again",
     "classify",
     "harvest",
     "jar_path",
@@ -52,6 +57,7 @@ __all__ = [
     "reconcile_configured",
     "record",
     "reset_pending",
+    "stamp_auto_sign_in",
     "save_jar",
 ]
 
@@ -59,9 +65,12 @@ log = logging.getLogger(__name__)
 
 
 class Writer(Protocol):
-    """The database writer this module needs: :meth:`syncshelf.db.Database.write`."""
+    """The database access this module needs: :class:`syncshelf.db.Database`'s two
+    methods."""
 
     async def write(self, unit: Any, /, *args: Any) -> Any: ...
+
+    async def read(self, unit: Any, /, *args: Any) -> Any: ...
 
 
 SessionState = Literal[
@@ -719,6 +728,112 @@ class SignIns:
         await self._db.write(record, profile, result.state, int(self._clock()), result.detail)
         return result
 
+    async def attempt_unattended(
+        self, profile: str, email: str, password: str, now: int
+    ) -> AutoSignIn:
+        """Sign in again without a person, when a scheduled export found the session expired.
+
+        Refused outright past a sticky state, and at most once per 24 h per profile, both
+        checked before a browser is touched (:func:`may_sign_in_again`).
+
+        **Any prompt abandons the attempt.** An approval or a code needs a person, and nobody
+        is watching, so the browser is released and the session becomes ``needs_sign_in`` —
+        rather than left waiting for an approval that will never come (§3.4b.2). The attempt is
+        stamped either way, so a profile that keeps stopping at a prompt is not retried nightly.
+        """
+        if self._browser is None:
+            raise NoSidecar("there is no browser sidecar configured")
+        state, last = await self._db.read(auto_sign_in_state, profile)
+        if (refusal := may_sign_in_again(state, last, now)) is not None:
+            log.info(
+                "not signing in to Goodreads unattended",
+                extra={
+                    "event": "goodreads_auto_sign_in_refused",
+                    "profile": profile,
+                    "reason": refusal,
+                },
+            )
+            return AutoSignIn(state or "needs_sign_in", attempted=False, reason=refusal)
+
+        await self._db.write(stamp_auto_sign_in, profile, now)
+        result = await self.start(profile, email, password)
+        if result.state in PENDING_STATES:
+            # Nobody is watching, so the wait cannot be answered. Let it go and say so.
+            await self._forget(profile)
+            await self._db.write(
+                record,
+                profile,
+                "needs_sign_in",
+                now,
+                "an unattended sign-in needed a person, so it stopped",
+            )
+            return AutoSignIn("needs_sign_in", attempted=True, reason="the sign-in needed a person")
+        return AutoSignIn(result.state, attempted=True, reason=result.detail)
+
     async def _forget(self, profile: str) -> None:
         if (session := self._pending.pop(profile, None)) is not None:
             await session.close()
+
+
+# --- signing in again, unattended (§3.4b.2) -------------------------------------------------
+
+AUTO_SIGN_IN_EVERY = 24 * 3600
+"""At most one unattended sign-in per profile in this many seconds (§3.4b.2)."""
+
+STICKY_STATES: tuple[SessionState, ...] = ("challenged", "bad_credentials", "disabled")
+"""States no unattended sign-in may pass.
+
+``challenged`` and ``bad_credentials`` are sticky until a person runs ``goodreads_sign_in``
+(§3.4b.2): a challenge must not be hammered, and a rejected password must never be retried,
+or SyncShelf could lock the account. ``disabled`` has no credentials to try.
+"""
+
+
+@dataclass(frozen=True)
+class AutoSignIn:
+    """What one unattended attempt did."""
+
+    state: SessionState
+    attempted: bool
+    """``False`` when it was refused before touching a browser."""
+    reason: str | None = None
+    """Why it was refused, or the outcome's scrubbed detail."""
+
+
+def may_sign_in_again(state: SessionState | None, last_attempt: int | None, now: int) -> str | None:
+    """Why an unattended sign-in is not allowed now, or ``None`` when it is (§3.4b.2).
+
+    A pure function so the two rules that protect the account — never past a sticky state, and
+    never more than once a day — can be read and tested on their own.
+    """
+    if state in STICKY_STATES:
+        return f"the session is {state}, which only a person can clear"
+    if last_attempt is not None and now - last_attempt < AUTO_SIGN_IN_EVERY:
+        hours = AUTO_SIGN_IN_EVERY // 3600
+        return f"an unattended sign-in was already tried within {hours} hours"
+    return None
+
+
+def auto_sign_in_state(
+    conn: sqlite3.Connection, profile: str
+) -> tuple[SessionState | None, int | None]:
+    """``profile``'s session state and when an unattended sign-in was last tried."""
+    row = conn.execute(
+        "SELECT state, last_auto_sign_in_at FROM goodreads_sessions WHERE profile = ?",
+        (profile,),
+    ).fetchone()
+    return (None, None) if row is None else (row[0], row[1])
+
+
+def stamp_auto_sign_in(conn: sqlite3.Connection, profile: str, now: int) -> None:
+    """Record that an unattended sign-in was tried, whatever came of it.
+
+    The cap counts **attempts**, not successes: a profile whose sign-in keeps stopping at a
+    prompt must not be retried every night window either.
+    """
+    conn.execute(
+        "INSERT INTO goodreads_sessions (profile, state, state_since, last_auto_sign_in_at) "
+        "VALUES (?, 'needs_sign_in', ?, ?) "
+        "ON CONFLICT (profile) DO UPDATE SET last_auto_sign_in_at = ?",
+        (profile, now, now, now),
+    )
