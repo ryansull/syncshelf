@@ -24,7 +24,13 @@ from clock import FakeClock
 from fakes.browser import FakeBrowser, signed_in
 from fakes.goodreads import FakeGoodreads
 from fakes.hardcover import FakeHardcover
-from serving import HARDCOVER_URL, hardcover_token, make_config
+from serving import (
+    HARDCOVER_URL,
+    SIDECAR,
+    credential_env,
+    hardcover_token,
+    make_config,
+)
 
 GR_USER = "31415926"
 HC_USER = 42
@@ -33,9 +39,6 @@ GR_USERS = {"alice": GR_USER, "bob": "27182818"}
 HC_USERS = {"alice": HC_USER, "bob": 43}
 """Each profile's Hardcover user id."""
 SHELF_MAP = "{read: 3, currently-reading: 2, to-read: 1, did-not-finish: 5}"
-GR_EMAIL = "reader@example.com"
-GR_PASSWORD = "a-test-password-never-shown"
-"""The credentials a CSV world's profiles carry. Placeholders only (§2.6)."""
 
 
 @dataclass
@@ -96,8 +99,8 @@ async def world(
         tmp_path,
         profiles=names,
         profile_yaml=bodies,
-        browser_ws="ws://sidecar.invalid:3000" if csv else None,
-        environ={"GR_EMAIL": GR_EMAIL, "GR_PASSWORD": GR_PASSWORD} if csv else None,
+        browser_ws=SIDECAR if csv else None,
+        environ=credential_env() if csv else None,
     )
 
     def route(request: httpx2.Request) -> httpx2.Response:

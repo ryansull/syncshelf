@@ -130,7 +130,8 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   image (an older release started on it).
 - **`/healthz`** (keep it on the LAN) answers 200 whenever the database does, with
   `"status": "ok"` or `"attention"` and each profile's attention codes (`quarantined`,
-  `hardcover_bug`, `source_stale`), for Uptime Kuma or Home Assistant to alert on. It's 503
+  `hardcover_bug`, `source_stale`, and from phase 4b `goodreads_session` when a profile needs
+  to sign in to Goodreads again), for Uptime Kuma or Home Assistant to alert on. It's 503
   only when the database fails, so use it for the container's liveness: a Goodreads CAPTCHA
   never restarts the service. SyncShelf sends no notifications itself.
 - **`/ingest/goodreads-csv`** (keep it on the LAN too) takes a Goodreads library export

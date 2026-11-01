@@ -13,6 +13,7 @@ import pytest
 
 from syncshelf.db import Database
 from syncshelf.sync.goodreads_session import (
+    ADVICE,
     Cookie,
     NoSidecar,
     NotWaiting,
@@ -21,7 +22,6 @@ from syncshelf.sync.goodreads_session import (
     load_jar,
     record,
 )
-from syncshelf.tools.goodreads import _NEXT
 
 from clock import FakeClock
 from fakes.browser import FakeBrowser, prompting, signed_in
@@ -230,14 +230,14 @@ class TestWhatThePersonIsTold:
             "bad_credentials",
             "disabled",
         ):
-            assert _NEXT[state]  # type: ignore[index]
+            assert ADVICE[state]  # type: ignore[index]
 
     def test_a_challenge_points_at_the_manual_fallback(self) -> None:
         # §3.4a.10's action for `goodreads_session` when challenged.
-        assert "by hand" in _NEXT["challenged"]
+        assert "by hand" in ADVICE["challenged"]
 
     def test_a_rejected_password_says_it_will_not_be_retried(self) -> None:
-        assert "not try it again" in _NEXT["bad_credentials"]
+        assert "not try it again" in ADVICE["bad_credentials"]
 
 
 class TestThroughTheApp:

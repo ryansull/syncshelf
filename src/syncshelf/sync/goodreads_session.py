@@ -23,10 +23,12 @@ from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 from urllib.parse import urlsplit
 
 __all__ = [
+    "ADVICE",
     "AMAZON_COOKIES",
     "APPROVAL_WAIT",
     "GOODREADS_SUFFIX",
     "INTERRUPTED",
+    "NEEDS_A_PERSON",
     "PENDING_STATES",
     "SIGN_IN_URL",
     "AUTO_SIGN_IN_EVERY",
@@ -792,6 +794,39 @@ class SignIns:
     async def _forget(self, profile: str) -> None:
         if (session := self._pending.pop(profile, None)) is not None:
             await session.close()
+
+
+ADVICE: dict[SessionState, str] = {
+    "ok": "Signed in. The library export will run on its own schedule from now on.",
+    "awaiting_approval": (
+        "Approve the sign-in on your device, then check sync_status. The browser waits about "
+        "five minutes."
+    ),
+    "awaiting_code": "Tell me the one-time code and I'll pass it to goodreads_verify.",
+    "challenged": (
+        "Goodreads showed a bot check, so SyncShelf has stopped. Export your library by hand "
+        "from Goodreads' Import and export page and upload it, or try signing in again later."
+    ),
+    "bad_credentials": (
+        "Goodreads rejected the password, and SyncShelf will not try it again. Fix the "
+        "configured password, then sign in again."
+    ),
+    "needs_sign_in": "Run goodreads_sign_in to start again.",
+    "disabled": "This profile has no Goodreads credentials configured.",
+}
+"""What each state asks of the person.
+
+One map, read by the sign-in tools (§3.4b.6) and by §3.4a.10's ``goodreads_session`` action, so
+a person is never told two different things about the same state.
+"""
+
+NEEDS_A_PERSON: tuple[SessionState, ...] = ("needs_sign_in", "challenged", "bad_credentials")
+"""The states that raise ``goodreads_session`` attention (§3.4a.10).
+
+Not the two waiting states: a sign-in part-way through is somebody already dealing with it,
+and startup clears them anyway (#230). Not ``disabled``, which is a profile that never asked
+for the CSV source.
+"""
 
 
 # --- signing in again, unattended (§3.4b.2) -------------------------------------------------

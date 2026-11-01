@@ -35,6 +35,22 @@ CLAUDE_CODE = "https://claude.ai/oauth/claude-code-client-metadata"
 """The Claude Code ``client_id`` (§3.2.1), which test grants are issued to."""
 
 
+GR_EMAIL = "reader@example.com"
+GR_PASSWORD = "a-test-password-never-shown"
+"""Goodreads credentials for a profile with a CSV source. Placeholders only (§2.6).
+
+A profile file may not hold a secret outright, so a body refers to these as ``${GR_EMAIL}``
+and ``${GR_PASSWORD}`` and passes :func:`credential_env` as ``environ``.
+"""
+SIDECAR = "ws://sidecar.invalid:3000"
+"""A browser sidecar URL that resolves nowhere: no test opens a real one (§3.4b.7)."""
+
+
+def credential_env() -> dict[str, str]:
+    """The variables a profile body's ``${GR_EMAIL}`` and ``${GR_PASSWORD}`` stand for."""
+    return {"GR_EMAIL": GR_EMAIL, "GR_PASSWORD": GR_PASSWORD}
+
+
 def make_config(
     tmp_path: Path,
     public_url: str = "http://localhost:8000",

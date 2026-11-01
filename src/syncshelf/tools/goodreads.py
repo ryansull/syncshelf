@@ -15,7 +15,7 @@ from typing import TypedDict
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from syncshelf.sync.goodreads_session import NoSidecar, NotWaiting, SessionState
+from syncshelf.sync.goodreads_session import ADVICE, NoSidecar, NotWaiting, SessionState
 from syncshelf.tools import REGISTRY, current_profile, services
 
 __all__ = ["SignInState", "goodreads_sign_in", "goodreads_verify"]
@@ -29,27 +29,6 @@ class SignInState(TypedDict):
     """A scrubbed reason: never a password, a cookie or the code."""
     next: str
     """What the person does now, in words Claude can pass on."""
-
-
-_NEXT: dict[SessionState, str] = {
-    "ok": "Signed in. The library export will run on its own schedule from now on.",
-    "awaiting_approval": (
-        "Approve the sign-in on your device, then check sync_status. The browser waits about "
-        "five minutes."
-    ),
-    "awaiting_code": "Tell me the one-time code and I'll pass it to goodreads_verify.",
-    "challenged": (
-        "Goodreads showed a bot check, so SyncShelf has stopped. Export your library by hand "
-        "from Goodreads' Import and export page and upload it, or try signing in again later."
-    ),
-    "bad_credentials": (
-        "Goodreads rejected the password, and SyncShelf will not try it again. Fix the "
-        "configured password, then sign in again."
-    ),
-    "needs_sign_in": "Run goodreads_sign_in to start again.",
-    "disabled": "This profile has no Goodreads credentials configured.",
-}
-"""What each state asks of the person (§3.4b.6, and §3.4a.10's action for `goodreads_session`)."""
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=False))
@@ -78,7 +57,7 @@ async def goodreads_sign_in() -> SignInState:
             "This SyncShelf has no browser sidecar configured (services.browser_ws), so it "
             "cannot sign in to Goodreads. Your RSS sync is unaffected."
         ) from error
-    return SignInState(state=result.state, detail=result.detail, next=_NEXT[result.state])
+    return SignInState(state=result.state, detail=result.detail, next=ADVICE[result.state])
 
 
 @REGISTRY.tool(annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=False))
@@ -97,4 +76,4 @@ async def goodreads_verify(code: str) -> SignInState:
         raise ToolError(
             "No sign-in of yours is waiting for a code. Run goodreads_sign_in to start one."
         ) from error
-    return SignInState(state=result.state, detail=result.detail, next=_NEXT[result.state])
+    return SignInState(state=result.state, detail=result.detail, next=ADVICE[result.state])
