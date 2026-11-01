@@ -33,6 +33,7 @@ SyncShelf is a self-hosted Python service for a two-person household. It's a rem
 | Record Goodreads RSS fixtures (live reads) | `uv run python tests/live/record.py goodreads_rss --user-var GOODREADS_USER_ID_ALICE` |
 | Record the Goodreads CSV fixture (from a downloaded export) | `uv run python tests/live/record.py goodreads_csv --file local/goodreads_library_export.csv` |
 | Calibrate the matcher (live reads; pairs to label in `local/`) | `uv run python tests/live/calibrate_matcher.py --token-var HARDCOVER_TOKEN_ALICE` |
+| Attended Goodreads sign-in findings (phase 4b opening test) | `uv run python tests/live/goodreads_signin.py --email-var GOODREADS_EMAIL_ALICE --password-var GOODREADS_PASSWORD_ALICE --ws ws://localhost:3000/` |
 | All pre-commit hooks (gitleaks, private denylist) | `uv run pre-commit run --all-files` |
 | Check changelog fragments | `uv run python scripts/changelog.py check` |
 | Assemble the changelog (release-prep PR only) | `uv run python scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD --title "Phase N: …"` |
