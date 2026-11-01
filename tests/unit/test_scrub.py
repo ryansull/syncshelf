@@ -198,11 +198,13 @@ class TestChecker:
         assert check_fixture(path) != []
 
     def test_rejects_non_json_fixture_files(self, tmp_path: Path) -> None:
-        # Scrubbing for XML and CSV bodies is not decided yet, so they cannot be committed.
-        path = tmp_path / "goodreads" / "shelf.xml"
+        # Native XML is accepted only under goodreads/ (#44).
+        path = tmp_path / "abs" / "shelf.xml"
         path.parent.mkdir()
         path.write_text("<rss/>", encoding="utf-8")
-        assert check_tree(tmp_path) == {path: [f"{path.name}: only .json fixtures are supported"]}
+        assert check_tree(tmp_path) == {
+            path: [f"{path.name}: only .json fixtures are supported here"]
+        }
 
     def test_check_tree_reports_only_failures_and_ignores_gitkeep(self, tmp_path: Path) -> None:
         self.fixture(tmp_path, RECORDED)

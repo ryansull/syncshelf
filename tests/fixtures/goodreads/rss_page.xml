@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:xhtml="http://www.w3.org/1999/xhtml" version="2.0">
+  <channel>
+    <xhtml:meta name="robots" content="noindex" />
+    <title>scrubbed's bookshelf: all</title>
+    <copyright>scrubbed</copyright>
+    <link>https://example.com/</link>
+    <atom:link href="https://example.com/" rel="self" type="application/rss+xml" />
+    <description>scrubbed</description>
+    <language>en-US</language>
+    <lastBuildDate>Sat, 01 Jan 2000 00:00:00 -0700</lastBuildDate>
+    <ttl>60</ttl>
+    <image>
+      <title>scrubbed's bookshelf: all</title>
+      <link>https://example.com/</link>
+      <width>144</width>
+      <height>41</height>
+      <url>https://example.com/</url>
+    </image>
+    
+  <item>
+    <guid>https://example.com/</guid>
+    <pubDate>Sat, 01 Jan 2000 00:00:00 -0700</pubDate>
+    <title>A Parade of Horribles (Dungeon Crawler Carl, #8)</title>
+    <link>https://example.com/</link>
+    <book_id>247031753</book_id>
+    <book_image_url>https://example.com/</book_image_url>
+    <book_small_image_url>https://example.com/</book_small_image_url>
+    <book_medium_image_url>https://example.com/</book_medium_image_url>
+    <book_large_image_url>https://example.com/</book_large_image_url>
+    <book_description>scrubbed</book_description>
+    <book id="247031753">
+      <num_pages>784</num_pages>
+    </book>
+    <author_name>Matt Dinniman</author_name>
+    <isbn />
+    <user_name>scrubbed</user_name>
+    <user_rating>0</user_rating>
+    <user_read_at />
+    <user_date_added>Sat, 01 Jan 2000 00:00:00 -0700</user_date_added>
+    <user_date_created>Sat, 01 Jan 2000 00:00:00 -0700</user_date_created>
+    <user_shelves>scrubbed</user_shelves>
+    <user_review />
+    <average_rating>scrubbed</average_rating>
+    <book_published>2026</book_published>
+    <description>scrubbed</description>
+  </item>
+  <item>
+    <guid>https://example.com/</guid>
+    <pubDate>Sat, 01 Jan 2000 00:00:00 -0800</pubDate>
+    <title>Red Rising (Red Rising Saga, #1)</title>
+    <link>https://example.com/</link>
+    <book_id>34873380</book_id>
+    <book_image_url>https://example.com/</book_image_url>
+    <book_small_image_url>https://example.com/</book_small_image_url>
+    <book_medium_image_url>https://example.com/</book_medium_image_url>
+    <book_large_image_url>https://example.com/</book_large_image_url>
+    <book_description>scrubbed</book_description>
+    <book id="34873380">
+      <num_pages>401</num_pages>
+    </book>
+    <author_name>Pierce Brown</author_name>
+    <isbn />
+    <user_name>scrubbed</user_name>
+    <user_rating>0</user_rating>
+    <user_read_at>Sat, 01 Jan 2000 00:00:00 +0000</user_read_at>
+    <user_date_added>Sat, 01 Jan 2000 00:00:00 -0800</user_date_added>
+    <user_date_created>Sat, 01 Jan 2000 00:00:00 -0800</user_date_created>
+    <user_shelves />
+    <user_review />
+    <average_rating>scrubbed</average_rating>
+    <book_published>2014</book_published>
+    <description>scrubbed</description>
+  </item>
+  <item>
+    <guid>https://example.com/</guid>
+    <pubDate>Sat, 01 Jan 2000 00:00:00 -0800</pubDate>
+    <title>He Who Fights with Monsters 1 (He Who Fights with Monsters, #1)</title>
+    <link>https://example.com/</link>
+    <book_id>57189884</book_id>
+    <book_image_url>https://example.com/</book_image_url>
+    <book_small_image_url>https://example.com/</book_small_image_url>
+    <book_medium_image_url>https://example.com/</book_medium_image_url>
+    <book_large_image_url>https://example.com/</book_large_image_url>
+    <book_description>scrubbed</book_description>
+    <book id="57189884">
+      <num_pages>680</num_pages>
+    </book>
+    <author_name>Shirtaloon</author_name>
+    <isbn />
+    <user_name>scrubbed</user_name>
+    <user_rating>0</user_rating>
+    <user_read_at />
+    <user_date_added>Sat, 01 Jan 2000 00:00:00 -0800</user_date_added>
+    <user_date_created>Sat, 01 Jan 2000 00:00:00 -0800</user_date_created>
+    <user_shelves>scrubbed</user_shelves>
+    <user_review />
+    <average_rating>scrubbed</average_rating>
+    <book_published>2021</book_published>
+    <description>scrubbed</description>
+  </item>
+
+  </channel>
+</rss>
