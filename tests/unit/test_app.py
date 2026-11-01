@@ -128,6 +128,38 @@ class TestLifespan:
         everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
         assert SECRET not in everything
 
+    async def test_startup_resets_a_sign_in_left_waiting(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        # Only a dead process can leave a browser waiting, so the row must not keep claiming
+        # a wait that nothing can finish (SPEC §3.4b.2, #230).
+        caplog.set_level(logging.INFO)
+        goodreads = (
+            '{goodreads: {user_id: "1", shelf_map: {read: 3}, '
+            'email: "${GR_EMAIL}", password: "${GR_PASSWORD}"}}'
+        )
+        config = make_config(
+            tmp_path,
+            profiles=("alice",),
+            profile_yaml={"alice": goodreads},
+            browser_ws="ws://browser:3000/",
+            environ={"GR_EMAIL": "reader@example.com", "GR_PASSWORD": "a-test-password"},
+        )
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        db_file = data_dir / "syncshelf.db"
+        with closing(sqlite3.connect(db_file)) as conn:
+            conn.execute(
+                "UPDATE goodreads_sessions SET state = 'awaiting_code' WHERE profile = 'alice'"
+            )
+            conn.commit()
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(db_file)) as conn:
+            rows = dict(conn.execute("SELECT profile, state FROM goodreads_sessions"))
+        assert rows == {"alice": "needs_sign_in"}
+        assert "goodreads_sign_ins_reset" in [getattr(r, "event", None) for r in caplog.records]
+
     async def test_startup_disables_a_profile_with_no_goodreads_credentials(
         self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
     ) -> None:
