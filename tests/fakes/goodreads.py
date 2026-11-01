@@ -293,3 +293,42 @@ def _fault(fault: Fault, user: _User | None) -> httpx2.Response:
         )
     # wrong_shelf: a valid feed, but for a shelf SyncShelf didn't ask for.
     return _feed(user.name if user else "Alice", "to-read", [])
+
+
+def import_page(
+    *,
+    user_id: str = "31415926",
+    export_at: str | None = None,
+    export_id: str | None = None,
+    csrf: str = "fake-csrf-token",
+    authenticity: bool = False,
+    link_text: str | None = None,
+) -> str:
+    """The Goodreads import page (§3.4b.4 step 1), as the spec describes it.
+
+    **Synthesised, not recorded.** Recording the real page needs a live session, which is what
+    the attended opening test (#219) exists to obtain, and the fixture checker takes only
+    ``.xml`` and ``.csv`` under ``goodreads/`` today (#239). Until both are settled, the page is
+    built here from what §3.4b.4 documents: a CSRF token (as a meta tag, or a hidden
+    ``authenticity_token`` when ``authenticity``), a form posting to
+    ``/review_porter/export/<user_id>``, and a ``div#exportFile`` link when ``export_at`` is set.
+
+    ``export_at`` is the link's ``MM/DD/YYYY - HH:MM`` text; ``link_text`` overrides the whole
+    text, for the unreadable-date case.
+    """
+    token = (
+        f'<input type="hidden" name="authenticity_token" value="{csrf}">'
+        if authenticity
+        else f'<meta name="csrf-token" content="{csrf}">'
+    )
+    export = ""
+    if export_at is not None or link_text is not None:
+        href = f"/review_porter/export/{export_id or user_id}/goodreads_export.csv"
+        text = link_text if link_text is not None else f"Your export from {export_at}"
+        export = f'<div id="exportFile"><a href="{href}">{text}</a></div>'
+    return (
+        f"<html><head>{token}</head><body>"
+        f'<form action="/review_porter/export/{user_id}" method="post">'
+        '<input type="submit" value="Export Library"></form>'
+        f"{export}</body></html>"
+    )

@@ -24,7 +24,11 @@ and path only.
 """
 
 import logging
+import re
 from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, tzinfo
+from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
 import httpx2
@@ -34,11 +38,17 @@ from syncshelf.sync.goodreads_session import Cookie, CookieJar
 
 __all__ = [
     "BASE",
+    "IMPORT_PATH",
+    "REUSE_WITHIN",
     "MAX_REDIRECTS",
     "SIGN_IN_PATHS",
     "Challenged",
+    "ExistingExport",
     "ExportError",
     "GoodreadsExport",
+    "ImportPage",
+    "ImportPageError",
+    "parse_import_page",
     "SessionExpired",
 ]
 
@@ -206,3 +216,153 @@ def _to_jar(cookies: httpx2.Cookies) -> CookieJar:
             cookie["secure"] = True
         found.append(cookie)
     return CookieJar(tuple(sorted(found, key=lambda c: (c["name"], c["domain"]))))
+
+
+# --- the import page (§3.4b.4 step 1) -------------------------------------------------------
+
+IMPORT_PATH = "/review/import"
+"""The page that carries the CSRF token, the user id and any existing export."""
+
+REUSE_WITHIN = timedelta(hours=24)
+"""§3.4b.4 step 2: an existing export younger than this is reused rather than re-triggered.
+
+Triggering **deletes the previous file**, so reuse is not only cheaper, it is the only way to
+avoid destroying a good export to make an equivalent one.
+"""
+
+_LINK_TEXT = re.compile(r"Your export from\s+(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}:\d{2})")
+_LINK_FORMAT = "%m/%d/%Y - %H:%M"
+_EXPORT_PATH = re.compile(r"^/review_porter/export/(\d+)")
+
+
+class ImportPageError(ExportError):
+    """The import page could not be read.
+
+    §3.4b.4 notes the rest of Goodreads is migrating to Next.js, so this scraping is the part
+    expected to break first. The message names what was missing, so a failure says why.
+    """
+
+
+@dataclass(frozen=True)
+class ExistingExport:
+    """The export Goodreads already has, from the ``div#exportFile`` link."""
+
+    path: str
+    """Where to download it, as a Goodreads path."""
+    generated_at: datetime
+    """When Goodreads says it was generated, read in the profile's timezone.
+
+    §3.4b.4 says to confirm that timezone in the attended opening test (#219); until then the
+    profile's configured ``timezone`` is what the link text is read in.
+    """
+
+    def fresh_at(self, now: datetime) -> bool:
+        """Whether this export is young enough to reuse at ``now`` (§3.4b.4 step 2)."""
+        return now - self.generated_at < REUSE_WITHIN
+
+
+@dataclass(frozen=True)
+class ImportPage:
+    """What the import page offers before any export is triggered."""
+
+    csrf_token: str = field(repr=False)
+    """Never logged: it authorises the trigger."""
+    user_id: str
+    """The numeric id the trigger posts to."""
+    export: ExistingExport | None = None
+    """The existing export, when the page shows one."""
+
+    def reuse(self, now: datetime) -> ExistingExport | None:
+        """The export to reuse at ``now``, or ``None`` to trigger a new one.
+
+        Nothing to reuse and an export older than 24 h both mean trigger (§3.4b.4 step 2).
+        """
+        if self.export is not None and self.export.fresh_at(now):
+            return self.export
+        return None
+
+
+def parse_import_page(html: str, tz: tzinfo) -> ImportPage:
+    """Read the import page. Raises :class:`ImportPageError` naming what was missing.
+
+    ``tz`` is the profile's timezone, which the ``#exportFile`` link text is read in: the text
+    carries no offset, so it can only be read against a timezone the caller supplies.
+    """
+    scraper = _ImportPageScraper()
+    scraper.feed(html)
+    token = scraper.csrf_token or scraper.authenticity_token
+    if token is None:
+        raise ImportPageError("the import page has no CSRF token")
+    user_id = scraper.user_id or _user_id_from(scraper.export_href)
+    if user_id is None:
+        raise ImportPageError("the import page does not say which user id to export")
+    return ImportPage(csrf_token=token, user_id=user_id, export=_existing(scraper, tz))
+
+
+def _existing(scraper: _ImportPageScraper, tz: tzinfo) -> ExistingExport | None:
+    """The existing export, or ``None`` when the page shows none.
+
+    A link whose text cannot be read is an error, not "no export": treating an unreadable
+    timestamp as absent would trigger a new export and delete the file it describes.
+    """
+    if scraper.export_href is None:
+        return None
+    found = _LINK_TEXT.search(scraper.export_text)
+    if found is None:
+        raise ImportPageError("the existing export's date could not be read")
+    try:
+        stamp = datetime.strptime(f"{found.group(1)} - {found.group(2)}", _LINK_FORMAT)
+    except ValueError:
+        raise ImportPageError("the existing export's date could not be read") from None
+    return ExistingExport(scraper.export_href, stamp.replace(tzinfo=tz))
+
+
+def _user_id_from(href: str | None) -> str | None:
+    if href is None:
+        return None
+    found = _EXPORT_PATH.match(href)
+    return found.group(1) if found else None
+
+
+class _ImportPageScraper(HTMLParser):
+    """Pulls the few things §3.4b.4 names out of the import page.
+
+    An HTML parser rather than one big regular expression, so that attribute order, quoting and
+    unrelated markup around them don't decide whether the page reads.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.csrf_token: str | None = None
+        self.authenticity_token: str | None = None
+        self.user_id: str | None = None
+        self.export_href: str | None = None
+        self.export_text = ""
+        self._in_export = 0
+        self._collecting = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        at = {name: value or "" for name, value in attrs}
+        if tag == "meta" and at.get("name") == "csrf-token":
+            self.csrf_token = at.get("content") or None
+        elif tag == "input" and at.get("name") == "authenticity_token":
+            self.authenticity_token = at.get("value") or None
+        elif tag == "form" and (found := _EXPORT_PATH.match(at.get("action", ""))):
+            self.user_id = found.group(1)
+        elif tag == "div" and at.get("id") == "exportFile":
+            self._in_export = 1
+        elif self._in_export:
+            if tag == "a" and self.export_href is None:
+                self.export_href = at.get("href") or None
+                self._collecting = True
+            self._in_export += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._collecting = False
+        if self._in_export:
+            self._in_export -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._collecting:
+            self.export_text += data
