@@ -33,21 +33,27 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx2
 
-from syncshelf.clients.goodreads_rss import TIMEOUT, USER_AGENT, Pacer
+from syncshelf.clients.goodreads_rss import TIMEOUT, USER_AGENT, Clock, Pacer
 from syncshelf.sync.goodreads_session import Cookie, CookieJar
 
 __all__ = [
     "BASE",
+    "DOWNLOAD_PATH",
+    "EXPORT_PATH",
+    "POLL_INTERVAL",
+    "POLL_TIMEOUT",
     "IMPORT_PATH",
     "REUSE_WITHIN",
     "MAX_REDIRECTS",
     "SIGN_IN_PATHS",
     "Challenged",
     "ExistingExport",
+    "FetchedExport",
     "ExportError",
     "GoodreadsExport",
     "ImportPage",
     "ImportPageError",
+    "fetch_export",
     "parse_import_page",
     "SessionExpired",
 ]
@@ -366,3 +372,111 @@ class _ImportPageScraper(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._collecting:
             self.export_text += data
+
+
+# --- the export run (§3.4b.4 steps 2 to 4) --------------------------------------------------
+
+EXPORT_PATH = "/review_porter/export/{user_id}"
+"""Where the trigger posts (§3.4b.4 step 2)."""
+
+DOWNLOAD_PATH = "/review_porter/export/{user_id}/goodreads_export.csv"
+"""Where the finished export is fetched from, and polled for (§3.4b.4 step 3)."""
+
+POLL_INTERVAL = 10.0
+POLL_TIMEOUT = 600.0
+"""§3.4b.4 step 3: poll every 10 s for up to 10 minutes. A 404 means not ready yet."""
+
+_TRIGGER_HEADERS = {
+    "x-requested-with": "XMLHttpRequest",
+    "referer": f"{BASE}{IMPORT_PATH}",
+    "origin": BASE,
+}
+"""Everything §3.4b.4 step 2 sends besides the CSRF token and the form body."""
+
+
+@dataclass(frozen=True)
+class FetchedExport:
+    """A library export fetched from Goodreads, ready to be stored as a batch."""
+
+    payload: bytes
+    """The CSV exactly as received, for ``ingest_batches.payload``."""
+    observed_at: datetime
+    """When the export's contents were true of the library (§3.4b.4).
+
+    The **trigger time** when SyncShelf triggered it, and otherwise the ``#exportFile``
+    timestamp read in the profile's timezone.
+    """
+    reused: bool
+    """Whether an export Goodreads already had was used instead of triggering a new one."""
+
+
+async def fetch_export(
+    client: GoodreadsExport, page: ImportPage, *, now: datetime, clock: Clock
+) -> FetchedExport:
+    """Get a library export for ``page``'s user, triggering one only when needed.
+
+    Reuse comes first, because triggering **deletes the previous file** (§3.4b.4 step 2): an
+    export younger than 24 h is downloaded as it stands.
+
+    When the trigger is **refused**, an export Goodreads already has is downloaded whatever its
+    age rather than failing. A refused trigger deleted nothing, so the old file is still there,
+    and older real data beats none — 4a's "newer observation wins" already handles its age.
+    Only with no export at all is this a failed fetch. Decided on #231.
+
+    Raises :class:`ExportError` when there is nothing to download or the poll times out, and
+    :class:`SessionExpired` or :class:`Challenged` from the transport.
+    """
+    if fresh := page.reuse(now):
+        return await _download(client, fresh.path, fresh.generated_at, reused=True)
+
+    response = await client.post(
+        EXPORT_PATH.format(user_id=page.user_id),
+        data={"format": "json"},
+        headers={"x-csrf-token": page.csrf_token, **_TRIGGER_HEADERS},
+    )
+    if response.is_success or response.status_code == 302:
+        await _await_ready(client, page.user_id, clock)
+        # Triggered, so the export is current as of when we asked for it, not of any link text.
+        path = DOWNLOAD_PATH.format(user_id=page.user_id)
+        return await _download(client, path, now, reused=False)
+
+    # The response body is undocumented and the cooldown unverified (§3.4b.4), so the status is
+    # all there is to log; the fallback is what keeps a cooldown from looking like an outage.
+    log.warning(
+        "Goodreads refused to start a library export",
+        extra={"event": "goodreads_export_refused", "status": response.status_code},
+    )
+    if page.export is None:
+        raise ExportError(f"Goodreads refused to start an export ({response.status_code})")
+    return await _download(client, page.export.path, page.export.generated_at, reused=True)
+
+
+async def _await_ready(client: GoodreadsExport, user_id: str, clock: Clock) -> None:
+    """Poll until the export exists, or give up after :data:`POLL_TIMEOUT` (§3.4b.4 step 3)."""
+    path = DOWNLOAD_PATH.format(user_id=user_id)
+    started = clock.monotonic()
+    while True:
+        if (await client.get(path)).status_code != 404:
+            return
+        if clock.monotonic() - started >= POLL_TIMEOUT:
+            raise ExportError(
+                f"Goodreads had not finished the export after {POLL_TIMEOUT:.0f} seconds"
+            )
+        await clock.sleep(POLL_INTERVAL)
+
+
+async def _download(
+    client: GoodreadsExport, path: str, observed_at: datetime, *, reused: bool
+) -> FetchedExport:
+    response = await client.get(path)
+    if not response.is_success:
+        raise ExportError(f"the Goodreads export could not be downloaded ({response.status_code})")
+    log.info(
+        "fetched a Goodreads library export",
+        extra={
+            "event": "goodreads_export_fetched",
+            "bytes": len(response.content),
+            "reused": reused,
+        },
+    )
+    return FetchedExport(response.content, observed_at, reused)
