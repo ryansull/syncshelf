@@ -82,6 +82,7 @@ from syncshelf.sync.goodreads_session import (
     GOODREADS_DIR,
     SessionReconcile,
     reconcile_configured,
+    reset_pending,
 )
 from syncshelf.sync.identity import release_on_new_version
 from syncshelf.sync.limiter import Clock, HardcoverLimiter, SystemClock
@@ -209,6 +210,12 @@ def create_app(
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
+            # A sign-in left waiting belonged to a process that died (§3.4b.2, #230).
+            if pending := await db.write(reset_pending, int(clock())):
+                log.info(
+                    "reset Goodreads sign-ins left waiting by the last process",
+                    extra={"event": "goodreads_sign_ins_reset", "profiles": pending},
+                )
             # A session state that configuration has made impossible (§3.4b, #232).
             _log_session_reconcile(
                 await db.write(reconcile_configured, *_by_credentials(config), int(clock()))

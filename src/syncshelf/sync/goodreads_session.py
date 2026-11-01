@@ -16,22 +16,39 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, Protocol, TypedDict, cast
+from urllib.parse import urlsplit
 
 __all__ = [
     "AMAZON_COOKIES",
+    "APPROVAL_WAIT",
+    "GOODREADS_SUFFIX",
+    "INTERRUPTED",
+    "PENDING_STATES",
+    "SIGN_IN_URL",
     "GOODREADS_DIR",
     "JAR_MODE",
     "Cookie",
+    "Browser",
+    "PageFacts",
+    "SidecarBrowser",
     "CookieJar",
     "SessionReconcile",
     "SessionState",
+    "SignIn",
+    "SignInOutcome",
+    "SignInResult",
+    "attempt_sign_in",
+    "classify",
+    "harvest",
     "jar_path",
     "load_jar",
     "reconcile_configured",
+    "record",
+    "reset_pending",
     "save_jar",
 ]
 
@@ -278,3 +295,311 @@ def _cookies(raw: object) -> list[Cookie] | None:
         path = item.get("path")
         found.append(cast(Cookie, {**item, "path": path if isinstance(path, str) else "/"}))
     return found
+
+
+# --- signing in (§3.4b.2) -------------------------------------------------------------------
+
+SIGN_IN_URL = "https://www.goodreads.com/ap/signin"
+"""Amazon's authentication portal, hosted on Goodreads' own domain (§3.4b.1)."""
+
+GOODREADS_SUFFIX = "goodreads.com"
+"""Cookies are harvested for this domain only — never ``accounts.google.com``,
+``appleid.apple.com`` or ``amazon.com`` (§3.4b.2)."""
+
+APPROVAL_WAIT = 300.0
+"""§3.4b.2: the browser waits up to 5 minutes while the person taps Approve."""
+
+INTERRUPTED = "the sign-in was interrupted by a restart"
+"""The ``detail`` left on a session that :func:`reset_pending` moved (#230)."""
+
+PENDING_STATES: tuple[SessionState, ...] = ("awaiting_approval", "awaiting_code")
+"""The two states that exist only while a browser is waiting.
+
+Nothing but a live process can be behind them, so startup resets them (:func:`reset_pending`),
+exactly as it marks a run left ``running`` as ``aborted``. Decided on #230.
+"""
+
+SignInOutcome = Literal["ok", "awaiting_approval", "awaiting_code", "challenged", "bad_credentials"]
+"""What one sign-in attempt ended as (§3.4b.2's outcome table)."""
+
+
+@dataclass(frozen=True)
+class SignInResult:
+    """One attempt's outcome and, when it signed in, the cookies it harvested."""
+
+    outcome: SignInOutcome
+    jar: CookieJar = field(default_factory=CookieJar)
+    detail: str | None = None
+    """A scrubbed reason, safe for ``goodreads_sessions.detail`` and for a tool result."""
+
+    @property
+    def state(self) -> SessionState:
+        """The session state this outcome becomes. The names line up by design."""
+        return self.outcome
+
+
+class SignIn(Protocol):
+    """One attended sign-in in progress, in a browser context seeded from the jar.
+
+    A protocol so the state machine can be driven by a fake: §3.4b.7 says sign-in is **never**
+    automated against Goodreads, so no test may touch a real browser.
+    """
+
+    async def submit_credentials(self, email: str, password: str) -> SignInOutcome:
+        """Fill ``ap_email`` / ``ap_password``, tick ``rememberMe``, submit, and say what
+        appeared."""
+        ...
+
+    async def submit_code(self, code: str) -> SignInOutcome:
+        """Submit a one-time code to a sign-in waiting for one."""
+        ...
+
+    async def cookies(self) -> list[Cookie]:
+        """Every cookie the context holds, for :func:`harvest` to filter."""
+        ...
+
+    async def close(self) -> None:
+        """Release the browser context. The sidecar keeps no state of its own."""
+        ...
+
+
+class Browser(Protocol):
+    """Somewhere to open a sign-in: the Playwright sidecar in the service, a fake in tests."""
+
+    async def open_sign_in(self, jar: CookieJar) -> SignIn:
+        """Seed a fresh context from ``jar`` and open Amazon's sign-in page.
+
+        Seeding matters even when the jar holds no session: ``ubid-main`` and ``session-id``
+        tell Amazon this is a known device, which makes a challenge less likely (§3.4b.2).
+        """
+        ...
+
+
+def harvest(cookies: Iterable[Cookie]) -> CookieJar:
+    """The Goodreads cookies from ``cookies``, as a jar.
+
+    Everything else is dropped rather than stored: the sign-in passes through Amazon, so a
+    context can end up holding cookies for hosts SyncShelf has no business keeping (§3.4b.2).
+    ``jwt_token`` is removed by :func:`save_jar` on the way to disk.
+    """
+    kept = tuple(cookie for cookie in cookies if _is_goodreads(cookie["domain"]))
+    return CookieJar(tuple(sorted(kept, key=lambda c: (c["name"], c["domain"]))))
+
+
+def _is_goodreads(domain: str) -> bool:
+    host = domain.lstrip(".").lower()
+    return host == GOODREADS_SUFFIX or host.endswith(f".{GOODREADS_SUFFIX}")
+
+
+async def attempt_sign_in(
+    browser: Browser, jar: CookieJar, email: str, password: str
+) -> SignInResult:
+    """Sign in once, attended, and report where it got to (§3.4b.2).
+
+    Returns as soon as the outcome is known. ``ok`` carries the harvested jar; the two waiting
+    outcomes carry none, because nothing has signed in yet. ``challenged`` and
+    ``bad_credentials`` are sticky states for the caller to record: a challenge means stop, and
+    a rejected password is **never** retried, so SyncShelf cannot lock the account.
+
+    SyncShelf drives a plain browser and never solves, evades or works around a CAPTCHA, a bot
+    check or a WAF challenge (§3.4b, Boundary).
+    """
+    session = await browser.open_sign_in(jar)
+    try:
+        return await _settle(session, await session.submit_credentials(email, password))
+    finally:
+        await session.close()
+
+
+async def _settle(session: SignIn, outcome: SignInOutcome) -> SignInResult:
+    """One outcome as a result, harvesting only when it actually signed in."""
+    if outcome == "ok":
+        return SignInResult("ok", harvest(await session.cookies()))
+    details: dict[SignInOutcome, str] = {
+        "challenged": "a bot check or CAPTCHA appeared",
+        "bad_credentials": "Goodreads rejected the password",
+        "awaiting_code": "waiting for a one-time code",
+        "awaiting_approval": "waiting for approval on your device",
+    }
+    return SignInResult(outcome, detail=details[outcome])
+
+
+def record(
+    conn: sqlite3.Connection,
+    profile: str,
+    state: SessionState,
+    now: int,
+    detail: str | None = None,
+) -> None:
+    """Write ``profile``'s session state, stamping when it changed.
+
+    ``detail`` is a scrubbed reason only: no password, cookie or CSRF value ever reaches it
+    (§3.4b.2).
+    """
+    conn.execute(
+        "INSERT INTO goodreads_sessions (profile, state, state_since, detail) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (profile) DO UPDATE SET state = ?, state_since = ?, detail = ?",
+        (profile, state, now, detail, state, now, detail),
+    )
+
+
+def reset_pending(conn: sqlite3.Connection, now: int) -> list[str]:
+    """Move every waiting session to ``needs_sign_in`` at ``now``; returns which profiles moved.
+
+    Startup calls this. A browser waiting for an approval or a code lives in the process that
+    opened it, and the sidecar keeps no state, so only a dead process can leave one of these
+    behind — the same reasoning that marks a run left ``running`` as ``aborted`` (§3.4a.7).
+    Leaving the row alone would make ``sync_status`` and ``attention`` describe a wait that
+    nothing can finish. Decided on #230.
+    """
+    placeholders = ", ".join("?" for _ in PENDING_STATES)
+    moved = [
+        name
+        for (name,) in conn.execute(
+            f"SELECT profile FROM goodreads_sessions WHERE state IN ({placeholders})",
+            PENDING_STATES,
+        )
+    ]
+    if moved:
+        conn.execute(
+            "UPDATE goodreads_sessions SET state = 'needs_sign_in', state_since = ?, detail = ? "
+            f"WHERE state IN ({placeholders})",
+            (now, INTERRUPTED, *PENDING_STATES),
+        )
+    return sorted(moved)
+
+
+# --- reading the sign-in page, and the sidecar (§3.4b.1, §3.4b.2) ---------------------------
+
+EMAIL_FIELD = "input[name='ap_email']"
+PASSWORD_FIELD = "input[name='ap_password']"
+REMEMBER_BOX = "input[name='rememberMe']"
+OTP_FIELD = "input[name='otpCode'], #auth-mfa-otpcode"
+APPROVAL_PROMPT = "#resend-approval-alert, #channelDetails"
+CAPTCHA = "#auth-captcha-image, form[action*='captcha']"
+AUTH_ERROR = "#auth-error-message-box"
+"""The markup §3.4b.1 names, plus Amazon's usual ids for the prompts it can raise.
+
+**Not confirmed against a signed-in page.** §3.4b's opening step (#219) is what records what
+really appears; until it runs these are read from the findings comment on #24 and from Amazon's
+public sign-in markup, and :func:`classify` is written so an unrecognised page is safe.
+"""
+
+
+@dataclass(frozen=True)
+class PageFacts:
+    """What the sign-in page showed, reduced to the few things that decide the outcome.
+
+    Keeping this separate from the browser is what makes §3.4b.2's outcome table testable: the
+    rules live in :func:`classify`, and only the gathering needs a real browser.
+    """
+
+    url: str
+    has_otp_field: bool = False
+    has_approval_prompt: bool = False
+    has_captcha: bool = False
+    has_auth_error: bool = False
+
+    @property
+    def on_goodreads(self) -> bool:
+        """Whether the browser has landed back on Goodreads, away from the sign-in portal."""
+        host = urlsplit(self.url).hostname or ""
+        return _is_goodreads(host) and not urlsplit(self.url).path.startswith("/ap/")
+
+
+def classify(facts: PageFacts) -> SignInOutcome:
+    """§3.4b.2's outcome table, as one decision.
+
+    The order matters. A CAPTCHA is checked before anything else, because a page can show one
+    *and* look otherwise ordinary, and a challenge means stop. Landing back on Goodreads is
+    what "signed in" means. Anything unrecognised is ``challenged``, not an error: §3.4b.2 puts
+    "any page SyncShelf doesn't recognise" in that row, and stopping is always safe.
+    """
+    if facts.has_captcha:
+        return "challenged"
+    if facts.has_auth_error:
+        return "bad_credentials"
+    if facts.has_otp_field:
+        return "awaiting_code"
+    if facts.has_approval_prompt:
+        return "awaiting_approval"
+    if facts.on_goodreads:
+        return "ok"
+    return "challenged"
+
+
+class SidecarBrowser:
+    """Sign-ins driven through the Playwright sidecar (§3.4b.2).
+
+    ``playwright`` is imported inside :meth:`open_sign_in`, not at module scope, so a stack with
+    no ``services.browser_ws`` never loads it and the offline test suite never touches it
+    (SPEC §2.1). SyncShelf drives a **plain** Chromium: no stealth patches and no fingerprint
+    changes (§3.4b, Boundary).
+
+    Not covered by the offline suite: §3.4b.7 says sign-in is never automated against Goodreads,
+    so what exercises this is the attended opening test (#219).
+    """
+
+    def __init__(self, ws_endpoint: str, *, approval_wait: float = APPROVAL_WAIT) -> None:
+        self._ws_endpoint = ws_endpoint
+        self._approval_wait = approval_wait
+
+    async def open_sign_in(self, jar: CookieJar) -> SignIn:
+        from playwright.async_api import async_playwright  # noqa: PLC0415 — lazy by design
+
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.connect(self._ws_endpoint)
+        context = await browser.new_context()
+        if jar.cookies:
+            # Seeded so Amazon sees a known device (ubid-main, session-id) and is less likely
+            # to challenge (§3.4b.2).
+            await context.add_cookies(list(jar.cookies))  # type: ignore[arg-type]
+        page = await context.new_page()
+        await page.goto(SIGN_IN_URL)
+        return _SidecarSignIn(playwright, context, page, self._approval_wait)
+
+
+class _SidecarSignIn:
+    """One sign-in in a sidecar context. Gathers :class:`PageFacts`; the rules are in
+    :func:`classify`."""
+
+    def __init__(
+        self, playwright: object, context: object, page: object, approval_wait: float
+    ) -> None:
+        self._playwright = playwright
+        self._context = context
+        self._page = page
+        self._approval_wait = approval_wait
+
+    async def submit_credentials(self, email: str, password: str) -> SignInOutcome:
+        page = self._page
+        await page.fill(EMAIL_FIELD, email)  # type: ignore[attr-defined]
+        await page.fill(PASSWORD_FIELD, password)  # type: ignore[attr-defined]
+        if await page.locator(REMEMBER_BOX).count():  # type: ignore[attr-defined]
+            await page.check(REMEMBER_BOX)  # type: ignore[attr-defined]
+        await page.press(PASSWORD_FIELD, "Enter")  # type: ignore[attr-defined]
+        return classify(await self._facts())
+
+    async def submit_code(self, code: str) -> SignInOutcome:
+        await self._page.fill(OTP_FIELD, code)  # type: ignore[attr-defined]
+        await self._page.press(OTP_FIELD, "Enter")  # type: ignore[attr-defined]
+        return classify(await self._facts())
+
+    async def cookies(self) -> list[Cookie]:
+        return cast(list[Cookie], await self._context.cookies())  # type: ignore[attr-defined]
+
+    async def close(self) -> None:
+        await self._context.close()  # type: ignore[attr-defined]
+        await self._playwright.stop()  # type: ignore[attr-defined]
+
+    async def _facts(self) -> PageFacts:
+        page = self._page
+        return PageFacts(
+            url=page.url,  # type: ignore[attr-defined]
+            has_otp_field=bool(await page.locator(OTP_FIELD).count()),  # type: ignore[attr-defined]
+            has_approval_prompt=bool(
+                await page.locator(APPROVAL_PROMPT).count()  # type: ignore[attr-defined]
+            ),
+            has_captcha=bool(await page.locator(CAPTCHA).count()),  # type: ignore[attr-defined]
+            has_auth_error=bool(await page.locator(AUTH_ERROR).count()),  # type: ignore[attr-defined]
+        )
