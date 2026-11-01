@@ -16,10 +16,10 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NotRequired, Protocol, TypedDict, cast
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 from urllib.parse import urlsplit
 
 __all__ = [
@@ -33,6 +33,9 @@ __all__ = [
     "JAR_MODE",
     "Cookie",
     "Browser",
+    "NoSidecar",
+    "NotWaiting",
+    "SignIns",
     "PageFacts",
     "SidecarBrowser",
     "CookieJar",
@@ -53,6 +56,13 @@ __all__ = [
 ]
 
 log = logging.getLogger(__name__)
+
+
+class Writer(Protocol):
+    """The database writer this module needs: :meth:`syncshelf.db.Database.write`."""
+
+    async def write(self, unit: Any, /, *args: Any) -> Any: ...
+
 
 SessionState = Literal[
     "ok",
@@ -603,3 +613,112 @@ class _SidecarSignIn:
             has_captcha=bool(await page.locator(CAPTCHA).count()),  # type: ignore[attr-defined]
             has_auth_error=bool(await page.locator(AUTH_ERROR).count()),  # type: ignore[attr-defined]
         )
+
+
+# --- attended sign-ins in progress (§3.4b.2, §3.4b.6) ---------------------------------------
+
+
+class NoSidecar(Exception):
+    """A sign-in was asked for with no ``services.browser_ws`` configured.
+
+    Config validation already refuses credentials without a sidecar (#232), so reaching this
+    means the profile has none either and phase 4b is simply off for this stack.
+    """
+
+
+class NotWaiting(Exception):
+    """A code was submitted with no sign-in waiting for one.
+
+    Either none was started, or the process that held it has gone — which is why startup moves
+    those rows to ``needs_sign_in`` (#230). Either way the answer is to sign in again.
+    """
+
+
+class SignIns:
+    """The attended sign-ins this process is holding (§3.4b.2).
+
+    ``goodreads_sign_in`` returns as soon as the outcome is known while the browser keeps
+    waiting, so a sign-in that stopped at an approval or a code has to outlive the call that
+    started it. It lives **here, in memory**: the jar is the only thing on disk, and the
+    sidecar is stateless, so nothing here survives a restart. That is the whole reason startup
+    resets the two waiting states (#230).
+
+    Every outcome is written to ``goodreads_sessions`` as it happens, so ``sync_status`` and
+    ``attention`` see it without this object being consulted.
+    """
+
+    def __init__(
+        self,
+        browser: Browser | None,
+        *,
+        data_dir: Path,
+        db: Writer,
+        clock: Callable[[], float],
+    ) -> None:
+        self._browser = browser
+        self._data_dir = data_dir
+        self._db = db
+        self._clock = clock
+        self._pending: dict[str, SignIn] = {}
+
+    @property
+    def available(self) -> bool:
+        """Whether a sign-in can be started at all, i.e. whether a sidecar is configured."""
+        return self._browser is not None
+
+    def waiting(self, profile: str) -> bool:
+        """Whether this process is holding a sign-in for ``profile``."""
+        return profile in self._pending
+
+    async def start(self, profile: str, email: str, password: str) -> SignInResult:
+        """Begin an attended sign-in, replacing any this process was already holding.
+
+        Trying afresh is also how a sticky ``challenged`` or ``bad_credentials`` is cleared
+        (§3.4b.6): nothing checks the old state first, because the person asking for a sign-in
+        is the thing that was being waited for.
+        """
+        if self._browser is None:
+            raise NoSidecar("there is no browser sidecar configured")
+        await self._forget(profile)
+        session = await self._browser.open_sign_in(load_jar(jar_path(self._data_dir, profile)))
+        try:
+            outcome = await session.submit_credentials(email, password)
+        except BaseException:
+            await session.close()
+            raise
+        return await self._settled(profile, session, outcome)
+
+    async def verify(self, profile: str, code: str) -> SignInResult:
+        """Submit a one-time code to the sign-in this process is holding for ``profile``."""
+        session = self._pending.get(profile)
+        if session is None:
+            raise NotWaiting("no sign-in is waiting for a code")
+        try:
+            outcome = await session.submit_code(code)
+        except BaseException:
+            await self._forget(profile)
+            raise
+        return await self._settled(profile, session, outcome)
+
+    async def close(self) -> None:
+        """Release every sign-in still being held. Shutdown calls this."""
+        for profile in list(self._pending):
+            await self._forget(profile)
+
+    async def _settled(self, profile: str, session: SignIn, outcome: SignInOutcome) -> SignInResult:
+        """Record ``outcome``, keep the browser only while it is still needed."""
+        result = await _settle(session, outcome)
+        if result.outcome == "ok":
+            save_jar(result.jar, jar_path(self._data_dir, profile))
+        if result.outcome in PENDING_STATES:
+            self._pending[profile] = session
+        else:
+            # Signed in, challenged or rejected: nothing is waiting, so let the context go.
+            self._pending.pop(profile, None)
+            await session.close()
+        await self._db.write(record, profile, result.state, int(self._clock()), result.detail)
+        return result
+
+    async def _forget(self, profile: str) -> None:
+        if (session := self._pending.pop(profile, None)) is not None:
+            await session.close()

@@ -41,6 +41,7 @@ from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import HOUSEHOLD, ME, PERMISSIONS, ProfileConfig
 from syncshelf.db import Database
 from syncshelf.sync.apply import Applier
+from syncshelf.sync.goodreads_session import SignIns
 from syncshelf.sync.limiter import interactive
 from syncshelf.sync.mirror import Mirror
 from syncshelf.sync.scheduler import Scheduler
@@ -138,6 +139,8 @@ class Services:
     """The confirm tokens a deletion's preview hands out (§3.3.9)."""
     scheduler: Scheduler
     """The sync loops, which ``sync_now`` and ``retry_failed`` start runs through (§3.4a.9)."""
+    sign_ins: SignIns
+    """The attended Goodreads sign-ins this process holds (§3.4b.2, §3.4b.6)."""
 
 
 _services: ContextVar[Services | None] = ContextVar("syncshelf_services", default=None)
