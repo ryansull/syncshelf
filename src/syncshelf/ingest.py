@@ -8,9 +8,10 @@ is: the public hostname never routes it (§2.2).
 
 The body is ``multipart/form-data``: the export as a file part ``file``, and optionally
 ``generated_at``, the export's generation time (ISO-8601). Without it the batch is **stale**
-and only fills (§3.4a.8). The export's header is checked (400 names the missing columns), the
-batch stored, the profile's Goodreads loop nudged, and 202 returned at once, without waiting
-on a sync: ``{"batch_id", "run": "started" | "already_running", "stale"}``.
+and only fills (§3.4a.8). With it the upload also counts as a **CSV success**, pushing the
+next automatic export out five days (§3.4b.5). The export's header is checked (400 names
+the missing columns), the batch stored, the profile's Goodreads loop nudged, and 202 returned
+at once, without waiting on a sync: ``{"batch_id", "run": "started" | "already_running", "stale"}``.
 """
 
 import hmac
@@ -72,6 +73,11 @@ async def ingest_goodreads_csv(request: Request) -> JSONResponse:
     run = "already_running" if scheduler.sync.lock(profile.name).locked() else "started"
     scheduler.nudge(profile.name, "ingest")
     stale = observed_at is None
+    if observed_at is not None:
+        # A dated upload is a CSV success: the household has a fresh export whoever fetched
+        # it, so the next automatic one is five days from the export's own generation time
+        # (§3.4a.8, §3.4b.5). An undated one only fills, so it buys nothing.
+        await scheduler.csv_uploaded(profile.name, observed_at)
     log.info(
         "stored an uploaded Goodreads export",
         extra={
