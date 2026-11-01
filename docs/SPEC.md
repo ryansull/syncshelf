@@ -1652,6 +1652,12 @@ From [The front door](https://github.com/ryansull/syncshelf/issues/11) and [Depl
 
   Errors are `401` (unknown secret) and `400` (not a valid CSV, with the missing columns named).
 - **Schedule effect:** a **dated** `/ingest` CSV counts as a CSV success and pushes the CSV due date out (4b).
+- **Batches, then RSS** ([How a Goodreads run consumes stored /ingest batches](https://github.com/ryansull/syncshelf/issues/204)). Every Goodreads run first applies the profile's unprocessed **dated** batches, oldest `observed_at` (generation time) first, then fetches RSS as usual.
+  - An upload that lands while a run holds the lock (`"run": "already_running"`) is picked up by the next run.
+  - "The newer observation wins, field by field" (§3.4a.6 rule 8) makes the order safe.
+  - An ingest-triggered run costs the usual RSS requests too.
+  - A processed batch gets `processed_at` and its `run_id`.
+  - Stale batches only fill (below).
 - **A stale batch only fills** ([#32](https://github.com/ryansull/syncshelf/issues/32), decision 9). It may:
   - set baselines for **never-observed** fields on **existing** rows (no push, per diff rule 3);
   - refresh match inputs (ISBN13, Binding), re-matching queued rows whose input changed.
