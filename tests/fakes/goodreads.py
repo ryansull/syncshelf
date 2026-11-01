@@ -40,6 +40,26 @@ class Request:
 
 
 @dataclass
+class ExportRequest:
+    """One signed-in export request the fake answered (phase 4b)."""
+
+    method: str
+    path: str
+    at: float
+
+
+@dataclass(frozen=True)
+class _ExportPlan:
+    """How the fake answers the next export request. See :meth:`FakeGoodreads.expect_export`."""
+
+    rotate: int = 0
+    expired: bool = False
+    offsite: str | None = None
+    body: str = "<html><body>import</body></html>"
+    status: int = 200
+
+
+@dataclass
 class _User:
     name: str
     items: list[dict[str, str]]
@@ -55,6 +75,9 @@ class FakeGoodreads:
     def __init__(self, clock: Any = None) -> None:
         self.users: dict[str, _User] = {}
         self.requests: list[Request] = []
+        self.export_requests: list[ExportRequest] = []
+        self.rotations = 0
+        self._export_plan = _ExportPlan()
         self._clock = clock
         self._faults: list[tuple[int | None, Fault]] = []
 
@@ -111,7 +134,9 @@ class FakeGoodreads:
         url = urlsplit(str(request.url))
         if url.hostname != HOST or url.scheme != "https":
             raise AssertionError(f"FakeGoodreads got a request for {url.scheme}://{url.hostname}")
-        if request.method != "GET" or not url.path.startswith(PATH_PREFIX):
+        if not url.path.startswith(PATH_PREFIX):
+            return self._export(request, url.path)
+        if request.method != "GET":
             raise AssertionError(f"FakeGoodreads can't answer {request.method} {url.path}")
         params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         user_id = url.path.removeprefix(PATH_PREFIX)
@@ -141,6 +166,60 @@ class FakeGoodreads:
             title_shelf = shelf
         shown = items[(page - 1) * per_page : page * per_page]
         return _feed(user.name, title_shelf, shown)
+
+    # --- the signed-in export surface (phase 4b, §3.4b.4) ---------------------------------
+
+    def expect_export(
+        self,
+        *,
+        rotate: int = 0,
+        expired: bool = False,
+        offsite: str | None = None,
+        body: str = "<html><body>import</body></html>",
+        status: int = 200,
+    ) -> None:
+        """Set up how the next export request is answered.
+
+        ``rotate`` answers that many hops with a same-URL redirect carrying a new
+        ``_session_id2``, which is how §3.4b.1 says Goodreads regenerates it. ``expired``
+        redirects to the sign-in page. ``offsite`` redirects to that absolute URL, for the leak
+        guard. A WAF stop is injected with :meth:`fail_next` as for the feed.
+        """
+        self._export_plan = _ExportPlan(rotate, expired, offsite, body, status)
+
+    def _export(self, request: httpx2.Request, path: str) -> httpx2.Response:
+        at = self._clock.monotonic() if self._clock is not None else 0.0
+        self.export_requests.append(ExportRequest(request.method, path, at))
+        if fault := self._take_fault(0):
+            if fault == "timeout":
+                raise httpx2.ReadTimeout("timed out", request=request)
+            return _fault(fault, None)
+        plan = self._export_plan
+        if plan.offsite is not None:
+            # One-shot, so a same-host redirect can be followed to an ordinary 200 next hop.
+            self._export_plan = _ExportPlan(plan.rotate, plan.expired, None, plan.body, plan.status)
+            return httpx2.Response(302, headers={"location": plan.offsite})
+        if plan.expired:
+            return httpx2.Response(302, headers={"location": "/user/sign_in"})
+        if plan.rotate > 0:
+            self._export_plan = _ExportPlan(
+                plan.rotate - 1, plan.expired, plan.offsite, plan.body, plan.status
+            )
+            self.rotations += 1
+            # A same-URL redirect that carries the regenerated Rails cookie (§3.4b.1).
+            return httpx2.Response(
+                302,
+                headers=[
+                    ("location", path),
+                    (
+                        "set-cookie",
+                        f"_session_id2=rotated-{self.rotations}; Domain=.goodreads.com; Path=/",
+                    ),
+                ],
+            )
+        return httpx2.Response(
+            plan.status, headers={"content-type": "text/html; charset=utf-8"}, text=plan.body
+        )
 
     def _take_fault(self, page: int) -> Fault | None:
         for i, (wanted, fault) in enumerate(self._faults):
