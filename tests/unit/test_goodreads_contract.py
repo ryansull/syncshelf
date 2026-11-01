@@ -118,3 +118,57 @@ def test_the_recorded_export_parses() -> None:
     assert with_isbn.isbn10 is not None and len(with_isbn.isbn10) == 10
     assert with_isbn.isbn13 is not None and with_isbn.isbn13.startswith("978")
     assert any(r.date_read for r in rows) and any(not r.date_read for r in rows)
+
+
+class TestExportSurface:
+    """The fake's signed-in export surface against the shapes SPEC §3.4b.1 documents.
+
+    These are **not** recorded: recording an export response needs a live Goodreads session,
+    which is what the attended opening test (#219) exists to obtain. Until its findings land,
+    the spec's own documented shapes are the contract, and the HTML fixture for the import page
+    arrives with #222 as ``source-only`` (§2.9).
+    """
+
+    @staticmethod
+    def answer(path: str = "/review/import", **plan: object) -> httpx2.Response:
+        fake = FakeGoodreads()
+        if plan:
+            fake.expect_export(**plan)  # type: ignore[arg-type]
+        request = httpx2.Request("GET", f"https://www.goodreads.com{path}")
+        return fake.handle(request)
+
+    def test_a_waf_challenge_is_202_with_the_action_header(self) -> None:
+        fake = FakeGoodreads()
+        fake.fail_next("challenge")
+        response = fake.handle(httpx2.Request("GET", "https://www.goodreads.com/review/import"))
+        assert response.status_code == 202
+        assert response.headers["x-amzn-waf-action"] == "challenge"
+
+    def test_a_captcha_is_405_with_the_action_header(self) -> None:
+        fake = FakeGoodreads()
+        fake.fail_next("captcha")
+        response = fake.handle(httpx2.Request("GET", "https://www.goodreads.com/review/import"))
+        assert response.status_code == 405
+        assert response.headers["x-amzn-waf-action"] == "captcha"
+
+    def test_an_expired_session_redirects_to_the_sign_in_page(self) -> None:
+        response = self.answer(expired=True)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/user/sign_in"
+
+    def test_a_rotation_redirect_returns_to_the_same_url_with_a_new_session_cookie(self) -> None:
+        # §3.4b.1: _session_id2 is regenerated through a same-URL redirect carrying Set-Cookie.
+        response = self.answer(rotate=1)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/review/import"
+        assert "_session_id2=" in response.headers["set-cookie"]
+
+    def test_the_export_surface_refuses_another_host(self) -> None:
+        fake = FakeGoodreads()
+        with pytest.raises(AssertionError, match="got a request for"):
+            fake.handle(httpx2.Request("GET", "https://example.com/review/import"))
+
+    def test_the_export_surface_refuses_http(self) -> None:
+        fake = FakeGoodreads()
+        with pytest.raises(AssertionError, match="got a request for"):
+            fake.handle(httpx2.Request("GET", "http://www.goodreads.com/review/import"))
