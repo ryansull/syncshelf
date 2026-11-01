@@ -78,7 +78,11 @@ from syncshelf.ingest import ingest_goodreads_csv
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.goodreads import GoodreadsSync
-from syncshelf.sync.goodreads_session import SessionReconcile, reconcile_configured
+from syncshelf.sync.goodreads_session import (
+    GOODREADS_DIR,
+    SessionReconcile,
+    reconcile_configured,
+)
 from syncshelf.sync.identity import release_on_new_version
 from syncshelf.sync.limiter import Clock, HardcoverLimiter, SystemClock
 from syncshelf.sync.mirror import Mirror
@@ -99,9 +103,6 @@ __all__ = [
 
 DB_FILENAME = "syncshelf.db"
 """The database file inside the data directory."""
-
-GOODREADS_DIR = "goodreads"
-"""The data subdirectory for the Goodreads cookie jars (phase 4b), checked from phase 1."""
 
 PURGE_INTERVAL = 24 * 3600
 """Seconds between purges of expired OAuth rows after the one at startup (#77)."""
