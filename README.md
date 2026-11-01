@@ -89,6 +89,18 @@ restart picks the schedule up where it left off. The file is the only source of 
 each start, a profile removed from it is marked removed and its Claude connections are revoked,
 and a name added back is restored.
 
+**Signing in to Goodreads, once per profile (phase 4b).** With credentials and a sidecar
+configured, ask Claude to run `goodreads_sign_in`; it acts on your own profile only. If Amazon
+asks for a one-time code, Claude asks you for it and passes it to `goodreads_verify`; if it asks
+you to approve the sign-in on a device, approve it there and check `sync_status`. SyncShelf
+drives a plain browser and never works around a bot check: if one appears, it stops and says so,
+and you export your library by hand to the ingest endpoint below. A bot check or a rejected
+password stays stuck until you run `goodreads_sign_in` again, which is also how you clear it.
+Otherwise SyncShelf signs in again on its own when a scheduled export finds the session expired,
+at most once a day per profile, and only while no prompt appears. `sync_status` shows where the
+session stands under `goodreads_session`, and `/healthz` carries the same state as an attention
+code.
+
 Every `/mcp` request needs a bearer token; without one it gets 401. `server.auth_mode` says
 where tokens come from:
 
@@ -122,8 +134,10 @@ Each release tag publishes the image `ghcr.io/<owner>/syncshelf:<version>` (and 
 for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
 
 - **`/data`** holds the database, its `pre-migration-NNNN.db` snapshots (taken before each
-  upgrade, none on a fresh install) and `goodreads/`. `SYNCSHELF_DATA_DIR` names a different
-  directory, which is useful outside a container. The container runs as `10001:10001`, so a
+  upgrade, none on a fresh install) and `goodreads/`, where each profile's Goodreads session
+  lives as `<profile>.cookies.json` at mode 0600 — never in the database, so a copy of the
+  database carries no live session, and nowhere else, since the sidecar keeps no state.
+  `SYNCSHELF_DATA_DIR` names a different directory, which is useful outside a container. The container runs as `10001:10001`, so a
   bind-mounted host directory must exist and be owned by that user
   (`chown 10001:10001 <dir>`), or startup stops naming the unwritable path. A named volume
   gets the right owner from the image. Startup also stops if the database is newer than the
@@ -146,6 +160,22 @@ for amd64 and arm64, built from the [`Dockerfile`](Dockerfile). To run it:
   ```
 - **`/config/profiles.yaml`** is the config. Mount it read-only (`:ro`); SyncShelf never
   writes it. Pass the secrets it references as environment variables or `*_file` paths.
+- **The browser sidecar** (phase 4b), needed only by a profile with Goodreads credentials. Run
+  the official Playwright image as `playwright run-server` on an internal network: no published
+  ports, no reverse-proxy labels and no volume, since it keeps no state. Point
+  `services.browser_ws` at it, matching `run-server`'s default path (`/`). Keep the image tag in
+  lockstep with the `playwright` version in [`pyproject.toml`](pyproject.toml), which is how the
+  client and the browser stay compatible:
+
+  ```sh
+  docker run -d --name browser --network syncshelf --restart unless-stopped \
+    mcr.microsoft.com/playwright:v1.64.1-noble \
+    npx -y playwright@1.64.1 run-server --host 0.0.0.0 --port 3000
+  ```
+
+  Then set `services.browser_ws: ws://browser:3000/` and sign in once per profile (above). With
+  no `browser_ws` configured there is no sidecar to run: Goodreads syncs through RSS and the
+  ingest endpoint, and nothing about the export reaches `sync_status` or `/healthz`.
 - **Listening.** The service listens on `server.listen`, default `0.0.0.0:8000`, so Traefik or
   a published port (`-p 8000:8000`) reaches it. Keep port 8000 in the container: the image's
   health check probes `127.0.0.1:8000`. In oauth mode, attach the container to the reverse
