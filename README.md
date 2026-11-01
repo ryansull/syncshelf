@@ -71,7 +71,13 @@ From phase 4a, a profile with a `goodreads` section is read from its Goodreads s
 `goodreads.user_id` (the number in `goodreads.com/user/show/<id>`, quoted) and
 `goodreads.shelf_map` (each exclusive shelf's Hardcover status, 1 to 5) are both required in
 it, and `rss_key` is needed only if the profile isn't public. A profile without the section has
-no Goodreads sync. A profile's optional `ingest_secret` lets it upload a Goodreads library
+no Goodreads sync. From phase 4b, `goodreads.email` and `goodreads.password` let SyncShelf sign
+in and run the library export itself. They come as a pair, and need the browser sidecar at
+`services.browser_ws`, so startup refuses credentials without it. With no `browser_ws`
+configured the session export is off for the whole stack, which startup says once, and
+Goodreads syncs through RSS and the upload endpoint only. A profile with no password has session
+state `disabled`; giving it credentials moves it to `needs_sign_in` at the next start, and
+taking them away moves it back. A profile's optional `ingest_secret` lets it upload a Goodreads library
 export by hand (below); each profile needs its own, since the secret says whose export it is. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
 the profiles half an interval apart; a failed read backs off from 1 hour to at most 6, and a
 restart picks the schedule up where it left off. The file is the only source of profiles: at

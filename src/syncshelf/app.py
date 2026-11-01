@@ -78,6 +78,7 @@ from syncshelf.ingest import ingest_goodreads_csv
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
 from syncshelf.sync.goodreads import GoodreadsSync
+from syncshelf.sync.goodreads_session import SessionReconcile, reconcile_configured
 from syncshelf.sync.identity import release_on_new_version
 from syncshelf.sync.limiter import Clock, HardcoverLimiter, SystemClock
 from syncshelf.sync.mirror import Mirror
@@ -207,6 +208,10 @@ def create_app(
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
+            # A session state that configuration has made impossible (§3.4b, #232).
+            _log_session_reconcile(
+                await db.write(reconcile_configured, *_by_credentials(config), int(clock()))
+            )
             # A run still `running` belonged to a process that died (§3.4a.7).
             if aborted := await db.write(abort_running, int(clock())):
                 log.info(
@@ -220,6 +225,7 @@ def create_app(
                     extra={"event": "quarantine_released", "count": released},
                 )
             _log_startup(config, db)
+            _log_4b_disabled(config)
             await _housekeeping(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
@@ -405,6 +411,45 @@ async def _housekeeping(db: Database, clock: Callable[[], float]) -> None:
             log.info("purged old runs", extra={"event": "runs_purged", "count": purged})
     except Exception:
         log.exception("purging old runs failed", extra={"event": "runs_purge_failed"})
+
+
+def _by_credentials(config: Config) -> tuple[list[str], list[str]]:
+    """The configured profiles split by whether they have Goodreads credentials (§3.4b)."""
+    with_creds, without = [], []
+    for name, profile in config.profiles.items():
+        has = profile.goodreads is not None and profile.goodreads.password is not None
+        (with_creds if has else without).append(name)
+    return with_creds, without
+
+
+def _log_session_reconcile(moved: SessionReconcile) -> None:
+    if not (moved.disabled or moved.enabled):
+        return
+    log.info(
+        "Goodreads session states reconciled with the config: %d disabled, %d awaiting sign-in",
+        len(moved.disabled),
+        len(moved.enabled),
+        extra={
+            "event": "goodreads_sessions_reconciled",
+            "disabled": moved.disabled,
+            "needs_sign_in": moved.enabled,
+        },
+    )
+
+
+def _log_4b_disabled(config: Config) -> None:
+    """Say once, at startup, that phase 4b is off for want of the browser sidecar (§2.3).
+
+    Config validation has already refused credentials without it, so reaching here means no
+    profile has any: the household isn't using the session export, which is a choice, not a
+    fault. Logged at INFO so an operator can still tell why no CSV ever runs (#232).
+    """
+    if config.services.browser_ws is None:
+        log.info(
+            "services.browser_ws is not set, so the Goodreads session export is off; "
+            "Goodreads syncs through RSS and /ingest only",
+            extra={"event": "goodreads_export_disabled"},
+        )
 
 
 def _log_profile_sync(synced: ProfileSync) -> None:

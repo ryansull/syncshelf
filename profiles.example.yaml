@@ -60,7 +60,9 @@ services:
   abs_url: https://abs.home.arpa            # HTTPS form; http 302s
   chaptarr_url: http://chaptarr.home.arpa
   # chaptarr_api_key: ${CHAPTARR_API_KEY}
-  browser_ws: ws://browser:3000/            # playwright run-server sidecar (4b); absent = 4b disabled
+  # The playwright run-server sidecar (phase 4b). Absent switches the Goodreads session
+  # export off for the whole stack; required once any profile sets goodreads.password.
+  browser_ws: ws://browser:3000/
 
 cadence:                                    # all optional; defaults shown; durations as <n>m or <n>h
   rss_interval: 60m
@@ -104,7 +106,10 @@ profiles:
     # goodreads:
     #   user_id: "00000000"
     #   rss_key_file: /run/secrets/gr_rss_key_alice
-    #   email: ${GOODREADS_EMAIL_ALICE}            # phase 4b
+    #   # Phase 4b sign-in, a pair: one without the other is a startup error, and both
+    #   # need services.browser_ws. Without them this profile's session is 'disabled'
+    #   # and Goodreads still syncs through RSS and /ingest.
+    #   email: ${GOODREADS_EMAIL_ALICE}
     #   password_file: /run/secrets/gr_password_alice
     #   shelf_map:
     #     read: 3

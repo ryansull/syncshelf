@@ -212,6 +212,14 @@ class GoodreadsConfig:
     so a custom exclusive shelf left out of the map reads as an ordinary shelf (#182)."""
     rss_key: str | None = field(default=None, repr=False)
     """The private-feed key, only if the profile isn't public. Never logged."""
+    email: str | None = field(default=None, repr=False)
+    """The Goodreads account's email, for the phase 4b sign-in (§3.4b.2). Kept **verbatim**:
+    it is a declared secret, so the log scrubber matches the raw expanded value, and it is
+    typed into Amazon's form exactly as configured. Absent means this profile signs in to
+    nothing and its session state is ``disabled`` (§3.4b)."""
+    password: str | None = field(default=None, repr=False)
+    """The Goodreads account's password. Never logged, and never retried after a rejection, so
+    SyncShelf can't lock the account (§3.4b.2)."""
 
 
 @dataclass(frozen=True)
@@ -336,6 +344,15 @@ def load_config(
     services = _services(services_raw)
     if services.hardcover_url is None:
         raise ConfigError("services.hardcover_url: required")
+    if services.browser_ws is None:
+        # Credentials for a subsystem that can't run: 4b is off stack-wide without the sidecar,
+        # so the sign-in these configure could never happen (#232). Silence would hide it.
+        for name, profile in sorted(profiles.items()):
+            if profile.goodreads is not None and profile.goodreads.password is not None:
+                raise ConfigError(
+                    f"services.browser_ws: required when profiles.{name}.goodreads.password "
+                    f"is set, since the Goodreads sign-in needs the browser sidecar"
+                )
     server = _server(server_raw)
     if server.auth_mode == "dev":
         server = replace(server, dev=_dev(secrets, server_raw.get("dev"), profiles))
@@ -798,10 +815,20 @@ def _goodreads(raw: Any, key: str, secrets: Mapping[str, str]) -> GoodreadsConfi
         # bool is an int subclass; status 6 (Ignored) is never written by sync (§2.3).
         if not isinstance(status, int) or isinstance(status, bool) or not 1 <= status <= 5:
             raise ConfigError(f"{key}.shelf_map.{shelf}: must be a Hardcover status from 1 to 5")
+    # The 4b credentials are a pair: one without the other can't sign in, and silently doing
+    # nothing would look like a working export that never runs (§3.4b, Prerequisites).
+    email = secrets.get(f"{key}.email")
+    password = secrets.get(f"{key}.password")
+    if email is not None and password is None:
+        raise ConfigError(f"{key}.password: required when {key}.email is set")
+    if password is not None and email is None:
+        raise ConfigError(f"{key}.email: required when {key}.password is set")
     return GoodreadsConfig(
         user_id=user_id,
         shelf_map=MappingProxyType(dict(shelf_map)),
         rss_key=secrets.get(f"{key}.rss_key"),
+        email=email,
+        password=password,
     )
 
 

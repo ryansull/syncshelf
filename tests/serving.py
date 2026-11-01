@@ -43,6 +43,8 @@ def make_config(
     dev_profile: str | None = None,
     profile_yaml: dict[str, str] | None = None,
     auth_mode: str = "dev",
+    browser_ws: str | None = None,
+    environ: dict[str, str] | None = None,
 ) -> Config:
     """A config in ``auth_mode``: ``dev`` acting as ``dev_profile`` (default: the first
     profile), or ``oauth`` with the test Access app (:data:`TEAM_DOMAIN`, :data:`ACCESS_AUD`)
@@ -50,6 +52,9 @@ def make_config(
 
     ``profile_yaml`` gives a profile's body as one line of flow YAML, ``{}`` by default. Each
     profile also gets the Hardcover token :func:`hardcover_token` names, unless its body sets one.
+
+    ``browser_ws`` adds the phase 4b sidecar URL to ``services``, which a profile's Goodreads
+    credentials need (#232). ``environ`` adds variables for a body's ``${VAR}`` references.
     """
     profiles = list(profiles)
     bodies = profile_yaml or {}
@@ -67,12 +72,13 @@ def make_config(
             """)
         + (dev_block if auth_mode == "dev" else access_block)
         + f"services:\n  hardcover_url: {HARDCOVER_URL}\n"
+        + (f"  browser_ws: {browser_ws}\n" if browser_ws else "")
         + "profiles:\n"
         + "".join(f"  {name}: {_with_token(name, bodies.get(name, '{}'))}\n" for name in profiles),
         encoding="utf-8",
     )
     tokens = {f"HC_{name.upper()}": hardcover_token(name) for name in profiles}
-    return load_config(path, environ=ENVIRON | tokens)
+    return load_config(path, environ=ENVIRON | tokens | (environ or {}))
 
 
 def hardcover_token(profile: str) -> str:

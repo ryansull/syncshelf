@@ -128,6 +128,49 @@ class TestLifespan:
         everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
         assert SECRET not in everything
 
+    async def test_startup_disables_a_profile_with_no_goodreads_credentials(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        # No credentials means nothing to sign in to, so the session says so rather than
+        # having no row at all (SPEC §3.4b, #232).
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path, profiles=("alice", "bob"))
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            rows = dict(conn.execute("SELECT profile, state FROM goodreads_sessions"))
+        assert rows == {"alice": "disabled", "bob": "disabled"}
+        events = [getattr(r, "event", None) for r in caplog.records]
+        assert "goodreads_export_disabled" in events
+        assert "goodreads_sessions_reconciled" in events
+
+    async def test_startup_offers_a_sign_in_once_credentials_are_configured(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        goodreads = (
+            '{goodreads: {user_id: "1", shelf_map: {read: 3}, '
+            'email: "${GR_EMAIL}", password: "${GR_PASSWORD}"}}'
+        )
+        config = make_config(
+            tmp_path,
+            profiles=("alice",),
+            profile_yaml={"alice": goodreads},
+            browser_ws="ws://browser:3000/",
+            environ={"GR_EMAIL": "reader@example.com", "GR_PASSWORD": "a-test-password"},
+        )
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            rows = dict(conn.execute("SELECT profile, state FROM goodreads_sessions"))
+        assert rows == {"alice": "needs_sign_in"}
+        # The sidecar is configured, so nothing reports 4b as off.
+        assert "goodreads_export_disabled" not in [
+            getattr(r, "event", None) for r in caplog.records
+        ]
+        everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+        assert "a-test-password" not in everything
+
     async def test_startup_syncs_the_profiles_table_with_the_config(
         self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
     ) -> None:
