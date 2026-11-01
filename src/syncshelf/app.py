@@ -61,6 +61,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.goodreads  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.matching  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.sync  # noqa: F401  # registers its tools on REGISTRY
@@ -81,6 +82,8 @@ from syncshelf.sync.goodreads import GoodreadsSync
 from syncshelf.sync.goodreads_session import (
     GOODREADS_DIR,
     SessionReconcile,
+    SidecarBrowser,
+    SignIns,
     reconcile_configured,
     reset_pending,
 )
@@ -262,6 +265,14 @@ def create_app(
                 clock=sync_clock,
             )
             app.state.scheduler = scheduler
+            # No browser_ws means phase 4b is off for this stack (§2.3, #232), and the holder
+            # simply refuses to start a sign-in.
+            sign_ins = SignIns(
+                SidecarBrowser(config.services.browser_ws) if config.services.browser_ws else None,
+                data_dir=data_dir,
+                db=db,
+                clock=clock,
+            )
             mcp.bind(
                 Services(
                     db=db,
@@ -273,6 +284,7 @@ def create_app(
                     applier=applier,
                     confirm=ConfirmTokens(clock),
                     scheduler=scheduler,
+                    sign_ins=sign_ins,
                 )
             )
             async with AsyncExitStack() as stack:
