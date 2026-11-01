@@ -11,13 +11,23 @@ import pytest
 
 from syncshelf.app import create_app
 from syncshelf.sync import runs
+from syncshelf.sync.goodreads_session import ADVICE, record
 from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.sync.runs import RunCounts
+from syncshelf.tools import iso
 from syncshelf.tools.sync import _limiter, status
 
 from clock import FakeClock
 from fakes.hardcover import FakeHardcover
-from serving import hardcover_token, make_config, mcp_client, running
+from serving import (
+    GR_PASSWORD,
+    SIDECAR,
+    credential_env,
+    hardcover_token,
+    make_config,
+    mcp_client,
+    running,
+)
 from sync_world import GR_USER, HC_USER, World, world
 
 pytestmark = pytest.mark.anyio
@@ -37,8 +47,12 @@ async def w(tmp_path: Path) -> AsyncIterator[World]:
         yield w
 
 
-async def current(w: World) -> dict[str, Any]:
-    return await w.db.read(status, "alice", int(w.clock.time()), True)
+ON = {"gr_rss": True, "gr_csv": False}
+"""The RSS source only: the world's profile carries no Goodreads credentials."""
+
+
+async def current(w: World, enabled: dict[str, bool] | None = None) -> dict[str, Any]:
+    return await w.db.read(status, "alice", int(w.clock.time()), enabled or ON)
 
 
 async def test_a_backfilled_profile(w: World) -> None:
@@ -57,7 +71,12 @@ async def test_a_backfilled_profile(w: World) -> None:
     assert s["quarantine"] == {"total": 0, "items": []}
     assert s["gone"] == {"total": 0}
     assert set(s) == {"sources", "mirror", "quarantine", "unmatched", "gone"}
-    assert set(s["sources"]) == {"gr_rss"}  # gr_csv arrives in 4b, abs in phase 5
+    # Both Goodreads sources are listed; gr_csv is off here, so it shows no next run.
+    assert set(s["sources"]) == {"gr_rss", "gr_csv"}  # abs arrives in phase 5
+    assert s["sources"]["gr_csv"]["enabled"] is False
+    assert s["sources"]["gr_csv"]["next_due_at"] is None
+    # And no goodreads_session section at all, rather than a null one (§3.4a.10).
+    assert "goodreads_session" not in s
 
 
 async def test_a_quarantined_change_shows_its_book_and_values(w: World) -> None:
@@ -175,7 +194,7 @@ async def test_a_disabled_source_shows_no_next_run(w: World) -> None:
             "INSERT INTO schedules (profile, source, next_due_at) VALUES ('alice', 'gr_rss', 9)"
         )
     )
-    shown = await w.db.read(status, "alice", int(w.clock.time()), False)
+    shown = await current(w, {"gr_rss": False, "gr_csv": False})
     assert shown["sources"]["gr_rss"]["next_due_at"] is None
 
 
@@ -187,3 +206,118 @@ def test_the_limiter_shows_a_pause_in_wall_clock_time(clock: FakeClock) -> None:
     limiter.observe(RateLimit(daily_remaining=900))
     assert _limiter(limiter)["limiter"] == "reserve"
     assert _limiter(limiter)["daily_remaining"] == 900
+
+
+# --- the Goodreads session section (§3.4b.6, §3.4a.10) ---------------------------------------
+
+CSV_ON = {"gr_rss": True, "gr_csv": True}
+PASSWORD = GR_PASSWORD
+CSV_PROFILE = (
+    '{goodreads: {user_id: "1", shelf_map: {read: 3}, '
+    'email: "${GR_EMAIL}", password: "${GR_PASSWORD}"}, timezone: Etc/UTC}'
+)
+
+
+@pytest.fixture
+async def csv_w(tmp_path: Path) -> AsyncIterator[World]:
+    async with world(tmp_path, csv=True) as w:
+        yield w
+
+
+class TestTheSessionSection:
+    async def test_a_profile_with_no_session_yet_reads_as_needs_sign_in(self, csv_w: World) -> None:
+        # No row means nothing has signed in, which is what needs_sign_in says.
+        shown = await csv_w.db.read(status, "alice", int(csv_w.clock.time()), CSV_ON)
+        assert shown["goodreads_session"] == {
+            "state": "needs_sign_in",
+            "since": None,
+            "detail": None,
+            "action": ADVICE["needs_sign_in"],
+        }
+
+    @pytest.mark.parametrize(
+        "state", ["ok", "needs_sign_in", "awaiting_code", "challenged", "bad_credentials"]
+    )
+    async def test_every_state_is_shown_with_when_it_changed_and_what_to_do(
+        self, csv_w: World, state: str
+    ) -> None:
+        at = int(csv_w.clock.time()) - 60
+        await csv_w.db.write(record, "alice", state, at, "why it stopped")
+        shown = await csv_w.db.read(status, "alice", int(csv_w.clock.time()), CSV_ON)
+        session_shown = shown["goodreads_session"]
+        assert session_shown["state"] == state
+        assert session_shown["since"] == iso(at)
+        assert session_shown["detail"] == "why it stopped"
+        assert session_shown["action"] == ADVICE[state]
+
+    async def test_the_csv_source_shows_its_own_schedule(self, csv_w: World) -> None:
+        now = int(csv_w.clock.time())
+        await csv_w.db.write(
+            lambda conn: conn.execute(
+                "INSERT INTO schedules (profile, source, next_due_at, last_run_at, "
+                "last_success_at, last_result) VALUES ('alice', 'gr_csv', ?, ?, ?, 'ok')",
+                (now + 5 * DAY, now - DAY, now - DAY),
+            )
+        )
+        source = (await csv_w.db.read(status, "alice", now, CSV_ON))["sources"]["gr_csv"]
+        assert source["enabled"] is True
+        assert source["next_due_at"] == iso(now + 5 * DAY)
+        # Separate from last_run_at, so a run that failed doesn't look like a success.
+        assert source["last_run_at"] == source["last_success_at"] == iso(now - DAY)
+
+    async def test_a_failed_export_shows_a_run_without_a_success(self, csv_w: World) -> None:
+        now = int(csv_w.clock.time())
+        await csv_w.db.write(
+            lambda conn: conn.execute(
+                "INSERT INTO schedules (profile, source, next_due_at, last_run_at, "
+                "last_result) VALUES ('alice', 'gr_csv', ?, ?, 'fetch_failed')",
+                (now + DAY, now - HOUR),
+            )
+        )
+        source = (await csv_w.db.read(status, "alice", now, CSV_ON))["sources"]["gr_csv"]
+        assert (source["last_run_at"], source["last_success_at"]) == (iso(now - HOUR), None)
+
+    async def test_a_detail_never_carries_the_password(self, csv_w: World) -> None:
+        # Everything that reaches a detail was scrubbed where it was made (§3.4b.2); this is
+        # the check that the tool layer doesn't put one back.
+        await csv_w.db.write(
+            record, "alice", "bad_credentials", int(csv_w.clock.time()), "Goodreads said no"
+        )
+        shown = await csv_w.db.read(status, "alice", int(csv_w.clock.time()), CSV_ON)
+        assert PASSWORD not in repr(shown)
+
+    async def test_the_section_is_left_out_without_a_csv_source(self, csv_w: World) -> None:
+        await csv_w.db.write(record, "alice", "challenged", int(csv_w.clock.time()), "a bot check")
+        shown = await csv_w.db.read(status, "alice", int(csv_w.clock.time()), ON)
+        assert "goodreads_session" not in shown  # stored, but this stack can't use it
+
+
+async def test_the_tool_carries_the_session_and_its_attention(csv_app: Any) -> None:
+    async with running(csv_app) as http, mcp_client(http) as mcp:
+        result = await mcp.call_tool("sync_status", {})
+        assert not result.is_error, result.content
+        answer = result.structured_content
+        assert answer is not None
+        assert answer["goodreads_session"]["state"] == "needs_sign_in"
+        assert [i["code"] for i in answer["attention"]] == ["goodreads_session"]
+        assert set(answer["sources"]) == {"gr_rss", "gr_csv"}
+
+
+@pytest.fixture
+def csv_app(tmp_path: Path, data_dir: Path, clock: FakeClock) -> Any:
+    """An app whose profile has Goodreads credentials and a sidecar, so it has a CSV source."""
+    fake = FakeHardcover()
+    fake.add_user(hardcover_token("alice"), user_id=42)
+    config = make_config(
+        tmp_path,
+        profile_yaml={"alice": CSV_PROFILE},
+        browser_ws=SIDECAR,
+        environ=credential_env(),
+    )
+    return create_app(
+        config,
+        data_dir=data_dir,
+        clock=clock.time,
+        http_transport=fake.transport,
+        limiter_clock=clock,
+    )

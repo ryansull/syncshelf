@@ -17,9 +17,10 @@ from typing import Any, Literal, NotRequired, TypedDict
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from syncshelf import __version__
-from syncshelf.attention import AttentionItem, attention
+from syncshelf import __version__, sources
+from syncshelf.attention import AttentionItem, attention, session
 from syncshelf.config import ProfileConfig
+from syncshelf.sync.goodreads_session import ADVICE, SessionState
 from syncshelf.sync.identity import release_changes
 from syncshelf.sync.limiter import HardcoverLimiter
 from syncshelf.sync.runs import RunSource
@@ -37,7 +38,7 @@ REVIEW_SHOWN = 40
 """Characters of a review shown."""
 DAY = 86400
 
-SOURCES = {"gr_rss": "goodreads"}
+SOURCES = sources.SOURCES
 """The run sources shipped so far, and the identity source each belongs to."""
 
 
@@ -86,12 +87,24 @@ class Stuck(TypedDict):
     attempts: int
 
 
+class GoodreadsSession(TypedDict):
+    """Where the profile's Goodreads session stands, and what to do about it (§3.4b.6)."""
+
+    state: SessionState
+    since: str | None
+    detail: str | None
+    """A scrubbed reason only: never a password, a cookie or a CSRF token (§3.4b.2)."""
+    action: str
+
+
 class Health(TypedDict):
     """One profile in the household health view: codes and results, no titles or values."""
 
     profile: str
     attention: list[str]
     sources: dict[str, dict[str, str | None]]
+    goodreads_session: NotRequired[dict[str, str]]
+    """Just the state, for a profile with a CSV source (§3.4a.10). No ``detail``."""
 
 
 class Status(TypedDict):
@@ -107,6 +120,7 @@ class Status(TypedDict):
     quarantine: NotRequired[dict[str, Any]]
     unmatched: NotRequired[dict[str, Any]]
     gone: NotRequired[dict[str, int]]
+    goodreads_session: NotRequired[GoodreadsSession]
     household: NotRequired[list[Health]]
     """With ``profile="household"``: every profile's health, in name order."""
 
@@ -118,11 +132,19 @@ def _shown(field: str, value: str | None) -> Any:
     return value
 
 
-def status(conn: sqlite3.Connection, profile: str, now: int, enabled: bool) -> dict[str, Any]:
-    """Everything ``sync_status`` shows for ``profile`` that SQLite holds."""
-    return {
+def status(
+    conn: sqlite3.Connection, profile: str, now: int, enabled: Mapping[str, bool]
+) -> dict[str, Any]:
+    """Everything ``sync_status`` shows for ``profile`` that SQLite holds.
+
+    ``enabled`` says which run sources are switched on, by run source
+    (:func:`syncshelf.sources.enabled`).
+    """
+    answer: dict[str, Any] = {
         "sources": {
-            run_source: _source(conn, profile, run_source, identity_source, now, enabled)
+            run_source: _source(
+                conn, profile, run_source, identity_source, now, enabled[run_source]
+            )
             for run_source, identity_source in SOURCES.items()
         },
         "mirror": _mirror(conn, profile),
@@ -135,6 +157,26 @@ def status(conn: sqlite3.Connection, profile: str, now: int, enabled: bool) -> d
             ).fetchone()[0]
         },
     }
+    # Only for a profile that has the CSV source: a section for a phase or a source that
+    # isn't there is omitted, not null (§3.4a.10).
+    if enabled["gr_csv"]:
+        answer["goodreads_session"] = _session(conn, profile)
+    return answer
+
+
+def _session(conn: sqlite3.Connection, profile: str) -> GoodreadsSession:
+    """The profile's Goodreads session, with the words that say what to do about it."""
+    row = conn.execute(
+        "SELECT state, state_since, detail FROM goodreads_sessions WHERE profile = ?",
+        (profile,),
+    ).fetchone()
+    state: SessionState = session(conn, profile) if row is None else row[0]
+    return GoodreadsSession(
+        state=state,
+        since=iso(row[1]) if row is not None else None,
+        detail=row[2] if row is not None else None,
+        action=ADVICE[state],
+    )
 
 
 def _source(
@@ -272,13 +314,17 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     """How the caller's syncs are doing: use it when the user asks whether their Goodreads
     sync is working, why a book hasn't reached Hardcover, or what's stuck.
 
-    attention lists what needs a person (quarantined changes, a Hardcover bug, a feed not
-    read for a day), each with a message and the action that fixes it.
+    attention lists what needs a person (quarantined changes, a Hardcover bug, a source not
+    read for too long, a Goodreads session that needs signing in to), each with a message and
+    the action that fixes it.
 
     For the caller's own profile ("me", the default) it shows each source's last result, when
     it last ran and succeeded, when it next runs, any backoff after failed fetches, whether
     its first sync (the backfill) is done with how many books were linked and queued, and its
-    recent runs with their errors. Then: how current the copy of the Hardcover library is;
+    recent runs with their errors. The sources are gr_rss (the shelf feed) and, for a profile
+    with Goodreads credentials, gr_csv (the library export), which also brings a
+    goodreads_session section: where the session stands, since when, why, and what to do
+    about it. Then: how current the copy of the Hardcover library is;
     the Hardcover rate limiter (ok, paused, or holding back its daily reserve); quarantined
     changes, each with its book, field, old and new values, error and attempts (release them
     with retry_failed once the cause is fixed); the unmatched queue in counts by reason (see
@@ -286,17 +332,18 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
     Times are ISO 8601 UTC. A review is shown only as its length and first 40 characters.
 
     With profile="household" it is the health view of every profile in the household: each
-    one's attention codes and each source's last result and last success, with no books,
-    values or errors.
+    one's attention codes, each source's last result and last success, and its Goodreads
+    session state, with no books, values or errors.
     """
     caller = current_profile()
     bound = services()
     now = int(bound.clock())
     if profile == "household":
         # Operational data, shown for everyone whatever household_visible says (§3.4a.10).
-        rows = await bound.db.read(health, bound.profiles, now)
+        rows = await bound.db.read(health, bound.profiles, now, bound.sign_ins.available)
         return Status(now=iso(now) or "", version=__version__, household=rows)
-    enabled = bound.profiles[caller].goodreads is not None
+    sidecar = bound.sign_ins.available
+    enabled = sources.enabled(bound.profiles[caller], sidecar=sidecar)
     detail = await bound.db.read(status, caller, now, enabled)
     gate = bound.hardcover[caller].gate if caller in bound.hardcover else None
     answer = Status(
@@ -306,34 +353,45 @@ async def sync_status(profile: Literal["me", "household"] = "me") -> Status:
         hardcover=_limiter(gate),
         **detail,
     )
-    if items := await bound.db.read(attention, caller, now, bound.profiles[caller]):
+    if items := await bound.db.read(attention, caller, now, bound.profiles[caller], sidecar):
         answer["attention"] = items
     return answer
 
 
 def health(
-    conn: sqlite3.Connection, profiles: Mapping[str, ProfileConfig], now: int
+    conn: sqlite3.Connection,
+    profiles: Mapping[str, ProfileConfig],
+    now: int,
+    sidecar: bool = False,
 ) -> list[Health]:
-    """Every profile's health: its attention codes and each source's last result and last
-    success. Nothing that names a book, a value or an error (§3.4a.10)."""
+    """Every profile's health: its attention codes, each source's last result and last
+    success, and its Goodreads session state. Nothing that names a book, a value or an error,
+    and no session ``detail`` — everyone sees this view (§3.4a.10).
+
+    ``sidecar`` is whether the stack has a browser sidecar, which the CSV source needs; the
+    default switches that source off, as :func:`syncshelf.attention.attention` does.
+    """
     rows: list[Health] = []
     for name in sorted(profiles):
-        codes = [item["code"] for item in attention(conn, name, now, profiles[name])]
-        sources: dict[str, dict[str, str | None]] = {}
-        for run_source in _enabled(profiles[name]):
+        switched_on = sources.enabled(profiles[name], sidecar=sidecar)
+        codes = [
+            item["code"] for item in attention(conn, name, now, profiles[name], sidecar=sidecar)
+        ]
+        shown: dict[str, dict[str, str | None]] = {}
+        for run_source, on in switched_on.items():
+            if not on:
+                continue
             found = conn.execute(
                 "SELECT last_result, last_success_at FROM schedules WHERE profile = ? AND "
                 "source = ?",
                 (name, run_source),
             ).fetchone() or (None, None)
-            sources[run_source] = {"last_result": found[0], "last_success_at": iso(found[1])}
-        rows.append(Health(profile=name, attention=codes, sources=sources))
+            shown[run_source] = {"last_result": found[0], "last_success_at": iso(found[1])}
+        row = Health(profile=name, attention=codes, sources=shown)
+        if switched_on["gr_csv"]:
+            row["goodreads_session"] = {"state": session(conn, name)}
+        rows.append(row)
     return rows
-
-
-def _enabled(profile: ProfileConfig) -> list[str]:
-    """The run sources a profile has, of those shipped so far."""
-    return [s for s, identity in SOURCES.items() if identity == "goodreads" and profile.goodreads]
 
 
 class Started(TypedDict):

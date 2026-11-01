@@ -244,6 +244,8 @@ def create_app(
             app.state.grace = grace
             app.state.profiles = config.profiles
             app.state.clock = clock
+            # /healthz needs it to know whether a profile has the CSV source at all (#232).
+            app.state.sidecar = config.services.browser_ws is not None
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             applier = Applier(hardcover, mirror, config.profiles)
@@ -370,7 +372,12 @@ async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "unavailable", "version": __version__}, status_code=503)
     # Liveness rests on the database alone; attention failing is itself worth a look.
     try:
-        rows = await db.read(health, request.app.state.profiles, int(request.app.state.clock()))
+        rows = await db.read(
+            health,
+            request.app.state.profiles,
+            int(request.app.state.clock()),
+            request.app.state.sidecar,
+        )
     except Exception:
         log.exception("health attention failed", extra={"event": "healthz_attention_failed"})
         return JSONResponse({"status": "attention", "version": __version__})

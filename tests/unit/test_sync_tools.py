@@ -19,7 +19,14 @@ from syncshelf.sync.scheduler import Scheduler
 from clock import FakeClock
 from fakes.goodreads import FakeGoodreads
 from fakes.hardcover import FakeHardcover
-from serving import hardcover_token, make_config, mcp_client, running
+from serving import (
+    SIDECAR,
+    credential_env,
+    hardcover_token,
+    make_config,
+    mcp_client,
+    running,
+)
 from sync_world import GR_USERS, HC_USERS, World, world
 
 pytestmark = pytest.mark.anyio
@@ -183,8 +190,8 @@ def csv_app(tmp_path: Path, data_dir: Path, clock: FakeClock) -> Any:
     config = make_config(
         tmp_path,
         profile_yaml={"alice": body},
-        browser_ws="ws://sidecar.invalid:3000",
-        environ={"GR_EMAIL": "reader@example.com", "GR_PASSWORD": "a-test-password-never-shown"},
+        browser_ws=SIDECAR,
+        environ=credential_env(),
     )
     return create_app(
         config,

@@ -17,7 +17,14 @@ from syncshelf.tools.sync import health
 
 from clock import FakeClock
 from fakes.hardcover import FakeHardcover
-from serving import hardcover_token, make_config, mcp_client, running
+from serving import (
+    SIDECAR,
+    credential_env,
+    hardcover_token,
+    make_config,
+    mcp_client,
+    running,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -25,7 +32,8 @@ CASES = yaml.safe_load(
     (Path(__file__).parents[1] / "golden" / "attention.yaml").read_text(encoding="utf-8")
 )["cases"]
 NOW = 4_102_444_800
-GOODREADS = SimpleNamespace(user_id="1")
+GOODREADS = SimpleNamespace(user_id="1", password=None)
+WITH_PASSWORD = SimpleNamespace(user_id="1", password="a-test-password-never-shown")
 HOUR = 3600
 
 
@@ -45,16 +53,23 @@ def seed(conn: sqlite3.Connection, profile: str, state: dict[str, Any]) -> None:
             "'The Secret Title was refused', ?, 2)",
             (profile, f"q{n}", kind),
         )
-    if (ago := state.get("last_success_ago")) is not None:
+    for source, key in (("gr_rss", "last_success_ago"), ("gr_csv", "csv_success_ago")):
+        if (ago := state.get(key)) is not None:
+            conn.execute(
+                "INSERT INTO schedules (profile, source, next_due_at, last_success_at, "
+                "last_result) VALUES (?, ?, 0, ?, 'ok')",
+                (profile, source, NOW - ago * HOUR),
+            )
+    for source, key in (("gr_rss", "due_ago"), ("gr_csv", "csv_due_ago")):
+        if (ago := state.get(key)) is not None:
+            conn.execute(
+                "INSERT INTO schedules (profile, source, next_due_at) VALUES (?, ?, ?)",
+                (profile, source, NOW - ago * HOUR),
+            )
+    if (what := state.get("session")) is not None:
         conn.execute(
-            "INSERT INTO schedules (profile, source, next_due_at, last_success_at, last_result) "
-            "VALUES (?, 'gr_rss', 0, ?, 'ok')",
-            (profile, NOW - ago * HOUR),
-        )
-    if (ago := state.get("due_ago")) is not None:
-        conn.execute(
-            "INSERT INTO schedules (profile, source, next_due_at) VALUES (?, 'gr_rss', ?)",
-            (profile, NOW - ago * HOUR),
+            "INSERT INTO goodreads_sessions (profile, state, state_since) VALUES (?, ?, 0)",
+            (profile, what),
         )
     if (ago := state.get("first_run_ago")) is not None:
         conn.execute(
@@ -76,8 +91,11 @@ def test_case(schema: sqlite3.Connection, case: dict[str, Any]) -> None:
     state = case["state"]
     with schema:
         seed(schema, "alice", state)
-    config = SimpleNamespace(goodreads=GOODREADS if state.get("enabled", True) else None)
-    items = attention(schema, "alice", NOW, config)  # type: ignore[arg-type]
+    goodreads = WITH_PASSWORD if state.get("credentials") else GOODREADS
+    config = SimpleNamespace(goodreads=goodreads if state.get("enabled", True) else None)
+    items = attention(  # type: ignore[arg-type]
+        schema, "alice", NOW, config, bool(state.get("sidecar"))
+    )
     assert [i["code"] for i in items] == case["expect"]
     for item in items:
         assert item["message"] and item["action"]
@@ -106,6 +124,59 @@ def make_config_profiles() -> Any:
         "bob": SimpleNamespace(goodreads=GOODREADS),
         "carol": SimpleNamespace(goodreads=None),
     }
+
+
+def with_credentials() -> Any:
+    return {
+        "alice": SimpleNamespace(goodreads=WITH_PASSWORD),
+        "bob": SimpleNamespace(goodreads=GOODREADS),
+        "carol": SimpleNamespace(goodreads=None),
+    }
+
+
+class TestTheHouseholdViewAndTheSession:
+    """§3.4a.10: the session's **state** travels with the health view, and nothing else of it."""
+
+    def test_a_csv_profile_shows_its_session_state_and_no_detail(
+        self, schema: sqlite3.Connection
+    ) -> None:
+        with schema:
+            seed(schema, "alice", {"last_success_ago": 1, "csv_success_ago": 1})
+            schema.execute(
+                "INSERT INTO goodreads_sessions (profile, state, state_since, detail) "
+                "VALUES ('alice', 'challenged', 0, 'The Secret bot check')"
+            )
+            seed(schema, "bob", {"last_success_ago": 1})
+        rows = health(schema, with_credentials(), NOW, True)
+        assert rows[0]["goodreads_session"] == {"state": "challenged"}
+        assert rows[0]["attention"] == ["goodreads_session"]
+        assert set(rows[0]["sources"]) == {"gr_rss", "gr_csv"}
+        assert "Secret" not in repr(rows)  # the detail never travels with the view
+
+    def test_a_profile_without_credentials_shows_no_session(
+        self, schema: sqlite3.Connection
+    ) -> None:
+        with schema:
+            seed(schema, "bob", {"last_success_ago": 1})
+        rows = health(schema, with_credentials(), NOW, True)
+        bob = next(r for r in rows if r["profile"] == "bob")
+        assert "goodreads_session" not in bob
+        assert set(bob["sources"]) == {"gr_rss"}
+
+    def test_without_a_sidecar_the_csv_source_is_off_everywhere(
+        self, schema: sqlite3.Connection
+    ) -> None:
+        # #232: no sidecar means no CSV source at all, not a permanently stale one.
+        with schema:
+            seed(schema, "alice", {"last_success_ago": 1, "csv_success_ago": 400})
+            schema.execute(
+                "INSERT INTO goodreads_sessions (profile, state, state_since) "
+                "VALUES ('alice', 'challenged', 0)"
+            )
+        (alice, *_) = health(schema, with_credentials(), NOW, False)
+        assert alice["attention"] == []
+        assert "goodreads_session" not in alice
+        assert set(alice["sources"]) == {"gr_rss"}
 
 
 # --- through the app ----------------------------------------------------------------------------
@@ -194,3 +265,64 @@ async def test_an_attention_failure_never_costs_the_answer(
     async with running(app) as http, mcp_client(http) as mcp:
         page = await call(mcp, "get_my_library")
         assert "attention" not in page and "books" in page
+
+
+@pytest.fixture
+def csv_app(tmp_path: Path, data_dir: Path, clock: FakeClock) -> Any:
+    """An app whose profile has Goodreads credentials and a sidecar, so it has a CSV source."""
+    fake = FakeHardcover()
+    fake.add_user(hardcover_token("alice"), user_id=42)
+    body = (
+        '{goodreads: {user_id: "1", shelf_map: {read: 3}, '
+        'email: "${GR_EMAIL}", password: "${GR_PASSWORD}"}, timezone: Etc/UTC}'
+    )
+    config = make_config(
+        tmp_path,
+        profile_yaml={"alice": body},
+        browser_ws=SIDECAR,
+        environ=credential_env(),
+    )
+    return create_app(
+        config,
+        data_dir=data_dir,
+        clock=clock.time,
+        http_transport=fake.transport,
+        limiter_clock=clock,
+    )
+
+
+async def test_healthz_reflects_the_goodreads_session(csv_app: Any) -> None:
+    """§3.4a.10: /healthz carries the codes, so a lapsed session shows there too."""
+    async with running(csv_app) as http:
+        body = (await http.get("/healthz")).json()
+        # Nothing has signed in yet, so the session needs a person.
+        assert body["status"] == "attention"
+        assert body["profiles"] == {"alice": ["goodreads_session"]}
+
+
+async def test_a_session_that_is_fine_leaves_healthz_ok(csv_app: Any, data_dir: Path) -> None:
+    async with running(csv_app) as http:
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO goodreads_sessions (profile, state, state_since, detail) "
+                "VALUES ('alice', 'ok', 0, NULL) ON CONFLICT (profile) DO UPDATE "
+                "SET state = 'ok'"
+            )
+        body = (await http.get("/healthz")).json()
+        assert body == {"status": "ok", "version": body["version"], "profiles": {"alice": []}}
+
+
+async def test_without_a_sidecar_healthz_says_nothing_about_a_session(
+    app: Any, data_dir: Path
+) -> None:
+    # #232: the CSV source is off, so a stored state raises nothing.
+    async with running(app) as http:
+        # Startup already made the row (disabled, since the profile has no credentials).
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO goodreads_sessions (profile, state, state_since) "
+                "VALUES ('alice', 'challenged', 0) ON CONFLICT (profile) DO UPDATE "
+                "SET state = 'challenged'"
+            )
+        body = (await http.get("/healthz")).json()
+        assert body["profiles"] == {"alice": [], "bob": []}
