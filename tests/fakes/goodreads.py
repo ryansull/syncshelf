@@ -14,17 +14,22 @@ Faults are injected with :meth:`FakeGoodreads.fail_next`.
 """
 
 import copy
+import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 
+from fakes.goodreads_csv import ExportBook, library_export
+
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "goodreads" / "rss_page.xml"
 HOST = "www.goodreads.com"
 PATH_PREFIX = "/review/list_rss/"
+_TRIGGER = re.compile(r"/review_porter/export/\d+")
+_DOWNLOAD = re.compile(r"/review_porter/export/\d+/goodreads_export\.csv$")
 BUILT_IN_SHELVES = ("read", "currently-reading", "to-read")
 
 Fault = Literal["challenge", "captcha", "server_error", "html", "wrong_shelf", "timeout"]
@@ -57,6 +62,13 @@ class _ExportPlan:
     offsite: str | None = None
     body: str = "<html><body>import</body></html>"
     status: int = 200
+    trigger_status: int = 200
+    """What the trigger POST answers. A non-2xx is the refusal #231 decided the fallback for."""
+    not_ready: int = 0
+    """How many 404s the download path answers before the CSV is there (§3.4b.4 step 3)."""
+    csv: bytes = b""
+    """The export body. Empty means the fake builds a one-book export."""
+    download_status: int = 200
 
 
 @dataclass
@@ -77,6 +89,7 @@ class FakeGoodreads:
         self.requests: list[Request] = []
         self.export_requests: list[ExportRequest] = []
         self.rotations = 0
+        self.triggers = 0
         self._export_plan = _ExportPlan()
         self._clock = clock
         self._faults: list[tuple[int | None, Fault]] = []
@@ -177,6 +190,10 @@ class FakeGoodreads:
         offsite: str | None = None,
         body: str = "<html><body>import</body></html>",
         status: int = 200,
+        trigger_status: int = 200,
+        not_ready: int = 0,
+        csv: bytes = b"",
+        download_status: int = 200,
     ) -> None:
         """Set up how the next export request is answered.
 
@@ -185,7 +202,17 @@ class FakeGoodreads:
         redirects to the sign-in page. ``offsite`` redirects to that absolute URL, for the leak
         guard. A WAF stop is injected with :meth:`fail_next` as for the feed.
         """
-        self._export_plan = _ExportPlan(rotate, expired, offsite, body, status)
+        self._export_plan = _ExportPlan(
+            rotate,
+            expired,
+            offsite,
+            body,
+            status,
+            trigger_status,
+            not_ready,
+            csv,
+            download_status,
+        )
 
     def _export(self, request: httpx2.Request, path: str) -> httpx2.Response:
         at = self._clock.monotonic() if self._clock is not None else 0.0
@@ -195,6 +222,8 @@ class FakeGoodreads:
                 raise httpx2.ReadTimeout("timed out", request=request)
             return _fault(fault, None)
         plan = self._export_plan
+        # Transport-level conditions first: a signed-out or redirected session answers that way
+        # whatever was asked for, so they must not be shadowed by the path dispatch below.
         if plan.offsite is not None:
             # One-shot, so a same-host redirect can be followed to an ordinary 200 next hop.
             self._export_plan = _ExportPlan(plan.rotate, plan.expired, None, plan.body, plan.status)
@@ -217,9 +246,24 @@ class FakeGoodreads:
                     ),
                 ],
             )
+        if _DOWNLOAD.search(path):
+            return self._download(plan)
+        if request.method == "POST" and _TRIGGER.fullmatch(path):
+            self.triggers += 1
+            return httpx2.Response(plan.trigger_status, text="")
         return httpx2.Response(
             plan.status, headers={"content-type": "text/html; charset=utf-8"}, text=plan.body
         )
+
+    def _download(self, plan: _ExportPlan) -> httpx2.Response:
+        """Answer the download path: 404 until the export is ready, then the CSV."""
+        if plan.not_ready > 0:
+            self._export_plan = replace(plan, not_ready=plan.not_ready - 1)
+            return httpx2.Response(404, text="not ready")
+        if plan.download_status != 200:
+            return httpx2.Response(plan.download_status, text="")
+        body = plan.csv or library_export(ExportBook(book_id=10, title="Some Book"))
+        return httpx2.Response(200, headers={"content-type": "text/csv"}, content=body)
 
     def _take_fault(self, page: int) -> Fault | None:
         for i, (wanted, fault) in enumerate(self._faults):
