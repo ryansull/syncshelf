@@ -56,6 +56,7 @@ __all__ = [
     "load_jar",
     "reconcile_configured",
     "record",
+    "record_expired",
     "reset_pending",
     "stamp_auto_sign_in",
     "save_jar",
@@ -459,6 +460,24 @@ def record(
         "INSERT INTO goodreads_sessions (profile, state, state_since, detail) VALUES (?, ?, ?, ?) "
         "ON CONFLICT (profile) DO UPDATE SET state = ?, state_since = ?, detail = ?",
         (profile, state, now, detail, state, now, detail),
+    )
+
+
+def record_expired(conn: sqlite3.Connection, profile: str, now: int, detail: str) -> None:
+    """Note that Goodreads asked for a sign-in again, **unless** the state is sticky.
+
+    A `challenged` or `bad_credentials` session only a person can clear (§3.4b.2), so an
+    expired request must not quietly move it to ``needs_sign_in``: that would both lose why it
+    stopped and let the next unattended attempt past :func:`may_sign_in_again`. The sticky
+    check is in the statement rather than a read-then-write, so two runs cannot race it.
+    """
+    placeholders = ", ".join("?" * len(STICKY_STATES))
+    conn.execute(
+        "INSERT INTO goodreads_sessions (profile, state, state_since, detail) "
+        "VALUES (?, 'needs_sign_in', ?, ?) ON CONFLICT (profile) DO UPDATE SET "
+        "state = 'needs_sign_in', state_since = ?, detail = ? "
+        f"WHERE goodreads_sessions.state NOT IN ({placeholders})",
+        (profile, now, detail, now, detail, *STICKY_STATES),
     )
 
 

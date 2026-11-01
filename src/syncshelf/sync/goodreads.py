@@ -48,11 +48,13 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx2
 
 from syncshelf.clients.goodreads_csv import BadExport, parse_export
+from syncshelf.clients.goodreads_export import Challenged, ExportError, SessionExpired
 from syncshelf.clients.goodreads_rss import GoodreadsRss, Pacer
 from syncshelf.clients.hardcover import (
     EDITION_FORMATS,
@@ -66,7 +68,7 @@ from syncshelf.clients.hardcover import (
 from syncshelf.config import ProfileConfig
 from syncshelf.db import Database
 from syncshelf.logging import scrub
-from syncshelf.sync import batches, identity, runs
+from syncshelf.sync import batches, exporting, identity, runs
 from syncshelf.sync.apply import (
     UNSET,
     Applied,
@@ -84,6 +86,12 @@ from syncshelf.sync.apply import (
     Start,
     Target,
 )
+from syncshelf.sync.goodreads_session import (
+    AutoSignIn,
+    SessionState,
+    record,
+    record_expired,
+)
 from syncshelf.sync.identity import ErrorClass, LogRow, Pending, Placement, SourceRow
 from syncshelf.sync.limiter import Deferred, TooCostly
 from syncshelf.sync.matcher import Candidate, IdHit, MatchInput, Outcome, match
@@ -97,7 +105,7 @@ from syncshelf.sync.observations import (
 )
 from syncshelf.sync.runs import RunCounts, RunResult, RunState, Trigger
 
-__all__ = ["Clock", "GoodreadsSync", "Resolution"]
+__all__ = ["AutoSignIns", "Clock", "GoodreadsSync", "Resolution"]
 
 log = logging.getLogger(__name__)
 
@@ -123,11 +131,34 @@ class Clock(Protocol):
     async def sleep(self, seconds: float) -> None: ...
 
 
+class AutoSignIns(Protocol):
+    """What a CSV run needs from the sign-in holder: one unattended attempt (§3.4b.2).
+
+    A protocol rather than :class:`~syncshelf.sync.goodreads_session.SignIns` itself, because
+    the engine never starts an attended sign-in and never touches a browser: all it does with
+    a sign-in is ask whether one can be had without a person.
+    """
+
+    @property
+    def available(self) -> bool:
+        """Whether a sign-in can be attempted at all (a sidecar is configured)."""
+        ...
+
+    async def attempt_unattended(
+        self, profile: str, email: str, password: str, now: int
+    ) -> AutoSignIn: ...
+
+
 class GoodreadsSync:
     """Runs each profile's Goodreads source against its Hardcover shelves.
 
     One per process. Profiles without a ``goodreads`` section have no source here.
     ``transport`` carries Goodreads requests in tests (§2.9).
+
+    ``data_dir`` and ``sign_ins`` are what the CSV source needs: the cookie jars, and the
+    unattended sign-in a run falls back on when it finds the session expired (§3.4b.2).
+    Without either, :meth:`csv_enabled` is false and only RSS runs — which is the shape of a
+    stack with no browser sidecar configured (§2.3, #232).
     """
 
     def __init__(
@@ -139,6 +170,8 @@ class GoodreadsSync:
         mirror: Mirror,
         applier: Applier,
         clock: Clock,
+        data_dir: Path | None = None,
+        sign_ins: AutoSignIns | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         self._db = db
@@ -147,7 +180,11 @@ class GoodreadsSync:
         self._mirror = mirror
         self._applier = applier
         self._clock = clock
+        self._data_dir = data_dir
+        self._sign_ins = sign_ins
+        self._transport = transport
         self._rss: dict[str, GoodreadsRss] = {}
+        self._pacers: dict[str, Pacer] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._running: dict[str, tuple[int, int]] = {}
         self._announced: dict[str, int] = {}
@@ -155,10 +192,13 @@ class GoodreadsSync:
         for name, profile in profiles.items():
             if profile.goodreads is None:
                 continue
+            # One pacer per profile, shared by the feed and the export, so all of a profile's
+            # Goodreads traffic — from one IP — stays single-flight and ≥ 2 s apart (§3.4b.4).
+            self._pacers[name] = Pacer(clock)
             self._rss[name] = GoodreadsRss(
                 profile.goodreads.user_id,
                 key=profile.goodreads.rss_key,
-                pacer=Pacer(clock),
+                pacer=self._pacers[name],
                 transport=transport,
             )
             self._locks[name] = asyncio.Lock()
@@ -383,6 +423,163 @@ class GoodreadsSync:
                 },
             )
         return RunResult(run_id, state, counts.fetched, counts.observed_at)
+
+    def csv_enabled(self, profile: str) -> bool:
+        """Whether the profile has a CSV source: a Goodreads section, credentials, the jars
+        and a sidecar to sign in with (§3.4b.5, §2.3)."""
+        goodreads = self._profiles[profile].goodreads if profile in self._profiles else None
+        return (
+            profile in self._rss
+            and goodreads is not None
+            and goodreads.password is not None
+            and self._data_dir is not None
+            and self._sign_ins is not None
+            and self._sign_ins.available
+        )
+
+    async def run_csv(
+        self,
+        profile: str,
+        trigger: Trigger = "schedule",
+        started: Callable[[int, int], None] | None = None,
+        *,
+        held: bool = False,
+    ) -> RunResult:
+        """Run the profile's CSV source once: fetch a library export and apply it (§3.4b.4).
+
+        The same contract as :meth:`run_rss` — the lock, the ``started`` callback, every
+        outcome on the run's row — against the other source. Raises for a profile with no
+        CSV source; :meth:`csv_enabled` says which have one.
+        """
+        if not self.csv_enabled(profile):
+            raise KeyError(f"profile {profile} has no Goodreads CSV source")
+        if held:
+            return await self._locked_csv(profile, trigger, started)
+        async with self._locks[profile]:
+            return await self._locked_csv(profile, trigger, started)
+
+    async def _locked_csv(
+        self, profile: str, trigger: Trigger, told: Callable[[int, int], None] | None
+    ) -> RunResult:
+        started = int(self._clock.time())
+        began = self._clock.monotonic()
+        run_id = await self._db.write(runs.start, profile, "gr_csv", trigger, started)
+        self._running[profile] = (run_id, started)
+        if told is not None:
+            told(run_id, started)
+        counts = RunCounts()
+        state: RunState = "aborted"
+        try:
+            state = await self._csv(profile, run_id, counts)
+        except Exception as exc:
+            counts.error(f"the run stopped on an internal error ({type(exc).__name__})")
+            log.exception(
+                "the Goodreads CSV run stopped on an internal error",
+                extra={"event": "run_crashed", "profile": profile, "run_id": run_id},
+            )
+        finally:
+            try:
+                await self._db.write(runs.finish, run_id, state, counts, int(self._clock.time()))
+            finally:
+                self._running.pop(profile, None)
+            log.info(
+                "Goodreads CSV run %s",
+                state,
+                extra={
+                    "event": "run_finished",
+                    "profile": profile,
+                    "source": "gr_csv",
+                    "run_id": run_id,
+                    "state": state,
+                    "applied": counts.applied,
+                    "failed": counts.failed,
+                    "quarantined": counts.quarantined,
+                    "duration_s": round(self._clock.monotonic() - began, 3),
+                },
+            )
+        return RunResult(run_id, state, counts.fetched, counts.observed_at)
+
+    async def _csv(self, profile: str, run_id: int, counts: RunCounts) -> RunState:
+        """Fetch an export, then apply every batch not yet applied, this one included.
+
+        The run's state is **this export's** state. An earlier upload that defers stops the
+        run, as it does in an RSS run: Hardcover being unreachable is no reason to go on.
+        """
+        exported = await self._export(profile, counts)
+        if exported is None:
+            return "fetch_failed"
+        counts.fetched, counts.observed_at = True, exported.observed_at
+        state: RunState = "ok"
+        for stored in await self._db.read(batches.unprocessed, profile):
+            outcome = await self._stored(profile, stored, run_id, counts)
+            if outcome == "deferred":
+                return outcome
+            if stored.id == exported.batch_id:
+                state = outcome
+        return state
+
+    async def _export(self, profile: str, counts: RunCounts) -> exporting.Exported | None:
+        """Fetch the export, signing in again once if the session has expired (§3.4b.2).
+
+        ``None`` means the export could not be fetched; the session's own state says why, and
+        the reason is on the run as an error. A WAF stop is sticky, so it is recorded as
+        ``challenged`` and never retried here.
+        """
+        try:
+            return await self._fetch_export(profile)
+        except SessionExpired:
+            pass  # handled below, so the retry isn't nested inside this handler
+        except Challenged as exc:
+            await self._session(profile, "challenged", scrub(str(exc)))
+            counts.error(scrub(str(exc)))
+            return None
+        except (ExportError, BadExport) as exc:
+            counts.error(scrub(str(exc)))
+            return None
+
+        signed_in = await self._sign_in_again(profile)
+        if not signed_in:
+            counts.error("the Goodreads session has expired and a sign-in needs a person")
+            return None
+        try:
+            return await self._fetch_export(profile)
+        except Challenged as exc:
+            await self._session(profile, "challenged", scrub(str(exc)))
+            counts.error(scrub(str(exc)))
+        except (ExportError, BadExport) as exc:
+            # Including a second SessionExpired: a fresh jar that is already signed out is
+            # not something another attempt would fix, and the cap would refuse it anyway.
+            counts.error(scrub(str(exc)))
+        return None
+
+    async def _fetch_export(self, profile: str) -> exporting.Exported:
+        assert self._data_dir is not None
+        return await exporting.fetch_and_store(
+            self._db,
+            profile,
+            tz=self._profiles[profile].tzinfo(),
+            data_dir=self._data_dir,
+            pacer=self._pacers[profile],
+            clock=self._clock,
+            transport=self._transport,
+        )
+
+    async def _sign_in_again(self, profile: str) -> bool:
+        """One unattended sign-in after an expired session, if §3.4b.2's limits allow it."""
+        goodreads = self._profiles[profile].goodreads
+        assert goodreads is not None and self._sign_ins is not None
+        assert goodreads.email is not None and goodreads.password is not None
+        now = int(self._clock.time())
+        # Never over a sticky state: that is the state a person has to clear, and losing it
+        # here would also let the next attempt past the once-a-day cap.
+        await self._db.write(record_expired, profile, now, "Goodreads asked for a sign-in again")
+        result = await self._sign_ins.attempt_unattended(
+            profile, goodreads.email, goodreads.password, now
+        )
+        return result.state == "ok"
+
+    async def _session(self, profile: str, state: SessionState, detail: str | None) -> None:
+        await self._db.write(record, profile, state, int(self._clock.time()), detail)
 
     async def _run(
         self, profile: str, rss: GoodreadsRss, run_id: int, started: int, counts: RunCounts

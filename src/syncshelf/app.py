@@ -248,6 +248,14 @@ def create_app(
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
             applier = Applier(hardcover, mirror, config.profiles)
             sync_clock = limiter_clock or SystemClock()
+            # No browser_ws means phase 4b is off for this stack (§2.3, #232), and the holder
+            # simply refuses to start a sign-in.
+            sign_ins = SignIns(
+                SidecarBrowser(config.services.browser_ws) if config.services.browser_ws else None,
+                data_dir=data_dir,
+                db=db,
+                clock=clock,
+            )
             goodreads = GoodreadsSync(
                 db=db,
                 profiles=config.profiles,
@@ -255,6 +263,8 @@ def create_app(
                 mirror=mirror,
                 applier=applier,
                 clock=sync_clock,
+                data_dir=data_dir,
+                sign_ins=sign_ins,
                 transport=http_transport,
             )
             scheduler = Scheduler(
@@ -265,14 +275,6 @@ def create_app(
                 clock=sync_clock,
             )
             app.state.scheduler = scheduler
-            # No browser_ws means phase 4b is off for this stack (§2.3, #232), and the holder
-            # simply refuses to start a sign-in.
-            sign_ins = SignIns(
-                SidecarBrowser(config.services.browser_ws) if config.services.browser_ws else None,
-                data_dir=data_dir,
-                db=db,
-                clock=clock,
-            )
             mcp.bind(
                 Services(
                     db=db,
