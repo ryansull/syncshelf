@@ -75,7 +75,8 @@ def test_a_phase_3_database_is_snapshotted_then_migrated(tmp_path: Path) -> None
     with closing(connect(tmp_path / "db.sqlite")) as conn:
         migrate(conn, snapshot_dir=tmp_path, migrations_dir=phase3)
         result = migrate(conn, snapshot_dir=tmp_path)
-        assert (result.from_version, result.applied) == (3, [4])
+        # Every migration shipped since phase 3 applies in one go; 0005 arrived with phase 4b.
+        assert (result.from_version, result.applied) == (3, [4, 5])
         assert result.snapshot == snapshot_path(tmp_path, 3)
         assert result.snapshot.exists()
 

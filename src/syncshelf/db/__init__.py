@@ -76,7 +76,11 @@ class Database:
         self._local = threading.local()
         self._readers: list[sqlite3.Connection] = []
         self._readers_lock = threading.Lock()
+        self._reading = 0
+        """Reads running in worker threads, which close() waits for."""
+        self._idle = threading.Condition(self._readers_lock)
         self._closed = False
+        self._closing: asyncio.Future[None] | None = None
 
     @classmethod
     async def open(
@@ -149,13 +153,28 @@ class Database:
         return await asyncio.to_thread(self._snapshot, fn, args)
 
     def _snapshot[*Ts, R](self, fn: Callable[[sqlite3.Connection, *Ts], R], args: tuple[*Ts]) -> R:
-        conn = self._reader()
-        conn.execute("BEGIN")
+        with self._readers_lock:
+            if self._closed:
+                raise RuntimeError("the database is closed")
+            self._reading += 1
         try:
-            return fn(conn, *args)
+            conn = self._reader()
+            conn.execute("BEGIN")
+            try:
+                return fn(conn, *args)
+            finally:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
         finally:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
+            with self._readers_lock:
+                self._reading -= 1
+                self._idle.notify_all()
+
+    def _drain(self) -> list[sqlite3.Connection]:
+        with self._readers_lock:
+            self._idle.wait_for(lambda: self._reading == 0)
+            readers, self._readers = self._readers, []
+        return readers
 
     def _reader(self) -> sqlite3.Connection:
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
@@ -174,14 +193,20 @@ class Database:
     async def close(self) -> None:
         """Close every connection and stop the writer thread. Safe to call twice.
 
-        Call it once no reads or writes are in flight (the lifespan does, after cancelling the
-        sync loops).
+        Reads still running are waited for first: cancelling the task that awaited one doesn't
+        stop its thread, and closing a connection under it would crash the process. Call it
+        once nothing new will start (the lifespan does, after cancelling the sync loops).
         """
-        if self._closed:
-            return
+        if self._closing is None:
+            # Shielded, so a cancelled caller (a lifespan torn down) can't leave connections
+            # or the writer open; a second caller waits for the same close.
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self) -> None:
         with self._readers_lock:
             self._closed = True
-            readers, self._readers = self._readers, []
+        readers = await asyncio.to_thread(self._drain)
         for conn in readers:
             conn.close()
         executor, self._writer_executor = self._writer_executor, None

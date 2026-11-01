@@ -241,6 +241,15 @@ async def test_a_correction_moves_the_read_finished_on_the_old_date(
     assert [w[0] for w in fake.writes] == ["update_user_book_read"]
 
 
+async def test_a_correction_keeps_the_moved_reads_edition_whatever_its_format(
+    applier: Applier, fake: FakeHardcover
+) -> None:
+    # The format only picks the edition of a read the correction has to add (§3.3.5).
+    shelve(fake, 3, read(1, "2099-01-01", "2099-05-09", AUDIO))
+    await applier.apply("alice", 7, Target(read=Correct("2099-05-09", "2099-06-02", "print")))
+    assert reads(fake) == [("2099-01-01", "2099-06-02", AUDIO)]
+
+
 async def test_a_correction_with_a_status_change_leaves_no_invented_read(
     applier: Applier, fake: FakeHardcover
 ) -> None:

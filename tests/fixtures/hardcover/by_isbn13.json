@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-19",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "editions": [
+        {
+          "id": 30442014,
+          "book_id": 427473,
+          "isbn_13": "9780345539793",
+          "reading_format_id": 0,
+          "book": {
+            "title": "Red Rising",
+            "canonical_id": null
+          }
+        }
+      ]
+    }
+  }
+}

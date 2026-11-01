@@ -2,6 +2,7 @@
 
     uv run python tests/live/record.py hardcover --token-var HARDCOVER_TOKEN_ALICE
     uv run python tests/live/record.py goodreads_rss --user-var GOODREADS_USER_ID_ALICE
+    uv run python tests/live/record.py goodreads_csv --file local/goodreads_library_export.csv
 
 Credentials come from the repo-root ``.env`` (``--env`` to read another). Recording only
 **reads**: it sends the same queries the client does, with a small page, and writes each
@@ -11,6 +12,8 @@ fixture test afterwards (``uv run pytest tests/unit/test_fixtures.py``).
 
 import argparse
 import asyncio
+import csv
+import io
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +34,10 @@ from syncshelf.clients.goodreads_rss import (  # noqa: E402
 from syncshelf.clients.hardcover import (  # noqa: E402
     BOOK,
     BOOKS_BY_ID,
+    BY_GOODREADS,
+    BY_ISBN10,
+    BY_ISBN13,
+    EDITION_FORMATS,
     GOALS,
     LIBRARY,
     ME,
@@ -47,7 +54,9 @@ from scrub import write_fixture, write_native_fixture  # noqa: E402
 FIXTURES = ROOT / "tests" / "fixtures"
 HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 HARDCOVER_VERSION = "api.hardcover.app/v1 (sends no version header)"
+GOODREADS_IDS = ["247031753", "34873380", "57189884", "999999999999"]
 GOODREADS_VERSION = "www.goodreads.com shelf RSS (sends no version header)"
+GOODREADS_CSV_VERSION = "www.goodreads.com library export (Import and export)"
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -95,6 +104,15 @@ async def record_hardcover(token: str, limit: int) -> None:
         search = await client.execute(
             SEARCH, {"q": "dune", "filter": None, "sort": None, "per": 3, "page": 1}
         )
+        # Public Goodreads edition ids (from the RSS fixture), and one Goodreads doesn't have.
+        by_goodreads = await client.execute(BY_GOODREADS, {"ids": GOODREADS_IDS})
+        edition_ids = sorted(
+            {m["edition_id"] for m in by_goodreads.data["book_mappings"] if m["edition_id"]}
+        )
+        edition_formats = await client.execute(EDITION_FORMATS, {"ids": edition_ids})
+        # A public ISBN pair (Red Rising), and an ISBN-13 no edition has.
+        by_isbn13 = await client.execute(BY_ISBN13, {"v": ["9780345539793", "9790000000001"]})
+        by_isbn10 = await client.execute(BY_ISBN10, {"v": ["0345539796"]})
     finally:
         await client.aclose()
     out = FIXTURES / "hardcover"
@@ -108,6 +126,10 @@ async def record_hardcover(token: str, limit: int) -> None:
         "series": series.data,
         "search": search.data,
         "books_by_id": by_id.data,
+        "by_goodreads": by_goodreads.data,
+        "edition_formats": edition_formats.data,
+        "by_isbn13": by_isbn13.data,
+        "by_isbn10": by_isbn10.data,
     }
     for name, data in recorded.items():
         write_fixture(
@@ -149,14 +171,57 @@ async def record_goodreads_rss(user_id: str, limit: int) -> None:
         print(f"wrote {out / f'{name}.xml'}")
 
 
+def record_goodreads_csv(export: Path, limit: int) -> None:
+    """A few rows of a library export someone downloaded, chosen to cover the shapes the
+    parser handles (an ISBN and none, a Date Read, each exclusive shelf, each Binding), then
+    the file order. Nothing is fetched; the rows are scrubbed before they're written."""
+    with export.open(encoding="utf-8", newline="") as file:
+        text = file.read()
+    header, *rows = list(csv.reader(io.StringIO(text, newline="")))
+    if "Book Id" not in header:
+        sys.exit(f"{export}: not a Goodreads library export; nothing written")
+    at = {name: i for i, name in enumerate(header)}
+
+    def shapes(row: list[str]) -> set[str]:
+        return {
+            f"isbn:{row[at['ISBN13']].strip('="') != ''}",
+            f"read:{bool(row[at['Date Read']])}",
+            f"review:{bool(row[at['My Review']])}",
+            f"shelf:{row[at['Exclusive Shelf']]}",
+            f"binding:{row[at['Binding']]}",
+        }
+
+    chosen: list[list[str]] = []
+    covered: set[str] = set()
+    for row in rows:
+        if len(chosen) < limit and not shapes(row) <= covered:
+            chosen.append(row)
+            covered |= shapes(row)
+    chosen += [row for row in rows if row not in chosen][: max(0, limit - len(chosen))]
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows([header, *sorted(chosen, key=rows.index)])
+    path = FIXTURES / "goodreads" / "library_export.csv"
+    recorded_at = datetime.fromtimestamp(export.stat().st_mtime, UTC).date().isoformat()
+    write_native_fixture(
+        path, out.getvalue(), recorded_at=recorded_at, server_version=GOODREADS_CSV_VERSION
+    )
+    print(f"wrote {path} ({len(chosen)} rows)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("source", choices=["hardcover", "goodreads_rss"])
+    parser.add_argument("source", choices=["hardcover", "goodreads_rss", "goodreads_csv"])
     parser.add_argument("--token-var", help="hardcover: the .env variable holding the PAT")
     parser.add_argument("--user-var", help="goodreads_rss: the .env variable holding the user id")
+    parser.add_argument("--file", type=Path, help="goodreads_csv: the downloaded export")
     parser.add_argument("--env", type=Path, default=ROOT / ".env")
     parser.add_argument("--limit", type=int, default=5, help="user_books or feed items to record")
     args = parser.parse_args()
+    if args.source == "goodreads_csv":
+        if args.file is None:
+            sys.exit("--file is required")
+        record_goodreads_csv(args.file, max(args.limit, 8))
+        return
     var = args.token_var if args.source == "hardcover" else args.user_var
     if not var:
         sys.exit(

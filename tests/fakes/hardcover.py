@@ -44,6 +44,8 @@ class _Fault:
     user_id: int | None = None
     after: int = 0
     """Matching requests still to let through before this one fails."""
+    landed: bool = False
+    """A ``timeout`` after the request was applied: the write landed, the client saw none."""
 
 
 class FakeHardcover:
@@ -63,6 +65,11 @@ class FakeHardcover:
         self.catalog: dict[int, dict[str, Any]] = {}
         """Every book the fake knows, by id, with the fields ``Book`` answers beyond the
         library query's. Shelving a book adds it."""
+        self.editions: dict[int, dict[str, Any]] = {}
+        """Editions by id, for ``EditionFormats``: each mapped edition, plus any a test adds."""
+        self.mappings: dict[str, list[dict[str, Any]]] = {}
+        """Goodreads edition ids (``external_id``) to their ``{book_id, edition}`` rows,
+        oldest first, for ``ByGoodreads``; see :meth:`add_mapping`."""
         self.requests: list[tuple[str, dict[str, Any]]] = []
         """Each request's operation name and variables, in order."""
         self.today = "2100-01-01"
@@ -117,6 +124,7 @@ class FakeHardcover:
         if row["book"] is not None:
             self.catalog[book_id] = {
                 **book_extras(),
+                "slug": f"book-{book_id}",
                 **self.catalog.get(book_id, {}),
                 **row["book"],
             }
@@ -186,9 +194,39 @@ class FakeHardcover:
 
     def add_book(self, book_id: int, **fields: Any) -> dict[str, Any]:
         """Put an unshelved book in the catalog, with ``fields`` over the defaults."""
-        book = {**user_book_row(0, book_id)["book"], **book_extras(), **fields}
+        book = {
+            **user_book_row(0, book_id)["book"],
+            **book_extras(),
+            "slug": f"book-{book_id}",
+            **fields,
+        }
         self.catalog[book_id] = book
         return book
+
+    def add_mapping(
+        self,
+        goodreads_id: int | str,
+        book_id: int,
+        edition_id: int | None = None,
+        *,
+        title: str | None = None,
+        **edition: Any,
+    ) -> None:
+        """Map a Goodreads edition id to ``book_id`` (platform 1), with that edition's
+        ``isbn_13`` / ``isbn_10`` / ``asin`` / ``reading_format_id`` from ``edition``. The book
+        joins the catalog if it isn't there, so its title and ``canonical_id`` come back;
+        ``title`` names it (the matcher checks a hit's title against the source's)."""
+        if book_id not in self.catalog:
+            self.add_book(book_id)
+        if title is not None:
+            self.catalog[book_id]["title"] = title
+        fields = {"isbn_13": None, "isbn_10": None, "asin": None, "reading_format_id": None}
+        edition_row = None if edition_id is None else {"id": edition_id, **fields, **edition}
+        self.mappings.setdefault(str(goodreads_id), []).append(
+            {"book_id": book_id, "edition": edition_row}
+        )
+        if edition_row is not None:
+            self.editions[edition_id] = {"book_id": book_id, **edition_row}  # type: ignore[index]
 
     def add_list(self, user_id: int, name: str, book_ids: list[int]) -> None:
         list_id = next(self._ids)
@@ -204,15 +242,20 @@ class FakeHardcover:
         message: str = "refused",
         user_id: int | None = None,
         after: int = 0,
+        landed: bool = False,
     ) -> None:
         """Make the next request for ``operation`` fail with ``kind`` (one of :data:`FAULTS`),
         from any user, or only from ``user_id``; with ``after``, that many succeed first.
 
-        ``validation`` answers 200 with ``message`` in the mutation result's ``error``.
+        ``validation`` answers 200 with ``message`` in the mutation result's ``error``. A
+        ``timeout`` with ``landed`` applies the request first (§2.9: the write landed, but
+        the client saw an error).
         """
         if kind not in FAULTS:
             raise ValueError(f"unknown fault {kind!r}")
-        fault = _Fault(kind, retry_after, message, user_id, after)
+        if landed and kind != "timeout":
+            raise ValueError("only a timeout can land")
+        fault = _Fault(kind, retry_after, message, user_id, after, landed)
         self._faults.setdefault(operation, []).append(fault)
 
     # --- transport ------------------------------------------------------------------------
@@ -244,6 +287,9 @@ class FakeHardcover:
         if fault is not None:
             faults.remove(fault)
             if fault.kind == "timeout":
+                if fault.landed:
+                    handler = self._handlers()[operation]
+                    handler(user_id, variables)
                 raise httpx2.ReadTimeout("timed out", request=request)
             if fault.kind == "rate_limited":
                 return httpx2.Response(
@@ -296,6 +342,10 @@ class FakeHardcover:
             "Similar": self._similar,
             "Search": self._search,
             "BooksById": self._books_by_id,
+            "ByGoodreads": self._by_goodreads,
+            "EditionFormats": self._edition_formats,
+            "ByIsbn13": lambda _u, v: self._by_isbn("isbn_13", v),
+            "ByIsbn10": lambda _u, v: self._by_isbn("isbn_10", v),
             "Series": lambda _u, v: {
                 "series": [self.series[i] for i in sorted(v["ids"]) if i in self.series]
             },
@@ -516,7 +566,9 @@ class FakeHardcover:
 
     def _book(self, user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         book = self.catalog.get(variables["book_id"])
-        return {"books": [book] if book else [], "user_books": self._shelf(user_id, variables)}
+        # The catalog holds every field any query asks for; Book doesn't ask for the slug.
+        shown = {k: v for k, v in book.items() if k != "slug"} if book else None
+        return {"books": [shown] if shown else [], "user_books": self._shelf(user_id, variables)}
 
     def _search(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         """Typesense, roughly: a word match on title or author unless the query is ``*``,
@@ -547,11 +599,74 @@ class FakeHardcover:
 
     def _books_by_id(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         fields = (
-            "id", "title", "subtitle", "release_year", "rating", "pages", "cached_contributors",
-            "cached_featured_series", "genres", "default_audio_edition", "default_ebook_edition",
+            "id", "title", "subtitle", "slug", "release_year", "rating", "pages", "canonical_id",
+            "cached_contributors", "cached_featured_series", "genres", "default_audio_edition",
+            "default_ebook_edition",
         )  # fmt: skip
         found = sorted(i for i in variables["ids"] if i in self.catalog)
         return {"books": [{f: self.catalog[i].get(f) for f in fields} for i in found]}
+
+    def _by_goodreads(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        rows = []
+        for external_id in variables["ids"]:
+            for mapping in self.mappings.get(external_id, []):
+                book = self.catalog[mapping["book_id"]]
+                edition = mapping["edition"]
+                rows.append(
+                    {
+                        "external_id": external_id,
+                        "book_id": mapping["book_id"],
+                        "edition_id": edition["id"] if edition else None,
+                        "book": {
+                            "id": mapping["book_id"],
+                            "title": book.get("title"),
+                            "canonical_id": book.get("canonical_id"),
+                        },
+                        "edition": edition,
+                    }
+                )
+        return {"book_mappings": rows[:ROW_CAP]}
+
+    def add_edition(self, edition_id: int, book_id: int, **fields: Any) -> None:
+        """An edition of ``book_id``, with any of ``isbn_13``, ``isbn_10``, ``asin`` and
+        ``reading_format_id``. The book joins the catalog if it isn't there."""
+        if book_id not in self.catalog:
+            self.add_book(book_id)
+        base = {"isbn_13": None, "isbn_10": None, "asin": None, "reading_format_id": None}
+        self.editions[edition_id] = {"id": edition_id, "book_id": book_id, **base, **fields}
+
+    def _by_isbn(self, key: str, variables: dict[str, Any]) -> dict[str, Any]:
+        rows = []
+        for edition_id in sorted(self.editions):
+            edition = self.editions[edition_id]
+            if edition.get(key) in variables["v"]:
+                book = self.catalog[edition["book_id"]]
+                rows.append(
+                    {
+                        "id": edition_id,
+                        "book_id": edition["book_id"],
+                        key: edition[key],
+                        "reading_format_id": edition.get("reading_format_id"),
+                        "book": {
+                            "title": book.get("title"),
+                            "canonical_id": book.get("canonical_id"),
+                        },
+                    }
+                )
+        return {"editions": rows[:ROW_CAP]}
+
+    def _edition_formats(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
+        found = sorted(i for i in variables["ids"] if i in self.editions)
+        return {
+            "editions": [
+                {
+                    "id": i,
+                    "book_id": self.editions[i]["book_id"],
+                    "reading_format_id": self.editions[i].get("reading_format_id"),
+                }
+                for i in found
+            ]
+        }
 
     def _similar(self, _user_id: int, variables: dict[str, Any]) -> dict[str, Any]:
         # Hardcover returns an _in match in its own order, not the order asked for.

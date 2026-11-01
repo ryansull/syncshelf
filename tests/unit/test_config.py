@@ -689,6 +689,7 @@ def test_every_secret_key_is_expanded(tmp_path: Path) -> None:
           consent_hmac_key: ${HMAC}
         services:
           chaptarr_api_key: ${CHAPTARR}
+          browser_ws: ws://browser:3000/
         profiles:
           alice:
             hardcover_token: ${HC}
@@ -897,6 +898,8 @@ EXAMPLE_ENV = {
     "CONSENT_HMAC_KEY": "hmac-" + SECRET,
     "HARDCOVER_TOKEN_ALICE": "a",
     "HARDCOVER_TOKEN_BOB": "b",
+    "INGEST_SECRET_ALICE": "ingest-a-" + SECRET,
+    "INGEST_SECRET_BOB": "ingest-b-" + SECRET,
 }
 
 
@@ -926,9 +929,9 @@ def test_committed_example_switches_to_dev_mode_as_its_comments_say(tmp_path: Pa
     )
     path = tmp_path / "profiles.yaml"
     path.write_text(local, encoding="utf-8")
-    # The dev token and the Hardcover tokens: a local instance needs none of oauth mode's
-    # secrets.
-    hardcover = {"HARDCOVER_TOKEN_ALICE": "a", "HARDCOVER_TOKEN_BOB": "b"}
+    # The dev token and the profiles' own secrets: a local instance needs none of oauth
+    # mode's.
+    hardcover = {k: v for k, v in EXAMPLE_ENV.items() if k.startswith(("HARDCOVER", "INGEST"))}
     config = load_config(path, environ={"SYNCSHELF_DEV_TOKEN": SECRET} | hardcover)
     assert config.server.dev_mode is not None
     assert config.server.dev_mode.profile in config.profiles
@@ -1085,3 +1088,123 @@ def test_goodreads_hosts_are_always_aliased(tmp_path: Path) -> None:
     aliases = load(tmp_path, MINIMAL).host_aliases()
     assert aliases["www.goodreads.com"] == "goodreads"
     assert aliases["goodreads.com"] == "goodreads"
+
+
+# --- ingest_secret (§3.4a.8) -----------------------------------------------------------------
+
+
+def test_an_ingest_secret_is_read_from_the_environment(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    alice = load(tmp_path, text, {"INGEST": SECRET}).profiles["alice"]
+    assert alice.ingest_secret == SECRET
+    assert SECRET not in repr(alice)
+
+
+def test_a_profile_without_an_ingest_secret_cant_upload(tmp_path: Path) -> None:
+    assert load(tmp_path, MINIMAL).profiles["alice"].ingest_secret is None
+
+
+def test_two_profiles_cant_share_an_ingest_secret(tmp_path: Path) -> None:
+    text = (
+        MINIMAL
+        + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+        + "  bob:\n    ingest_secret: ${INGEST}\n"
+    )
+    message = load_error(tmp_path, text, {"INGEST": SECRET})
+    assert (
+        message == "profiles.bob.ingest_secret: the same secret is already used by profiles.alice"
+    )
+
+
+def test_an_empty_ingest_secret_is_refused(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    assert "must not be empty" in load_error(tmp_path, text, {"INGEST": "  "})
+
+
+def test_committed_example_shows_the_ingest_secret_commented_out() -> None:
+    # Optional: an uncommented ${VAR} would stop startup whenever the variable is empty.
+    text = (ROOT / "profiles.example.yaml").read_text(encoding="utf-8")
+    assert "    # ingest_secret: ${INGEST_SECRET_ALICE}" in text
+    config = load_config(ROOT / "profiles.example.yaml", environ=EXAMPLE_ENV)
+    assert {p.ingest_secret for p in config.profiles.values()} == {None}
+
+
+def test_an_ingest_secret_with_surrounding_whitespace_is_refused(tmp_path: Path) -> None:
+    text = MINIMAL + "profiles:\n  alice:\n    ingest_secret: ${INGEST}\n"
+    assert "whitespace" in load_error(tmp_path, text, {"INGEST": SECRET + " "})
+
+
+# --- the goodreads session credentials (phase 4b) ----------------------------------------
+
+GR_EMAIL = "reader@example.com"
+GR_PASSWORD = "another-s3cr3t-never-shown"
+BROWSER = "services:\n  browser_ws: ws://browser:3000/\n"
+CREDENTIALS = "      email: ${GR_EMAIL}\n      password: ${GR_PASSWORD}\n"
+CREDENTIAL_ENV = {"GR_EMAIL": GR_EMAIL, "GR_PASSWORD": GR_PASSWORD}
+
+
+def _goodreads_with(extra: str) -> str:
+    return GOODREADS.replace('      user_id: "00000000"\n', '      user_id: "1"\n' + extra)
+
+
+def test_a_goodreads_section_without_credentials_signs_in_to_nothing(tmp_path: Path) -> None:
+    goodreads = load(tmp_path, MINIMAL + GOODREADS).profiles["alice"].goodreads
+    assert goodreads is not None
+    assert (goodreads.email, goodreads.password) == (None, None)
+
+
+def test_the_credentials_are_secrets(tmp_path: Path) -> None:
+    text = MINIMAL + BROWSER + _goodreads_with(CREDENTIALS)
+    goodreads = load(tmp_path, text, CREDENTIAL_ENV).profiles["alice"].goodreads
+    assert goodreads is not None
+    assert (goodreads.email, goodreads.password) == (GR_EMAIL, GR_PASSWORD)
+    assert GR_EMAIL not in repr(goodreads)
+    assert GR_PASSWORD not in repr(goodreads)
+
+
+def test_both_credentials_are_scrubbed_from_logs(tmp_path: Path) -> None:
+    text = MINIMAL + BROWSER + _goodreads_with(CREDENTIALS)
+    config = load(tmp_path, text, CREDENTIAL_ENV)
+    assert {GR_EMAIL, GR_PASSWORD} <= config.secret_values()
+
+
+def test_the_goodreads_email_is_kept_verbatim(tmp_path: Path) -> None:
+    # It is typed into Amazon's form as configured, and the log scrubber matches the raw
+    # expanded value, so lowercasing it would both change the credential and unscrub it.
+    mixed = "Reader@Example.COM"
+    text = MINIMAL + BROWSER + _goodreads_with(CREDENTIALS)
+    config = load(tmp_path, text, {"GR_EMAIL": mixed, "GR_PASSWORD": GR_PASSWORD})
+    goodreads = config.profiles["alice"].goodreads
+    assert goodreads is not None and goodreads.email == mixed
+    assert mixed in config.secret_values()
+
+
+def test_an_email_without_a_password_is_rejected(tmp_path: Path) -> None:
+    text = MINIMAL + BROWSER + _goodreads_with("      email: ${GR_EMAIL}\n")
+    message = load_error(tmp_path, text, {"GR_EMAIL": GR_EMAIL})
+    assert "profiles.alice.goodreads.password" in message
+    assert GR_EMAIL not in message
+
+
+def test_a_password_without_an_email_is_rejected(tmp_path: Path) -> None:
+    text = MINIMAL + BROWSER + _goodreads_with("      password: ${GR_PASSWORD}\n")
+    message = load_error(tmp_path, text, {"GR_PASSWORD": GR_PASSWORD})
+    assert "profiles.alice.goodreads.email" in message
+    assert GR_PASSWORD not in message
+
+
+def test_credentials_without_the_browser_sidecar_are_rejected(tmp_path: Path) -> None:
+    # Credentials for a subsystem that can't run (#232): 4b is off stack-wide without it.
+    text = MINIMAL + _goodreads_with(CREDENTIALS)
+    message = load_error(tmp_path, text, CREDENTIAL_ENV)
+    assert "services.browser_ws" in message
+    assert "profiles.alice.goodreads.password" in message
+    assert GR_PASSWORD not in message
+
+
+def test_the_browser_sidecar_without_credentials_is_allowed(tmp_path: Path) -> None:
+    # 4b configured but unused: nobody signs in, and nothing complains.
+    config = load(tmp_path, MINIMAL + BROWSER + GOODREADS)
+    assert config.services.browser_ws == "ws://browser:3000/"
+    goodreads = config.profiles["alice"].goodreads
+    assert goodreads is not None and goodreads.password is None

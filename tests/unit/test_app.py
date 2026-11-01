@@ -13,7 +13,7 @@ from starlette.routing import Mount, Route
 
 import syncshelf.app
 from syncshelf import __version__
-from syncshelf.app import PURGE_TASK, StartupError, allowed_hosts, create_app
+from syncshelf.app import PURGE_TASK, SYNC_TASK, StartupError, allowed_hosts, create_app
 from syncshelf.tools import ToolRegistry
 
 from clock import FakeClock
@@ -53,7 +53,11 @@ class TestHealthz:
         async with running(create_app(make_config(tmp_path), data_dir=data_dir)) as client:
             response = await client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "version": __version__}
+        assert response.json() == {
+            "status": "ok",
+            "version": __version__,
+            "profiles": {"alice": []},
+        }
 
     async def test_503_when_the_database_does_not_answer(
         self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture
@@ -124,6 +128,49 @@ class TestLifespan:
         everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
         assert SECRET not in everything
 
+    async def test_startup_disables_a_profile_with_no_goodreads_credentials(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        # No credentials means nothing to sign in to, so the session says so rather than
+        # having no row at all (SPEC §3.4b, #232).
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path, profiles=("alice", "bob"))
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            rows = dict(conn.execute("SELECT profile, state FROM goodreads_sessions"))
+        assert rows == {"alice": "disabled", "bob": "disabled"}
+        events = [getattr(r, "event", None) for r in caplog.records]
+        assert "goodreads_export_disabled" in events
+        assert "goodreads_sessions_reconciled" in events
+
+    async def test_startup_offers_a_sign_in_once_credentials_are_configured(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        goodreads = (
+            '{goodreads: {user_id: "1", shelf_map: {read: 3}, '
+            'email: "${GR_EMAIL}", password: "${GR_PASSWORD}"}}'
+        )
+        config = make_config(
+            tmp_path,
+            profiles=("alice",),
+            profile_yaml={"alice": goodreads},
+            browser_ws="ws://browser:3000/",
+            environ={"GR_EMAIL": "reader@example.com", "GR_PASSWORD": "a-test-password"},
+        )
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            rows = dict(conn.execute("SELECT profile, state FROM goodreads_sessions"))
+        assert rows == {"alice": "needs_sign_in"}
+        # The sidecar is configured, so nothing reports 4b as off.
+        assert "goodreads_export_disabled" not in [
+            getattr(r, "event", None) for r in caplog.records
+        ]
+        everything = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+        assert "a-test-password" not in everything
+
     async def test_startup_syncs_the_profiles_table_with_the_config(
         self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
     ) -> None:
@@ -173,6 +220,60 @@ class TestLifespan:
         counts = {k: purged.__dict__[k] for k in ("codes", "access_tokens", "refresh_tokens")}
         assert counts == {"codes": 1, "access_tokens": 1, "refresh_tokens": 0}
 
+    async def test_startup_marks_runs_left_running_as_aborted(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path)
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn, conn:
+            conn.execute(
+                "INSERT INTO runs (profile, source, trigger, started_at, state) "
+                "VALUES ('alice', 'gr_rss', 'schedule', ?, 'running')",
+                (int(clock.time()),),  # recent: runs over 90 days old are purged at startup
+            )
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(data_dir / "syncshelf.db")) as conn:
+            assert conn.execute("SELECT state, ended_at FROM runs").fetchall() == [
+                ("aborted", int(clock.time()))
+            ]
+        [aborted] = [r for r in caplog.records if getattr(r, "event", None) == "runs_aborted"]
+        assert aborted.__dict__["count"] == 1
+
+    async def test_a_new_version_releases_quarantined_changes_once(
+        self, tmp_path: Path, data_dir: Path, caplog: pytest.LogCaptureFixture, clock: FakeClock
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        config = make_config(tmp_path)
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass  # the first start records the version (a missing row counts as new)
+        db = data_dir / "syncshelf.db"
+        with closing(sqlite3.connect(db)) as conn, conn:
+            assert conn.execute("SELECT value FROM meta").fetchall() == [(__version__,)]
+            conn.execute(
+                "INSERT INTO source_rows (profile, source, source_id, state, first_seen_at, "
+                "last_seen_at) VALUES ('alice', 'goodreads', '1', 'ignored', 0, 0)"
+            )
+            conn.execute(
+                "INSERT INTO baseline_fields (profile, source, source_id, field, attempts, "
+                "quarantined_at) VALUES ('alice', 'goodreads', '1', 'rating', 3, 1)"
+            )
+            conn.execute("UPDATE meta SET value = '0.0.1' WHERE key = 'last_started_version'")
+        caplog.clear()
+        async with running(create_app(config, data_dir=data_dir, clock=clock.time)):
+            pass
+        with closing(sqlite3.connect(db)) as conn:
+            assert conn.execute(
+                "SELECT attempts, quarantined_at FROM baseline_fields"
+            ).fetchall() == [(0, None)]
+            assert conn.execute("SELECT value FROM meta").fetchall() == [(__version__,)]
+        [released] = [
+            r for r in caplog.records if getattr(r, "event", None) == "quarantine_released"
+        ]
+        assert released.__dict__["count"] == 1
+
     async def test_the_purge_repeats_while_running_and_stops_at_shutdown(
         self, tmp_path: Path, data_dir: Path, clock: FakeClock
     ) -> None:
@@ -187,6 +288,13 @@ class TestLifespan:
                 while _oauth_rows(data_dir / "syncshelf.db")[:2] != (0, 0):
                     await anyio.sleep(0.01)
         assert not [t for t in asyncio.all_tasks() if t.get_name() == PURGE_TASK]
+
+    async def test_the_sync_loops_run_with_the_app_and_stop_at_shutdown(
+        self, tmp_path: Path, data_dir: Path
+    ) -> None:
+        async with running(create_app(make_config(tmp_path), data_dir=data_dir)):
+            assert [t for t in asyncio.all_tasks() if t.get_name() == SYNC_TASK]
+        assert not [t for t in asyncio.all_tasks() if t.get_name() == SYNC_TASK]
 
     async def test_a_failing_purge_is_logged_and_never_stops_the_app(
         self,

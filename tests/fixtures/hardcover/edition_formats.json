@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "recorded_at": "2026-10-19",
+    "server_version": "api.hardcover.app/v1 (sends no version header)",
+    "provenance": "live"
+  },
+  "body": {
+    "data": {
+      "editions": [
+        {
+          "id": 30442014,
+          "book_id": 427473,
+          "reading_format_id": 0
+        },
+        {
+          "id": 31147088,
+          "book_id": 2371526,
+          "reading_format_id": 0
+        },
+        {
+          "id": 32648677,
+          "book_id": 1817542,
+          "reading_format_id": 0
+        }
+      ]
+    }
+  }
+}

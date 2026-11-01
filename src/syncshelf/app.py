@@ -8,15 +8,17 @@ startup happens in :func:`create_app`'s lifespan, in §2.2's order:
    (``__main__`` loads it and fails fast; #51 asks the spec to confirm this order);
 2. the data directory and its ``goodreads/`` directory must be writable;
 3. the database is opened and migrated, and the ``profiles`` table is synced with the
-   config (:mod:`syncshelf.profiles`), and expired OAuth rows are purged
+   config (:mod:`syncshelf.profiles`), every run still ``running`` is marked ``aborted``
+   (:func:`syncshelf.sync.runs.abort_running`), and expired OAuth rows are purged
    (:func:`syncshelf.auth.tokens.purge_expired`, #77);
 4. the version, ``sqlite3.sqlite_version`` and the auth mode are logged, never a secret,
    and dev mode logs a warning at every start (§3.2.5);
-5. the MCP session manager runs for as long as the app does, and so does a background task
-   that purges expired OAuth rows again every :data:`PURGE_INTERVAL` (#77), until the Phase 4a
-   scheduler takes the job over.
+5. the MCP session manager runs for as long as the app does;
+6. the sync loops resume from their schedules (:class:`syncshelf.sync.scheduler.Scheduler`),
+   and the scheduler's housekeeping purges expired OAuth rows (#77) and old runs again every
+   :data:`PURGE_INTERVAL`.
 
-On shutdown the purge task is cancelled and the database is closed.
+On shutdown the loops and the housekeeping are cancelled and the database is closed.
 
 The MCP mount is the SDK's resource server: every ``/mcp`` request needs a bearer token that
 :class:`syncshelf.auth.tokens.TokenVerifier` accepts, and gets a 401 naming the
@@ -60,6 +62,8 @@ from starlette.routing import Mount, Route
 
 import syncshelf.tools.connections  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.library  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.matching  # noqa: F401  # registers its tools on REGISTRY
+import syncshelf.tools.sync  # noqa: F401  # registers its tools on REGISTRY
 import syncshelf.tools.writes  # noqa: F401  # registers its tools on REGISTRY
 from syncshelf import __version__
 from syncshelf.auth.access import AccessVerifier
@@ -70,12 +74,19 @@ from syncshelf.clients.hardcover import HardcoverClient
 from syncshelf.config import Config, ServerConfig
 from syncshelf.config import data_dir as default_data_dir
 from syncshelf.db import Database
+from syncshelf.ingest import ingest_goodreads_csv
 from syncshelf.profiles import ProfileSync, sync_profiles
 from syncshelf.sync.apply import Applier
-from syncshelf.sync.limiter import Clock, HardcoverLimiter
+from syncshelf.sync.goodreads import GoodreadsSync
+from syncshelf.sync.goodreads_session import SessionReconcile, reconcile_configured
+from syncshelf.sync.identity import release_on_new_version
+from syncshelf.sync.limiter import Clock, HardcoverLimiter, SystemClock
 from syncshelf.sync.mirror import Mirror
+from syncshelf.sync.runs import abort_running
+from syncshelf.sync.scheduler import Scheduler, every, purge_runs
 from syncshelf.tools import REGISTRY, Services, SyncShelfServer, ToolRegistry
 from syncshelf.tools.confirm import ConfirmTokens
+from syncshelf.tools.sync import health
 
 __all__ = [
     "DB_FILENAME",
@@ -191,19 +202,58 @@ def create_app(
         _check_writable(data_dir / GOODREADS_DIR, create=True)
         db = await Database.open(data_dir / DB_FILENAME, snapshot_dir=data_dir)
         hardcover: dict[str, HardcoverClient] = {}
+        goodreads: GoodreadsSync | None = None
+        scheduler: Scheduler | None = None
         try:
             hardcover = hardcover_clients(config, transport=http_transport, clock=limiter_clock)
             synced = await db.write(sync_profiles, list(config.profiles), int(clock()))
             _log_profile_sync(synced)
-            await _purge(db, clock)
-            # Step 4's meta.last_started_version compare is left unbuilt until #50 decides it.
+            # A session state that configuration has made impossible (§3.4b, #232).
+            _log_session_reconcile(
+                await db.write(reconcile_configured, *_by_credentials(config), int(clock()))
+            )
+            # A run still `running` belonged to a process that died (§3.4a.7).
+            if aborted := await db.write(abort_running, int(clock())):
+                log.info(
+                    "marked runs left running by the last process as aborted",
+                    extra={"event": "runs_aborted", "count": aborted},
+                )
+            # A new version releases every quarantined change once (§2.2 step 4, #50).
+            if released := await db.write(release_on_new_version, __version__):
+                log.info(
+                    "a new SyncShelf version released quarantined changes",
+                    extra={"event": "quarantine_released", "count": released},
+                )
             _log_startup(config, db)
+            _log_4b_disabled(config)
+            await _housekeeping(db, clock)
             if (dev := config.server.dev_mode) is not None:
                 _warn_dev_mode(dev.profile)
             app.state.db = db
             app.state.grace = grace
+            app.state.profiles = config.profiles
+            app.state.clock = clock
             verifier.bind(db)
             mirror = Mirror(db, hardcover, ttl=config.cadence.mirror_ttl, clock=clock)
+            applier = Applier(hardcover, mirror, config.profiles)
+            sync_clock = limiter_clock or SystemClock()
+            goodreads = GoodreadsSync(
+                db=db,
+                profiles=config.profiles,
+                hardcover=hardcover,
+                mirror=mirror,
+                applier=applier,
+                clock=sync_clock,
+                transport=http_transport,
+            )
+            scheduler = Scheduler(
+                db=db,
+                sync=goodreads,
+                profiles=config.profiles,
+                interval=config.cadence.rss_interval,
+                clock=sync_clock,
+            )
+            app.state.scheduler = scheduler
             mcp.bind(
                 Services(
                     db=db,
@@ -212,24 +262,35 @@ def create_app(
                     mirror=mirror,
                     profiles=config.profiles,
                     hardcover=hardcover,
-                    applier=Applier(hardcover, mirror, config.profiles),
+                    applier=applier,
                     confirm=ConfirmTokens(clock),
+                    scheduler=scheduler,
                 )
             )
             async with AsyncExitStack() as stack:
-                purges = await stack.enter_async_context(anyio.create_task_group())
-                purges.start_soon(_purge_every, purge_interval, db, clock, name=PURGE_TASK)
-                # Unwound first, so the purge task is cancelled before the group waits for it.
-                stack.callback(purges.cancel_scope.cancel)
+                tasks = await stack.enter_async_context(anyio.create_task_group())
+                # The scheduler's housekeeping: expired OAuth rows and old runs (§2.4).
+                tasks.start_soon(
+                    every, purge_interval, lambda: _housekeeping(db, clock), name=PURGE_TASK
+                )
+                # Unwound first, so the tasks are cancelled before the group waits for them.
+                stack.callback(tasks.cancel_scope.cancel)
                 if access is not None:  # only /authorize fetches documents and keys
                     await stack.enter_async_context(clients.running(db))
                     await stack.enter_async_context(access.running())
                 await stack.enter_async_context(mcp.session_manager.run())
+                # Step 6: the sync loops, resumed from their schedules (§3.4a.9).
+                await scheduler.resume()
+                tasks.start_soon(scheduler.run_forever, name=SYNC_TASK)
                 yield
         finally:
             mcp.bind(None)
             verifier.bind(None)
+            if scheduler is not None:
+                await scheduler.close()
             try:
+                if goodreads is not None:
+                    await goodreads.aclose()
                 for client in hardcover.values():
                     await client.aclose()
             finally:
@@ -241,6 +302,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            Route("/ingest/goodreads-csv", ingest_goodreads_csv, methods=["POST"]),
             *authorization_server,
             protected_resource_route(config.server),
             Mount("/", app=mcp_app),
@@ -272,17 +334,25 @@ def hardcover_clients(
 
 
 async def healthz(request: Request) -> JSONResponse:
-    """Liveness: 200 when ``SELECT 1`` succeeds on a read connection, 503 otherwise.
-
-    The 503 body is provisional until #51 confirms it.
-    """
+    """Liveness and health (§3.4a.10): 200 whenever the database answers, with each
+    profile's attention codes and ``status`` ``attention`` when any profile has one, so
+    Uptime Kuma or Home Assistant can alert on it; 503 only when the database doesn't. No
+    titles or values, and a CAPTCHA never fails liveness."""
     try:
         db: Database = request.app.state.db
         await db.read(_select_one)
     except Exception:
         log.warning("health check failed", exc_info=True, extra={"event": "healthz_failed"})
         return JSONResponse({"status": "unavailable", "version": __version__}, status_code=503)
-    return JSONResponse({"status": "ok", "version": __version__})
+    # Liveness rests on the database alone; attention failing is itself worth a look.
+    try:
+        rows = await db.read(health, request.app.state.profiles, int(request.app.state.clock()))
+    except Exception:
+        log.exception("health attention failed", extra={"event": "healthz_attention_failed"})
+        return JSONResponse({"status": "attention", "version": __version__})
+    codes = {row["profile"]: row["attention"] for row in rows}
+    state = "attention" if any(codes.values()) else "ok"
+    return JSONResponse({"status": state, "version": __version__, "profiles": codes})
 
 
 def _select_one(conn: sqlite3.Connection) -> None:
@@ -304,7 +374,9 @@ def _check_writable(path: Path, *, create: bool = False) -> None:
 
 
 PURGE_TASK = "oauth_purge"
-"""The name of the lifespan's purge task, so a test can find it."""
+"""The name of the scheduler's housekeeping task, so a test can find it."""
+SYNC_TASK = "sync_loops"
+"""The name of the task running the sync loops."""
 
 
 async def _purge(db: Database, clock: Callable[[], float]) -> None:
@@ -330,11 +402,54 @@ async def _purge(db: Database, clock: Callable[[], float]) -> None:
         )
 
 
-async def _purge_every(interval: float, db: Database, clock: Callable[[], float]) -> None:
-    """Purge every ``interval`` seconds until cancelled."""
-    while True:
-        await anyio.sleep(interval)
-        await _purge(db, clock)
+async def _housekeeping(db: Database, clock: Callable[[], float]) -> None:
+    """The daily purges: expired OAuth rows, and runs older than 90 days (§2.4). A failure is
+    logged and swallowed, like the OAuth purge's."""
+    await _purge(db, clock)
+    try:
+        if purged := await db.write(purge_runs, int(clock())):
+            log.info("purged old runs", extra={"event": "runs_purged", "count": purged})
+    except Exception:
+        log.exception("purging old runs failed", extra={"event": "runs_purge_failed"})
+
+
+def _by_credentials(config: Config) -> tuple[list[str], list[str]]:
+    """The configured profiles split by whether they have Goodreads credentials (§3.4b)."""
+    with_creds, without = [], []
+    for name, profile in config.profiles.items():
+        has = profile.goodreads is not None and profile.goodreads.password is not None
+        (with_creds if has else without).append(name)
+    return with_creds, without
+
+
+def _log_session_reconcile(moved: SessionReconcile) -> None:
+    if not (moved.disabled or moved.enabled):
+        return
+    log.info(
+        "Goodreads session states reconciled with the config: %d disabled, %d awaiting sign-in",
+        len(moved.disabled),
+        len(moved.enabled),
+        extra={
+            "event": "goodreads_sessions_reconciled",
+            "disabled": moved.disabled,
+            "needs_sign_in": moved.enabled,
+        },
+    )
+
+
+def _log_4b_disabled(config: Config) -> None:
+    """Say once, at startup, that phase 4b is off for want of the browser sidecar (§2.3).
+
+    Config validation has already refused credentials without it, so reaching here means no
+    profile has any: the household isn't using the session export, which is a choice, not a
+    fault. Logged at INFO so an operator can still tell why no CSV ever runs (#232).
+    """
+    if config.services.browser_ws is None:
+        log.info(
+            "services.browser_ws is not set, so the Goodreads session export is off; "
+            "Goodreads syncs through RSS and /ingest only",
+            extra={"event": "goodreads_export_disabled"},
+        )
 
 
 def _log_profile_sync(synced: ProfileSync) -> None:

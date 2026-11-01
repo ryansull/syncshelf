@@ -1,0 +1,803 @@
+# The Goodreads diff's decision table (SPEC §3.4a.6, §3.4a.12; §2.9 golden sets).
+#
+# Each case gives the profile's Hardcover shelves and Goodreads mappings, then one or more RSS
+# runs, an hour apart. The first complete run is always the backfill. Each run lists the feed
+# as Goodreads serves it (newest first) and what must follow:
+#
+#   state       the run's end state
+#   writes      the Hardcover mutations sent, as [operation, fields set]
+#   shelf       the profile's Hardcover shelf afterwards, by book id
+#   baselines   {source_id: {field: value}} for the fields given
+#   pending     {source_id: {field: value}} for pending changes; null value = pending clear
+#   change_log  [source_id, field, old, new] rows written by this run
+#   log         [kind, field, trigger, date_source] rows written by this run
+#   reads       {book_id: [[started, finished, edition], ...]} on Hardcover afterwards
+#   gone        the source ids marked gone, after this run
+#   rows        {source_id: [state, queue_reason]} afterwards
+#   backfill    [rows_linked, rows_queued]
+#
+# Hardcover: a shelf entry may list `reads: [[started, finished, edition?], ...]`; a mapping is
+# a book id, or {book, edition, format} for the edition it names and its reading_format_id;
+# `editions: [{id, book, title, isbn_10?, isbn_13?}]` are found by the ISBN steps.
+# Feed items: id (Goodreads Book Id), title, rating ("0"-"5"), shelf, shelves, read_at, review,
+# isbn (ISBN-10), added (RSS user_date_added; "" for none). The fake's default added date is 2026-10-15, its
+# "today" (what Hardcover stamps on reads it invents) 2100-01-01, and the profile is in UTC.
+# A run may add `filler: N` unmatched books after its feed (to make a second page) and
+# `fail: {page: N, fault: …}` to make a page unusable, and `hardcover_fail: {op, fault, times?}`
+# to fail Hardcover operations (a transient fault is retried twice within the run).
+# A run may give `export: [...]`, a library export uploaded just before it, `export_ago`
+# seconds old (default 0; null makes it stale). Its books take id, title, rating (0-5), shelf,
+# date_read (YYYY-MM-DD), read_count, binding (default Paperback), spoiler, review, isbn13.
+# Without a `feed`, RSS fails that run, so only the export speaks.
+# A run may instead be `resolve: {id, book}`: resolve_match's answer for that row, applied at
+# once with no run (§3.4a.11), or `book: null` to ignore it; its `expect` may add `resolved:
+# {shared, pushed, failed, old_book}` for what it reports. Or it may be `rebaseline: {confirm}`:
+# rebaseline("goodreads"), previewed only or confirmed; its `expect` may add `preview:
+# {rematch, dropped, human, ignored}` for the counts it previews, and `backfill` then reads the
+# rewritten row. Any run may `shelve: {book: fields}` first, as a hand import into Hardcover.
+# When a case and a ticket disagree, fix the case.
+
+cases:
+  - name: the backfill pushes nothing, even where Hardcover differs
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"100": {rating: "4", status: read}}
+          backfill: [1, 0]
+
+  - name: a rating changed after the backfill is pushed
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          state: ok
+          writes: [[update_user_book, {rating: 5.0}]]
+          shelf: {7: {rating: 5.0}}
+          baselines: {"100": {rating: "5"}}
+          change_log: [["100", rating, "4", "5"]]
+
+  - name: a rating cleared on Goodreads clears it on Hardcover
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "0"}]
+        expect:
+          writes: [[update_user_book, {rating: null}]]
+          shelf: {7: {rating: null}}
+          baselines: {"100": {rating: null}}
+          change_log: [["100", rating, "4", null]]
+
+  - name: a change Hardcover already has advances the baseline without a write
+    hardcover:
+      shelf: {7: {status: 3, rating: 5.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          state: ok
+          writes: []
+          baselines: {"100": {rating: "5"}}
+          change_log: [["100", rating, "4", "5"]]
+
+  - name: an unchanged row pushes nothing, so a Claude edit stands
+    hardcover:
+      shelf: {7: {status: 3, rating: 2.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          shelf: {7: {rating: 2.0}}
+
+  - name: a queued row keeps its baseline and its change waits
+    hardcover:
+      shelf: {}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+          baselines: {"100": {rating: "4"}}
+      - feed: [{id: 100, title: Dune, rating: "2"}]
+        expect:
+          writes: []
+          pending: {"100": {rating: "2"}}
+
+  - name: a value changed back before it was applied clears the pending change
+    hardcover:
+      shelf: {}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "2"}]
+        expect:
+          pending: {"100": {rating: "2"}}
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          pending: {}
+          baselines: {"100": {rating: "4"}}
+
+  # --- removals (rule 4) -----------------------------------------------------------------
+
+  - name: a complete feed that no longer lists a book records it gone and pushes nothing
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          state: ok
+          writes: []
+          gone: [200]
+          change_log: [["200", null, null, null]]
+
+  - name: a partial feed concludes nothing about absence
+    hardcover:
+      shelf: {7: {status: 3}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune}]
+        filler: 200
+        fail: {page: 2, fault: server_error}
+        expect:
+          state: partial
+          gone: []
+          change_log: []
+
+  - name: an empty feed concludes nothing about absence
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: []
+        expect:
+          state: partial
+          gone: []
+          change_log: []
+
+  - name: a book seen again is no longer gone
+    hardcover:
+      shelf: {7: {status: 3}, 8: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          gone: [200]
+      - feed: [{id: 100, title: Dune}, {id: 200, title: Messiah}]
+        expect:
+          gone: []
+
+  - name: a move to another shelf is a status change, not a removal
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+        expect:
+          gone: []
+          writes: [[update_user_book, {status_id: 1}]]
+          baselines: {"100": {status: to-read}}
+
+  # --- reads (rule 6) ----------------------------------------------------------------------
+
+  - name: a Kindle finish completes the open read on the date Goodreads last touched it
+    hardcover:
+      shelf: {7: {status: 2, reads: [["2026-10-01", null, 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          state: ok
+          reads: {7: [["2026-10-01", "2026-10-15", 70]]}
+          baselines: {"100": {status: read}}
+          log: [[push, status, status, user_date_added], [read_adopt, null, status, user_date_added]]
+
+  - name: a finish with a Goodreads Date Read inserts a read with the link's edition
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-10-02", 70]]}
+          log: [[push, status, status, goodreads_date_read], [read_insert, null, status, goodreads_date_read]]
+
+  - name: an undated finish with no Goodreads date at all takes the day SyncShelf saw it
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read, added: ""}]
+      - feed: [{id: 100, title: Dune, added: ""}]
+        expect:
+          reads: {7: [[null, "2100-01-01", 70]]}
+          log: [[push, status, status, first_seen], [read_insert, null, status, first_seen]]
+
+  - name: an RSS-only read is written with no edition when the link's edition has no format
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 71}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-10-02", null]]}
+
+  - name: going Currently Reading opens a read on the date Goodreads last touched it
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+        expect:
+          reads: {7: [["2026-10-15", null, 70]]}
+          log: [[push, status, status, user_date_added], [read_insert, null, status, user_date_added]]
+
+  - name: going Currently Reading over a read already open opens no second one
+    hardcover:
+      shelf: {7: {status: 1, reads: [["2026-09-01", null, 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading}]
+        expect:
+          state: ok
+          reads: {7: [["2026-09-01", null, 70]]}
+
+  - name: a changed Date Read moves the read finished on the old date
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-09-20", "2026-10-02", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [["2026-09-20", "2026-10-05", 70]]}
+          log: [[push, date_read, null, goodreads_date_read]]
+
+  - name: a Date Read change with nothing on the old date adopts a read within 14 days
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-10", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          writes: []
+          reads: {7: [[null, "2026-10-10", 70]]}
+          baselines: {"100": {date_read: "2026-10-05"}}
+
+  - name: a Date Read change with nothing near inserts a read
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-08-01", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          reads: {7: [[null, "2026-08-01", 70], [null, "2026-10-05", 70]]}
+
+  - name: a vanished Date Read is never pushed, but its baseline moves on
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-02", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          writes: []
+          reads: {7: [[null, "2026-10-02", 70]]}
+          baselines: {"100": {date_read: null}}
+          log: []
+
+  - name: a Date Read on a book that isn't Read moves the baseline only
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, shelf: to-read, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          writes: []
+          baselines: {"100": {date_read: "2026-10-02"}}
+
+  - name: Read, Currently Reading, Read again is a re-read, one new read
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-01-01", "2026-01-20", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+        expect:
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", null, 70]]}
+      - feed: [{id: 100, title: Dune, added: "Sat, 17 Oct 2026 08:00:00 -0700"}]
+        expect:
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", "2026-10-17", 70]]}
+          log: [[push, status, reread_cycle, user_date_added], [read_adopt, null, reread_cycle, user_date_added]]
+
+  - name: a finish whose read fix-up failed converges on the next run without a second read
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        hardcover_fail: {op: InsertRead, fault: unavailable, times: 3}  # and both retries
+        expect:
+          state: partial
+          pending: {"100": {status: read, date_read: "2026-10-02"}}
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+        expect:
+          state: ok
+          reads: {7: [[null, "2026-10-02", 70]]}
+          pending: {}
+
+  - name: a re-read with Goodreads' old Date Read left alone finishes on its own date
+    hardcover:
+      shelf: {7: {status: 3, reads: [["2026-01-01", "2026-01-20", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Mon, 5 Oct 2026 08:00:00 -0700"}]
+      - feed: [{id: 100, title: Dune, read_at: "Tue, 20 Jan 2026 00:00:00 +0000", added: "Sat, 17 Oct 2026 08:00:00 -0700"}]
+        expect:
+          state: ok
+          reads: {7: [["2026-01-01", "2026-01-20", 70], ["2026-10-05", "2026-10-17", 70]]}
+          log: [[push, status, reread_cycle, user_date_added], [read_adopt, null, reread_cycle, user_date_added]]
+
+  - name: a Date Read change alongside a move off Read is planned on its own and not pushed
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-10-02", 70]]}}
+      mappings: {100: {book: 7, edition: 70, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune, read_at: "Fri, 2 Oct 2026 00:00:00 +0000"}]
+      - feed: [{id: 100, title: Dune, shelf: currently-reading, read_at: "Mon, 5 Oct 2026 00:00:00 +0000"}]
+        expect:
+          state: ok
+          reads: {7: [[null, "2026-10-02", 70], ["2026-10-15", null, 70]]}
+          baselines: {"100": {date_read: "2026-10-05", status: currently-reading}}
+          pending: {}
+
+  # --- reviews, new rows and pending changes (rules 1-3, 5, 8, 10) ------------------------
+
+  - name: a review written after the backfill is pushed as review_markdown
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 100, title: Dune, review: "Loved it.<br/>Would &amp; will reread."}]
+        expect:
+          writes: [[update_user_book, {review_markdown: "Loved it.\nWould & will reread."}]]
+          baselines: {"100": {review: "Loved it.\nWould & will reread."}}
+
+  - name: an emptied review clears it on Hardcover
+    hardcover:
+      shelf: {7: {status: 3, review_markdown: "Fine."}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, review: "Fine."}]
+      - feed: [{id: 100, title: Dune}]
+        expect:
+          writes: [[update_user_book, {review_markdown: null}]]  # spoilers already off: no-op skipped
+          baselines: {"100": {review: null}}
+
+  - name: a book first seen after the backfill pushes every field, inserted privately
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: {book: 8, edition: 80, format: 4}}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed:
+          - {id: 200, title: Messiah, rating: "5", read_at: "Fri, 2 Oct 2026 00:00:00 +0000", review: "Grand."}
+          - {id: 100, title: Dune}
+        expect:
+          state: ok
+          shelf: {8: {status: 3, rating: 5.0, review_markdown: "Grand.", privacy_setting_id: 3}}
+          reads: {8: [[null, "2026-10-02", 80]]}
+          baselines: {"200": {status: read, rating: "5", review: "Grand.", date_read: "2026-10-02"}}
+          pending: {}
+
+  - name: a new book Goodreads' mapping doesn't know is queued with its pending diff
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 100, title: Dune}]
+        expect:
+          writes: []
+          pending: {"300": {status: read, rating: "4"}}
+
+  - name: a new book on a shelf not yet classified waits for its status before anything
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 200, title: Messiah, rating: "5", shelves: [kindle]}, {id: 100, title: Dune}]
+        expect:
+          state: ok
+          writes: []
+          pending: {"200": {rating: "5"}}
+
+  - name: a status first observed on a known row only sets its baseline
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, shelves: [kindle]}]
+        expect:
+          backfill: [1, 0]
+      - feed: [{id: 100, title: Dune, shelf: to-read}]
+        expect:
+          writes: []
+          baselines: {"100": {status: to-read}}
+          pending: {}
+
+  - name: a newer value supersedes the change still pending
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        hardcover_fail: {op: UpdateUserBook, fault: validation}
+        expect:
+          state: partial
+          pending: {"100": {rating: "5"}}
+      - feed: [{id: 100, title: Dune, rating: "3"}]
+        expect:
+          writes: [[update_user_book, {rating: 3.0}]]
+          shelf: {7: {rating: 3.0}}
+          pending: {}
+
+  - name: the last writer wins when Goodreads changes a book Claude edited
+    hardcover:
+      shelf: {7: {status: 3, rating: 2.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          writes: []
+          shelf: {7: {rating: 2.0}}
+      - feed: [{id: 100, title: Dune, rating: "5"}]
+        expect:
+          shelf: {7: {rating: 5.0}}
+
+  - name: a new book whose shelf couldn't be read is pushed once its status is seen
+    hardcover:
+      shelf: {7: {status: 3}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune}]
+      - feed: [{id: 200, title: Messiah, rating: "5", shelves: [kindle]}, {id: 100, title: Dune}]
+        expect:
+          writes: []
+      - feed: [{id: 200, title: Messiah, rating: "5", shelf: to-read}, {id: 100, title: Dune}]
+        expect:
+          state: ok
+          shelf: {8: {status: 1, rating: 5.0}}
+          pending: {}
+
+  # --- matching (§3.4a.5) ------------------------------------------------------------------
+
+  - name: the backfill links by ISBN-10 when Goodreads has no mapping
+    hardcover:
+      shelf: {7: {status: 3}}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, isbn: "0441013597"}]
+        expect:
+          backfill: [1, 0]
+
+  - name: a new book re-matched when its details change pushes its first sighting
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 900, title: Book 900}]
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 900, title: Book 900}]
+        expect:
+          writes: []
+          pending: {"100": {status: read, rating: "4"}}
+      - feed: [{id: 100, title: Dune, rating: "4", isbn: "0441013597"}, {id: 900, title: Book 900}]
+        expect:
+          state: ok
+          shelf: {7: {status: 3, rating: 4.0}}
+          pending: {}
+
+  - name: a backfill-queued row is re-matched by the backfill's rules, so off the shelves it stays queued
+    hardcover:
+      shelf: {}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+          rows: {"100": [queued, no_hit]}
+      - feed: [{id: 100, title: Dune, rating: "5", isbn: "0441013597"}]
+        expect:
+          state: ok
+          writes: []
+          rows: {"100": [queued, not_in_library]}
+          pending: {"100": {rating: "5"}}
+
+  - name: a backfill-queued row re-matched onto a shelved book is linked, its baseline kept
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      editions: [{id: 71, book: 7, title: Dune, isbn_10: "0441013597"}]
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+        expect:
+          backfill: [0, 1]
+      - feed: [{id: 100, title: Dune, rating: "4", isbn: "0441013597"}]
+        expect:
+          state: ok
+          writes: []
+          rows: {"100": [linked, null]}
+          pending: {}
+
+  - name: a backfill-queued row resolved onto an unshelved book is added, read on its Date Read
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4", read_at: "Mon, 2 Mar 2026 00:00:00 +0000"}]
+        expect:
+          rows: {"300": [queued, no_hit]}
+          backfill: [0, 1]
+      - resolve: {id: 300, book: 7}
+        expect:
+          rows: {"300": [linked, null]}
+          shelf: {7: {status: 3, rating: 4.0}}
+          reads: {7: [[null, "2026-03-02", 70]]}
+          pending: {}
+          log: [[resolve_match, null, null, null], [push, status, status, goodreads_date_read],
+                [push, rating, null, null], [read_insert, null, status, goodreads_date_read]]
+          resolved: {shared: true, pushed: [date_read, rating, status], failed: null}
+
+  - name: a backfill-queued row with no Date Read is added with no read
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 3, rating: 4.0}}
+          reads: {7: []}
+          pending: {}
+
+  - name: a backfill-queued want-to-read row is added as Want to Read
+    runs:
+      - feed: [{id: 300, title: Orphan, shelf: to-read}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 1}}
+          reads: {7: []}
+
+  - name: a backfill-queued row resolved onto a shelved book writes the link only
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4", read_at: "Mon, 2 Mar 2026 00:00:00 +0000"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          rows: {"300": [linked, null]}
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"300": {rating: "4"}}
+          pending: {}
+          resolved: {shared: true, pushed: [], failed: null}
+
+  - name: a row queued after the backfill pushes its pending diff when resolved
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9}
+    runs:
+      - feed: [{id: 900, title: Shelved}]
+      - feed: [{id: 300, title: Orphan, rating: "5"}, {id: 900, title: Shelved}]
+        expect:
+          rows: {"300": [queued, no_hit]}
+          pending: {"300": {status: read, rating: "5"}}
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 3, rating: 5.0}}
+          pending: {}
+          # Marked Read with no Date Read: a read is invented, as in any run.
+          change_log: [["300", null, null, "7"], ["300", status, null, read],
+                       ["300", rating, null, "5"], ["300", null, null, null]]
+
+  - name: a backfill-queued row changed since, resolved onto a shelved book, writes the link only
+    hardcover:
+      shelf: {7: {status: 3, rating: 3.0}}
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}]
+      - feed: [{id: 300, title: Orphan, rating: "5"}]
+        expect:
+          pending: {"300": {rating: "5"}}
+      - resolve: {id: 300, book: 7}
+        expect:
+          writes: []
+          shelf: {7: {rating: 3.0}}
+          baselines: {"300": {rating: "5"}}
+          pending: {}
+          resolved: {pushed: [], failed: null}
+
+  - name: a backfill-queued row changed since, resolved onto an unshelved book, is added as it is now
+    runs:
+      - feed: [{id: 300, title: Orphan, shelf: to-read}]
+      - feed: [{id: 300, title: Orphan, shelf: currently-reading, rating: "4"}]
+      - resolve: {id: 300, book: 7}
+        expect:
+          shelf: {7: {status: 2, rating: 4.0}}
+          reads: {7: []}
+          pending: {}
+
+  # --- library exports: Read Count and Binding (#168) ------------------------------------
+
+  - name: the first export after an RSS backfill pushes nothing, and Read Count adds no read
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0, reads: [[null, "2026-01-20", 70]]}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4", read_at: "Tue, 20 Jan 2026 00:00:00 +0000"}]
+      - export: [{id: 100, title: Dune, rating: 4, date_read: "2026-01-20", read_count: 2, spoiler: true}]
+        expect:
+          writes: []
+          pending: {}
+          baselines: {"100": {read_count: "2", spoiler: "1"}}
+
+  - name: spoiler first observed on an existing row only sets its baseline
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4", review: Loved it}]
+      - export: [{id: 100, title: Dune, rating: 4, review: Loved it, spoiler: true}]
+        expect:
+          writes: []
+          baselines: {"100": {spoiler: "1", review: Loved it}}
+
+  - name: a new Read row inserts one read, whatever its Read Count
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7, 200: {book: 8, edition: 81, format: 1}, 300: {book: 9, edition: 91, format: 1}}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}]
+      - export:
+          - {id: 100, title: Dune, rating: 4}
+          - {id: 200, title: Emma, date_read: "2026-05-01", read_count: 1}
+          - {id: 300, title: Persuasion, date_read: "2026-06-01", read_count: 2}
+        expect:
+          reads: {8: [[null, "2026-05-01", 81]], 9: [[null, "2026-06-01", 91]]}
+          baselines: {"200": {read_count: "1"}, "300": {read_count: "2"}}
+          pending: {}
+
+  - name: Read Count one higher with a new Date Read is a re-read, not a correction
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2025-03-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2025-03-01", read_count: 1}]
+        expect:
+          backfill: [1, 0]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 2}]
+        expect:
+          reads: {7: [[null, "2025-03-01", 71], [null, "2026-06-01", 71]]}
+          baselines: {"100": {read_count: "2", date_read: "2026-06-01"}}
+          log: [[push, read_count, read_count, goodreads_date_read], [read_insert, null, read_count, goodreads_date_read]]
+
+  - name: Read Count one higher with no new Date Read is a read already seen, so only a baseline
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2026-06-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 1}]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", read_count: 2}]
+        expect:
+          writes: []
+          baselines: {"100": {read_count: "2"}}
+          pending: {}
+
+  - name: Read Count one higher with a move to Currently Reading is the read that move opens
+    hardcover:
+      shelf: {7: {status: 3, reads: [[null, "2025-03-01", 71]]}}
+      mappings: {100: {book: 7, edition: 71, format: 1}}
+    runs:
+      - export: [{id: 100, title: Dune, date_read: "2025-03-01", read_count: 1}]
+      - export: [{id: 100, title: Dune, shelf: currently-reading, date_read: "2025-03-01", read_count: 2}]
+        expect:
+          baselines: {"100": {read_count: "2", status: currently-reading}}
+          pending: {}
+          log: [[push, status, status, first_seen], [read_insert, null, status, first_seen]]
+
+  - name: an observed Binding picks the book's default edition when the link's isn't that format
+    hardcover:
+      shelf: {7: {status: 1}}
+      mappings: {100: {book: 7, edition: 74, format: 4}}
+    runs:
+      - export: [{id: 100, title: Dune, shelf: to-read, binding: Paperback}]
+      - export: [{id: 100, title: Dune, date_read: "2026-06-01", binding: Paperback}]
+        expect:
+          reads: {7: [[null, "2026-06-01", 70]]}
+
+  - name: a stale batch only fills, adding no rows, finding none gone and pushing nothing
+    hardcover:
+      shelf: {7: {status: 3, rating: 4.0}}
+      mappings: {100: 7, 200: 8}
+    runs:
+      - feed: [{id: 100, title: Dune, rating: "4"}, {id: 300, title: Orphan}]
+      - export: [{id: 100, title: Dune, rating: 1, spoiler: true, read_count: 2}, {id: 200, title: Emma}]
+        export_ago: null
+        expect:
+          writes: []
+          gone: []
+          pending: {}
+          baselines: {"100": {rating: "4", spoiler: "1", read_count: "2"}}
+          rows: {"300": [queued, no_hit]}
+
+  # --- rebaseline (§3.4a.11) ----------------------------------------------------------------
+
+  - name: rebaseline previews what it would re-match and drop, and changes nothing
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9, 300: 7}
+      editions: [{id: 80, book: 8, title: Lost}]
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          backfill: [1, 3]
+      - resolve: {id: 500, book: 8}
+      - resolve: {id: 600, book: null}
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          pending: {"300": {rating: "2"}}
+      - rebaseline: {confirm: false}
+        expect:
+          preview: {rematch: 1, dropped: 1, human: 1, ignored: 1}
+          writes: []
+          pending: {"300": {rating: "2"}}
+          rows: {"300": [queued, not_in_library]}
+
+  - name: a confirmed rebaseline links books since imported, keeps human and ignored rows, and pushes nothing
+    hardcover:
+      shelf: {9: {status: 3}}
+      mappings: {900: 9, 300: 7}
+      editions: [{id: 80, book: 8, title: Lost}]
+    runs:
+      - feed: [{id: 300, title: Orphan, rating: "4"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+      - resolve: {id: 500, book: 8}
+      - resolve: {id: 600, book: null}
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+      - rebaseline: {confirm: true}
+        shelve: {7: {status: 3, rating: 4.0}}
+        expect:
+          writes: []
+          pending: {}
+          baselines: {"300": {rating: "2"}}
+          rows: {"300": [linked, null], "500": [linked, null], "600": [ignored, null]}
+          backfill: [3, 0]
+      - feed: [{id: 300, title: Orphan, rating: "2"}, {id: 900, title: Book 900}, {id: 500, title: Lost}, {id: 600, title: Junk}]
+        expect:
+          writes: []
+          shelf: {7: {rating: 4.0}}
