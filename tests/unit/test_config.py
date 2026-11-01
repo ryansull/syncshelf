@@ -1,6 +1,7 @@
 """Config loading, secret references and validation (SPEC §2.3, §3.1)."""
 
 import re
+from datetime import time as dtime
 from pathlib import Path
 from textwrap import dedent
 
@@ -1208,3 +1209,35 @@ def test_the_browser_sidecar_without_credentials_is_allowed(tmp_path: Path) -> N
     assert config.services.browser_ws == "ws://browser:3000/"
     goodreads = config.profiles["alice"].goodreads
     assert goodreads is not None and goodreads.password is None
+
+
+# --- the CSV cadence (phase 4b) ----------------------------------------------------------
+
+
+def test_the_csv_cadence_defaults_to_five_nights(tmp_path: Path) -> None:
+    cadence = load(tmp_path, MINIMAL).cadence
+    assert cadence.csv_interval_days == 5
+    assert cadence.csv_window == (dtime(2, 0), dtime(5, 0))
+
+
+def test_the_csv_cadence_can_be_set(tmp_path: Path) -> None:
+    text = MINIMAL + "cadence:\n  csv_interval_days: 7\n  csv_window: 01:30-04:45\n"
+    cadence = load(tmp_path, text).cadence
+    assert cadence.csv_interval_days == 7
+    assert cadence.csv_window == (dtime(1, 30), dtime(4, 45))
+
+
+@pytest.mark.parametrize("days", [0, -1, "five", True, 1.5])
+def test_a_csv_interval_that_is_not_whole_days_is_rejected(tmp_path: Path, days: object) -> None:
+    message = load_error(tmp_path, MINIMAL + f"cadence:\n  csv_interval_days: {days}\n")
+    assert "cadence.csv_interval_days" in message
+
+
+@pytest.mark.parametrize(
+    "window",
+    ["02:00", "0200-0500", "02:00-25:00", "not-a-window", "05:00-02:00", "03:00-03:00"],
+)
+def test_a_bad_csv_window_is_rejected(tmp_path: Path, window: str) -> None:
+    # A window that wraps past midnight, or has no width, makes "the next window" ambiguous.
+    message = load_error(tmp_path, MINIMAL + f'cadence:\n  csv_window: "{window}"\n')
+    assert "cadence.csv_window" in message
