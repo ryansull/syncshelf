@@ -273,6 +273,8 @@ def create_app(
                 profiles=config.profiles,
                 interval=config.cadence.rss_interval,
                 clock=sync_clock,
+                interval_days=config.cadence.csv_interval_days,
+                window=config.cadence.csv_window,
             )
             app.state.scheduler = scheduler
             mcp.bind(

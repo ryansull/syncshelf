@@ -22,6 +22,7 @@ from syncshelf.attention import AttentionItem, attention
 from syncshelf.config import ProfileConfig
 from syncshelf.sync.identity import release_changes
 from syncshelf.sync.limiter import HardcoverLimiter
+from syncshelf.sync.runs import RunSource
 from syncshelf.tools import REGISTRY, current_profile, iso, services
 
 __all__ = ["QUARANTINE_SHOWN", "RECENT_RUNS", "retry_failed", "status", "sync_now", "sync_status"]
@@ -362,26 +363,39 @@ async def sync_now(
 
     - source: "goodreads" (the shelf RSS feed), "abs", or "all" (the default, every source the
       profile has).
-    - full: also run the full Goodreads library export. Not available yet.
+    - full: run the whole Goodreads library export instead of the shelf feed. Slower, and
+      it needs a signed-in Goodreads session; use it when a change is older than the feed's
+      last 100 items, or when a field the feed doesn't carry has changed.
 
     It returns at once, with each run's id; a run already going is reported, not started
     twice. It doesn't wait for the run: read sync_status a little later for the outcome.
     """
-    if full:
-        raise ToolError(
-            "A full sync with the Goodreads library export arrives in phase 4b; "
-            "sync_now without full runs the shelf feed."
-        )
     if source == "abs":
         raise ToolError("Audiobookshelf syncing arrives in phase 5.")
     caller = current_profile()
     scheduler = services().scheduler
     if not scheduler.enabled(caller):
         raise ToolError("This profile has no Goodreads sync: its config has no goodreads section.")
-    run_id, since, new = await scheduler.run_now(caller, "sync_now")
-    started = Started(source="gr_rss", run_id=run_id, started=new, since=iso(since) or "")
+    if full and not scheduler.csv_enabled(caller):
+        raise ToolError(
+            "A full sync needs a signed-in Goodreads session, which this profile has no "
+            "credentials for. sync_now without full runs the shelf feed."
+        )
+    which: RunSource = "gr_csv" if full else "gr_rss"
+    # ``ran`` is what is actually going, which need not be ``which``: both sources share the
+    # profile's lock, so a run already in progress may be the other source's.
+    run_id, since, new, ran = await scheduler.run_now(caller, "sync_now", which)
+    started = Started(source=ran, run_id=run_id, started=new, since=iso(since) or "")
     if not new:
-        note = f"A Goodreads run was already going (since {started['since']}, run {run_id})."
+        feed = "shelf feed" if ran == "gr_rss" else "library export"
+        note = (
+            f"A Goodreads {feed} run was already going (since {started['since']}, "
+            f"run {run_id}); this didn't start another."
+        )
+    elif full:
+        note = (
+            "Started the library export; it takes a few minutes. Read sync_status for how it went."
+        )
     else:
         note = "Started; read sync_status for how it went."
     return SyncNow(runs=[started], note=note)

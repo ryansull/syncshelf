@@ -187,3 +187,34 @@ async def test_generated_at_sent_as_a_file_is_refused(http: Any) -> None:
     )
     assert response.status_code == 400
     assert "not a valid upload" in response.json()["error"]
+
+
+async def test_a_dated_upload_counts_as_a_csv_success(
+    http: tuple[httpx2.AsyncClient, list[tuple[str, str]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§3.4b.5: the household now has a fresh export, whoever fetched it."""
+    client, _ = http
+    counted: list[tuple[str, int]] = []
+
+    async def record(self: Any, profile: str, at: int) -> None:
+        counted.append((profile, at))
+
+    monkeypatch.setattr(Scheduler, "csv_uploaded", record)
+    generated = datetime.fromtimestamp(GENERATED, UTC).isoformat()
+    assert (await post(client, ALICE, generated_at=generated)).status_code == 202
+    assert counted == [("alice", GENERATED)]
+
+
+async def test_an_undated_upload_does_not(
+    http: tuple[httpx2.AsyncClient, list[tuple[str, str]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # It only fills (§3.4a.8), so it says nothing about how fresh the library data is.
+    client, _ = http
+    counted: list[tuple[str, int]] = []
+
+    async def record(self: Any, profile: str, at: int) -> None:
+        counted.append((profile, at))
+
+    monkeypatch.setattr(Scheduler, "csv_uploaded", record)
+    assert (await post(client, ALICE)).status_code == 202
+    assert counted == []
