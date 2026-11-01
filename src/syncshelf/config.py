@@ -18,7 +18,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, time, tzinfo
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -102,6 +102,7 @@ _PROFILE_SECRETS = (
 
 _REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _DURATION = re.compile(r"([0-9]+)([mh])")
+_CLOCK_TIME = re.compile(r"[0-9]{2}:[0-9]{2}")
 _DURATION_UNITS = {"m": 60, "h": 3600}
 # server.listen: a bracketed IPv6 address or a bare host, then a port with no leading zero.
 _LISTEN = re.compile(r"(?:\[(?P<ipv6>[^\]]+)\]|(?P<host>[^:\[\]]+)):(?P<port>[1-9][0-9]{0,4})")
@@ -185,11 +186,7 @@ class ServicesConfig:
 
 @dataclass(frozen=True)
 class CadenceConfig:
-    """The ``cadence`` durations, in seconds, with the §2.3 defaults.
-
-    The other cadence keys (``csv_interval_days``, ``csv_window``) are validated by the phases
-    that read them.
-    """
+    """The ``cadence`` durations, in seconds, with the §2.3 defaults."""
 
     rss_interval: int = 60 * 60
     abs_interval: int = 15 * 60
@@ -198,6 +195,14 @@ class CadenceConfig:
     hardcover_daily_reserve: int = 1000
     """Hardcover requests per profile per day kept back for interactive use: below this many
     remaining, syncs wait for the daily reset (§3.3.3)."""
+    csv_interval_days: int = 5
+    """Days after a Goodreads CSV success before the next one is due (§3.4b.5)."""
+    csv_window: tuple[time, time] = (time(2, 0), time(5, 0))
+    """The nightly window a due CSV export runs in, in each profile's own timezone (§3.4b.5).
+
+    Read as a half-open range: a due time at the start runs, one at the end waits for the next
+    night. Written ``HH:MM-HH:MM``.
+    """
 
 
 @dataclass(frozen=True)
@@ -704,7 +709,19 @@ def _cadence(raw: Mapping[str, Any]) -> CadenceConfig:
             durations[key] = parse_duration(value)
         except ValueError:
             raise ConfigError(f"cadence.{key}: must be a duration written <n>m or <n>h") from None
-    values: dict[str, int] = dict(durations)
+    # Not all cadence values are seconds any more: csv_window is a pair of times.
+    values: dict[str, Any] = dict(durations)
+    days = raw.get("csv_interval_days")
+    if days is not None:
+        # bool is an int subclass, and a 0-day cadence would export every night window.
+        if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+            raise ConfigError(
+                "cadence.csv_interval_days: must be a whole number of days, 1 or more"
+            )
+        values["csv_interval_days"] = days
+    window = raw.get("csv_window")
+    if window is not None:
+        values["csv_window"] = _window(window)
     reserve = raw.get("hardcover_daily_reserve")
     if reserve is not None:
         # bool is an int subclass, and `true` is a typo worth stopping on.
@@ -712,6 +729,26 @@ def _cadence(raw: Mapping[str, Any]) -> CadenceConfig:
             raise ConfigError("cadence.hardcover_daily_reserve: must be a whole number, 0 or more")
         values["hardcover_daily_reserve"] = reserve
     return CadenceConfig(**values)
+
+
+def _window(value: Any) -> tuple[time, time]:
+    """``HH:MM-HH:MM`` as a pair of times. The window may not wrap past midnight, since a
+    wrapping night window would make "the next window" ambiguous (§3.4b.5)."""
+    if not isinstance(value, str) or "-" not in value:
+        raise ConfigError("cadence.csv_window: must be written HH:MM-HH:MM")
+    start_text, _, end_text = value.partition("-")
+    # fromisoformat also takes compact forms like "0200", so the shape is checked first: the
+    # error message promises HH:MM-HH:MM, and a config read once at startup should mean it.
+    if not all(_CLOCK_TIME.fullmatch(part.strip()) for part in (start_text, end_text)):
+        raise ConfigError("cadence.csv_window: must be written HH:MM-HH:MM")
+    try:
+        start = time.fromisoformat(start_text.strip())
+        end = time.fromisoformat(end_text.strip())
+    except ValueError:
+        raise ConfigError("cadence.csv_window: must be written HH:MM-HH:MM") from None
+    if start >= end:
+        raise ConfigError("cadence.csv_window: must start before it ends, within one night")
+    return start, end
 
 
 def _profiles(

@@ -78,7 +78,11 @@ configured the session export is off for the whole stack, which startup says onc
 Goodreads syncs through RSS and the upload endpoint only. A profile with no password has session
 state `disabled`; giving it credentials moves it to `needs_sign_in` at the next start, and
 taking them away moves it back. A profile's optional `ingest_secret` lets it upload a Goodreads library
-export by hand (below); each profile needs its own, since the secret says whose export it is. Each profile's feed is read every `cadence.rss_interval` (default `60m`),
+export by hand (below); each profile needs its own, since the secret says whose export it is. The library export runs on its own cadence: `cadence.csv_interval_days` (default 5) after the
+last CSV success, in the next `cadence.csv_window` (default `02:00-05:00`) in that profile's own
+timezone, so the slowest Goodreads call happens overnight. A dated upload to the ingest endpoint
+counts as a success and pushes the date out. Each profile's feed is read every
+`cadence.rss_interval` (default `60m`),
 the profiles half an interval apart; a failed read backs off from 1 hour to at most 6, and a
 restart picks the schedule up where it left off. The file is the only source of profiles: at
 each start, a profile removed from it is marked removed and its Claude connections are revoked,

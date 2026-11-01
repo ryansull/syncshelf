@@ -69,8 +69,8 @@ cadence:                                    # all optional; defaults shown; dura
   abs_interval: 15m
   chaptarr_pending_interval: 2m
   mirror_ttl: 10m
-  # csv_interval_days: 5
-  # csv_window: "02:00-05:00"               # in each profile's timezone
+  csv_interval_days: 5                      # days after a CSV success before the next is due
+  csv_window: "02:00-05:00"                 # the night window it runs in, per profile timezone
   # Hardcover requests per profile per day kept for Claude: below this many left, syncs wait
   # for the daily reset (midnight UTC). Hardcover allows each user 5000 a day.
   hardcover_daily_reserve: 1000
